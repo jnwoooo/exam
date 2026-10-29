@@ -9,47 +9,48 @@ from ncn.tools.edit import EDIT_TOOL, validate_and_resolve_file_path   # Edit �
 from ncn.tools.findreplace import REASON_FILE_WRITE_ERROR, execute_multi_find_and_replace, validate_multi_edit   # 찾아 바꾸기
 from ncn.tools.formatters import read_file_utf8, write_file_utf8   # Node fs 흉내
 from ncn.tools.read_file import READ_TOOL                    # 설명에 들어가는 이름
-from ncn.tools.write_file import generate_diff               # diff
+from ncn.tools.write_file import generate_diff              # diff 생성 함수
 
 
-def _plural(n: int) -> str:
+def _plural(n: int) -> str:                                 # 개수에 따른 복수형 어미
     """edit / edits."""
-    return "" if n == 1 else "s"
+    return "" if n == 1 else "s"                            # 1개면 빈 글, 아니면 s
 
 
-async def _preprocess(args: dict) -> PreprocessResult:
+async def _preprocess(args: dict) -> PreprocessResult:      # MultiEdit 의 preprocess(전부 계산해 둔다)
     """preprocess — 경로·edits 검증 → 차례로 적용한 새 내용 + diff 미리보기."""
     resolved_path = validate_and_resolve_file_path(args)["resolvedPath"]   # 경로 검증(먼저 — cn 순서)
     edits = validate_multi_edit(args)                        # edits 검증
     current_content = read_file_utf8(resolved_path)          # 지금 내용
     new_content = execute_multi_find_and_replace(current_content, edits)   # 차례로 적용(실패하면 오류 — 아무것도 안 씀)
     diff = generate_diff(current_content, new_content, resolved_path)   # 미리보기 diff
-    return PreprocessResult(
-        args={"file_path": resolved_path, "newContent": new_content, "originalContent": current_content, "editCount": len(edits)},
-        preview=[ToolCallPreview("text", f"Will apply {len(edits)} edit{_plural(len(edits))} to {resolved_path}:"),
-                 ToolCallPreview("diff", diff)],
-    )
+    return PreprocessResult(                                # run 인자와 미리보기를 묶어 반환
+        args={"file_path": resolved_path, "newContent": new_content, "originalContent": current_content, "editCount": len(edits)},  # run 에 넘길 인자(경로·새 내용·옛 내용·편집 수)
+        preview=[ToolCallPreview("text", f"Will apply {len(edits)} edit{_plural(len(edits))} to {resolved_path}:"),  # 미리보기: 안내 글
+                 ToolCallPreview("diff", diff)],            # 미리보기: diff
+    )                                                       # PreprocessResult 닫기
 
 
-async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:
+async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # MultiEdit 의 run(쓰기만 한다)
     """run — 새 내용을 쓰고 diff 를 돌려줌."""
-    try:
+    try:                                                    # 쓰기 시도
         write_file_utf8(args["file_path"], args["newContent"])   # 쓰기
         diff = generate_diff(args["originalContent"], args["newContent"], args["file_path"])   # 결과용 diff
         n = args["editCount"]                                # 편집 수
-        return f"Successfully edited {args['file_path']} with {n} edit{_plural(n)}\nDiff:\n{diff}"
-    except ContinueError:
-        raise
+        return f"Successfully edited {args['file_path']} with {n} edit{_plural(n)}\nDiff:\n{diff}"  # 성공 메시지 + diff
+    except ContinueError:                                   # ContinueError 는 그대로 올린다
+        raise                                               # 재전파
     except Exception as e:                                   # 쓰기 실패
-        raise ContinueError(REASON_FILE_WRITE_ERROR, f"Error: failed to edit {args.get('file_path')}: {e}") from e
+        raise ContinueError(REASON_FILE_WRITE_ERROR, f"Error: failed to edit {args.get('file_path')}: {e}") from e  # 그 밖 오류는 쓰기 실패로 감싼다
 
 
-MULTI_EDIT_TOOL = Tool(
-    name="MultiEdit",
-    display_name="MultiEdit",
-    readonly=False,
-    is_built_in=True,
+MULTI_EDIT_TOOL = Tool(                                     # MultiEdit 도구 정의(cn multiEdit.ts)
+    name="MultiEdit",                                       # LLM 에 보이는 이름
+    display_name="MultiEdit",                               # 화면 표시 이름
+    readonly=False,                                         # 쓰기 도구라 읽기 전용 아님
+    is_built_in=True,                                       # 내장 도구
     # 첫 줄 끝 공백은 cn 원문에 있음 — 편집기가 지우지 않게 \x20 으로 적음
+    # 도구 설명(cn 원문, 아래 여러 줄)
     description=f"""Use this tool to make multiple edits to a single file in one operation. It allows you to perform multiple find-and-replace operations efficiently.\x20
 Prefer this tool over the {EDIT_TOOL.name} tool when you need to make multiple edits to the same file.
 
@@ -84,38 +85,38 @@ WARNINGS:
 - The tool will fail if you have not used the {READ_TOOL.name} tool to read the file in this session
 - The tool will fail if the file does not exist - it cannot create new files
 - This tool cannot create new files - the file must already exist""",
-    parameters={
-        "type": "object",
-        "required": ["file_path", "edits"],
-        "properties": {
-            "file_path": {
-                "type": "string",
-                "description": "Absolute or relative path to the file to modify. Absolute preferred",
-            },
-            "edits": {
-                "type": "array",
-                "description": "Array of edit operations to perform sequentially on the file",
-                "items": {
-                    "type": "object",
-                    "required": ["old_string", "new_string"],
-                    "properties": {
-                        "old_string": {
-                            "type": "string",
-                            "description": "The text to replace (exact match including whitespace/indentation)",
-                        },
-                        "new_string": {
-                            "type": "string",
-                            "description": "The text to replace it with. MUST be different than old_string.",
-                        },
-                        "replace_all": {
-                            "type": "boolean",
-                            "description": "Replace all occurrences of old_string (default false) in the file",
-                        },
-                    },
-                },
-            },
-        },
-    },
-    run=_run,
-    preprocess=_preprocess,
-)
+    parameters={                                            # 인자 스키마(키 순서도 cn 과 같게)
+        "type": "object",                                   # 최상위는 객체
+        "required": ["file_path", "edits"],                 # 필수 인자
+        "properties": {                                     # 인자별 정의
+            "file_path": {                                  # 수정할 파일 경로
+                "type": "string",                           # 문자열 타입
+                "description": "Absolute or relative path to the file to modify. Absolute preferred",  # 설명(cn 원문)
+            },                                              # 여기까지 닫기
+            "edits": {                                      # 편집 목록
+                "type": "array",                            # 배열 타입
+                "description": "Array of edit operations to perform sequentially on the file",  # 설명(cn 원문)
+                "items": {                                  # 배열 원소 정의
+                    "type": "object",                       # 원소는 객체
+                    "required": ["old_string", "new_string"],  # 원소의 필수 키
+                    "properties": {                         # 원소별 정의
+                        "old_string": {                     # 바꿀 기존 글
+                            "type": "string",               # 문자열 타입
+                            "description": "The text to replace (exact match including whitespace/indentation)",  # 설명(cn 원문)
+                        },                                  # 여기까지 닫기
+                        "new_string": {                     # 바꿀 새 글
+                            "type": "string",               # 문자열 타입
+                            "description": "The text to replace it with. MUST be different than old_string.",  # 설명(cn 원문)
+                        },                                  # 여기까지 닫기
+                        "replace_all": {                    # 전부 바꿀지 여부
+                            "type": "boolean",              # 불리언 타입
+                            "description": "Replace all occurrences of old_string (default false) in the file",  # 설명(cn 원문)
+                        },                                  # 여기까지 닫기
+                    },                                      # 여기까지 닫기
+                },                                          # 여기까지 닫기
+            },                                              # 여기까지 닫기
+        },                                                  # 여기까지 닫기
+    },                                                      # 여기까지 닫기
+    run=_run,                                               # 실행 함수 연결
+    preprocess=_preprocess,                                 # 실행 전 검사 함수 연결
+)                                                           # 여기까지 닫기

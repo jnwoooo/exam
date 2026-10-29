@@ -27,68 +27,68 @@ SYSTEM_MESSAGE = "system_message"                            # 시스템 안내
 RETRY = "retry"                                              # [ncn] 재시도
 USAGE = "usage"                                              # [ncn] 사용량
 
-ALL_EVENT_TYPES = (CONTENT, CONTENT_COMPLETE, TOOL_START, PERMISSION_REQUEST, TOOL_RESULT,
+ALL_EVENT_TYPES = (CONTENT, CONTENT_COMPLETE, TOOL_START, PERMISSION_REQUEST, TOOL_RESULT,  # 모든 이벤트 종류를 한 곳에 모은 튜플
                    TOOL_ERROR, SYSTEM_MESSAGE, RETRY, USAGE)   # 문서·시험용 목록
 
 EventSink = Callable[[dict], None]                           # on_event 형식
 
 
-def noop(_event: dict) -> None:
+def noop(_event: dict) -> None:                             # 아무것도 안 하는 기본 수신자
     """기본 이벤트 받는 곳(아무것도 안 함)."""
-    return None
+    return None                                             # on_event를 안 줬을 때 쓰는 빈 동작
 
 
-def content(text: str) -> dict:
+def content(text: str) -> dict:                             # content 이벤트 생성기(onContent)
     """응답 글 조각."""
-    return {"type": CONTENT, "text": text}
+    return {"type": CONTENT, "text": text}                  # 글 조각 dict
 
 
-def content_complete(text: str) -> dict:
+def content_complete(text: str) -> dict:                    # content_complete 이벤트 생성기(onContentComplete)
     """응답 글 끝."""
-    return {"type": CONTENT_COMPLETE, "content": text}
+    return {"type": CONTENT_COMPLETE, "content": text}      # 한 응답의 전체 글 dict
 
 
-def tool_start(name: str, arguments: Any, tool_call_id: Optional[str]) -> dict:
+def tool_start(name: str, arguments: Any, tool_call_id: Optional[str]) -> dict:  # tool_start 이벤트 생성기(onToolStart)
     """도구 시작."""
-    return {"type": TOOL_START, "name": name, "arguments": arguments, "tool_call_id": tool_call_id}
+    return {"type": TOOL_START, "name": name, "arguments": arguments, "tool_call_id": tool_call_id}  # 도구 이름·인자·호출 id를 담은 dict
 
 
-def permission_request(name: str, arguments: Any, preview: Any, tool_call_id: Optional[str]) -> dict:
+def permission_request(name: str, arguments: Any, preview: Any, tool_call_id: Optional[str]) -> dict:  # permission_request 이벤트 생성기(onToolPermissionRequest)
     """승인 요청(preview는 ncn.tools.base.ToolCallPreview 목록 또는 None)."""
-    return {"type": PERMISSION_REQUEST, "name": name, "arguments": arguments, "preview": preview, "tool_call_id": tool_call_id}
+    return {"type": PERMISSION_REQUEST, "name": name, "arguments": arguments, "preview": preview, "tool_call_id": tool_call_id}  # 승인 질문에 필요한 미리보기까지 담은 dict
 
 
-def tool_result(result: str, name: str, status: str, tool_call_id: Optional[str]) -> dict:
+def tool_result(result: str, name: str, status: str, tool_call_id: Optional[str]) -> dict:  # tool_result 이벤트 생성기(onToolResult)
     """도구 결과(status: done | canceled)."""
-    return {"type": TOOL_RESULT, "name": name, "result": result, "status": status, "tool_call_id": tool_call_id}
+    return {"type": TOOL_RESULT, "name": name, "result": result, "status": status, "tool_call_id": tool_call_id}  # 결과 글과 상태(done|canceled)를 담은 dict
 
 
-def tool_error(error: str, name: Optional[str], tool_call_id: Optional[str]) -> dict:
+def tool_error(error: str, name: Optional[str], tool_call_id: Optional[str]) -> dict:  # tool_error 이벤트 생성기(onToolError)
     """도구 오류."""
-    return {"type": TOOL_ERROR, "name": name, "error": error, "tool_call_id": tool_call_id}
+    return {"type": TOOL_ERROR, "name": name, "error": error, "tool_call_id": tool_call_id}  # 실패 사유를 담은 dict
 
 
-def system_message(message: str) -> dict:
+def system_message(message: str) -> dict:                   # system_message 이벤트 생성기(onSystemMessage)
     """시스템 안내."""
-    return {"type": SYSTEM_MESSAGE, "message": message}
+    return {"type": SYSTEM_MESSAGE, "message": message}     # 안내 문구 dict
 
 
-def retry(attempt: int, delay_ms: int, error: str) -> dict:
+def retry(attempt: int, delay_ms: int, error: str) -> dict:  # retry 이벤트 생성기(ncn 추가)
     """[ncn] 재시도 직전."""
-    return {"type": RETRY, "attempt": attempt, "delay_ms": delay_ms, "error": error}
+    return {"type": RETRY, "attempt": attempt, "delay_ms": delay_ms, "error": error}  # 몇 번째 시도·대기 시간·오류를 담은 dict
 
 
-def usage(u: Any) -> dict:
+def usage(u: Any) -> dict:                                  # usage 이벤트 생성기(ncn 추가)
     """[ncn] 사용량."""
-    return {"type": USAGE, "usage": u}
+    return {"type": USAGE, "usage": u}                      # 사용량 dict
 
 
-def safe_emit(sink: Optional[EventSink], event: dict) -> None:
+def safe_emit(sink: Optional[EventSink], event: dict) -> None:  # 이벤트를 안전하게 내보내는 함수
     """이벤트를 보낸다. 받는 쪽 오류가 루프를 멈추지 않게 삼킨다(cn 콜백은 대부분 try 밖이지만 화면 오류로 턴이 깨지면 안 됨)."""
-    if sink is None:
-        return
-    try:
-        sink(event)
+    if sink is None:                                        # 받는 곳이 없으면
+        return                                              # 아무 일도 하지 않는다
+    try:                                                    # 수신자 오류가 루프로 번지지 않게 감싼다
+        sink(event)                                         # 이벤트 전달
     except Exception:                                        # 화면 쪽 오류는 무시
         import logging                                       # 지연 import
-        logging.getLogger("ncn.loop.events").exception("on_event handler failed")
+        logging.getLogger("ncn.loop.events").exception("on_event handler failed")  # 실패 내용은 로그로만 남긴다

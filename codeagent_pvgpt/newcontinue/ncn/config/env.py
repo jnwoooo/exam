@@ -15,19 +15,19 @@ DEFAULT_API_BASE = "https://api.continue.dev/"               # env.ts apiBase �
 # dotenv 16.6.1 lib/main.js:9 LINE 원문:
 #   /(?:^|^)\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?(?:$|$)/mg
 # JS 와 Python 정규식 차이를 맞춤: \s = JS 공백 집합, \w = ASCII, m 플래그의 ^ $ 는 \n \r \u2028 \u2029 기준, . 은 줄 끝 글자 제외
-_S = "[" + JS_WS_CHARS + "]"                                 # JS \s
+_S = "[" + JS_WS_CHARS + "]"                                 # JS \s 문자 집합을 정규식 문자 클래스로
 _LT = "\n\r\u2028\u2029"                                     # JS 줄 끝 글자
 _BOL = rf"(?:(?<=[{_LT}])|\A)"                               # m 플래그 ^
 _EOL = rf"(?=[{_LT}]|\Z)"                                    # m 플래그 $
-_LINE = re.compile(
-    _BOL + _S + r"*(?:export" + _S + r"+)?([A-Za-z0-9_.-]+)(?:" + _S + r"*=" + _S + r"*?|:" + _S + r"+?)"
-    r"(" + _S + r"*'(?:\\'|[^'])*'|" + _S + r'*"(?:\\"|[^"])*"|' + _S + r"*`(?:\\`|[^`])*`|[^#\r\n]+)?"
-    + _S + r"*(?:#[^" + _LT + r"]*)?" + _EOL
-)
-_QUOTES = re.compile(_BOL + r"(['\"`])([\s\S]*)\1" + _EOL)   # value.replace(/^(['"`])([\s\S]*)\1$/mg, '$2')
+_LINE = re.compile(                                          # dotenv LINE 정규식(JS 원문과 같은 의미로 조립)
+    _BOL + _S + r"*(?:export" + _S + r"+)?([A-Za-z0-9_.-]+)(?:" + _S + r"*=" + _S + r"*?|:" + _S + r"+?)"  # 줄 시작 + 공백 + export 선택 + 키 + 구분자(= 또는 :)
+    r"(" + _S + r"*'(?:\\'|[^'])*'|" + _S + r'*"(?:\\"|[^"])*"|' + _S + r"*`(?:\\`|[^`])*`|[^#\r\n]+)?"  # 값: 작은따옴표·큰따옴표·백틱 문자열 또는 # 앞까지의 글
+    + _S + r"*(?:#[^" + _LT + r"]*)?" + _EOL                 # 값 뒤 공백 + 줄 끝 # 주석 + 줄 끝
+)                                                            # 정규식 조립 끝
+_QUOTES = re.compile(_BOL + r"(['\"`])([\s\S]*)\1" + _EOL)   # value.replace(/^(['"`])([\s\S]*)\1$/mg, '$2')  # 값을 둘러싼 따옴표 제거용 정규식
 
 
-def parse_dotenv(src: str) -> dict[str, str]:
+def parse_dotenv(src: str) -> dict[str, str]:                # dotenv.parse 대응 함수
     """dotenv.parse — KEY=값 줄들. 따옴표 벗기기, 큰따옴표 안의 \\n \\r 은 실제 줄바꿈으로. 같은 키는 뒤가 이김."""
     obj: dict[str, str] = {}                                 # 결과
     lines = re.sub(r"\r\n?", "\n", src)                      # 줄바꿈 통일
@@ -37,38 +37,38 @@ def parse_dotenv(src: str) -> dict[str, str]:
         maybe_quote = value[0] if value else ""              # 첫 글자
         value = _QUOTES.sub(r"\2", value)                    # 둘러싼 따옴표 제거
         if maybe_quote == '"':                               # 큰따옴표면 \n \r 해석
-            value = value.replace("\\n", "\n").replace("\\r", "\r")
-        obj[key] = value
-    return obj
+            value = value.replace("\\n", "\n").replace("\\r", "\r")  # 큰따옴표 값만 \n \r 이스케이프를 실제 줄바꿈으로
+        obj[key] = value                                     # 같은 키는 뒤 줄이 이김
+    return obj                                               # 파싱 결과 반환
 
 
-def read_dotenv_file(path: str) -> Optional[dict[str, str]]:
+def read_dotenv_file(path: str) -> Optional[dict[str, str]]:  # .env 파일 하나 읽기 함수
     """파일 하나를 dotenv.parse — 없거나 못 읽으면 None(dotenv.config 는 조용히 넘어감)."""
-    try:
-        with open(path, "rb") as f:                          # Node readFileSync(utf8)
-            data = f.read()
-    except OSError:
-        return None
+    try:                                                     # 파일 읽기 실패는 조용히 넘어감
+        with open(path, "rb") as f:                          # 바이트로 읽어 직접 디코딩
+            data = f.read()                                  # 파일 내용
+    except OSError:                                          # 없음·권한 오류
+        return None                                          # 읽지 못하면 None
     return parse_dotenv(data.decode("utf-8", errors="replace"))   # 잘못된 바이트는 U+FFFD(BOM 은 그대로 — JS \s 에 포함되어 무시됨)
 
 
-def apply_dotenv(environ: MutableMapping[str, str], cwd: str) -> dict[str, str]:
+def apply_dotenv(environ: MutableMapping[str, str], cwd: str) -> dict[str, str]:  # dotenv.config() 대응 함수
     """dotenv.config() — <cwd>/.env 를 environ 에 넣는다(이미 있는 키는 덮지 않음, override 없음). 읽은 표를 돌려준다."""
-    parsed = read_dotenv_file(path_resolve(cwd, ".env")) or {}   # path.resolve(process.cwd(), '.env')
+    parsed = read_dotenv_file(path_resolve(cwd, ".env")) or {}   # path.resolve(process.cwd(), '.env')  # <cwd>/.env 를 읽음(없으면 빈 사전)
     for k, v in parsed.items():                              # populate
         if k not in environ:                                 # hasOwnProperty — 빈 값이어도 있으면 그대로
-            environ[k] = v
-    return parsed
+            environ[k] = v                                   # 이미 있는 키는 덮지 않고 새 키만 추가
+    return parsed                                            # 읽은 표를 반환(호출자가 확인용으로 씀)
 
 
-def effective_environ(cwd: str, environ: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+def effective_environ(cwd: str, environ: Optional[Mapping[str, str]] = None) -> dict[str, str]:  # 환경변수 사본에 dotenv 를 적용하는 함수
     """cn 안에서 보이는 process.env — 사본에 dotenv.config 를 적용(여러 번 해도 결과 같음)."""
     out = dict(os.environ if environ is None else environ)   # 사본
     apply_dotenv(out, cwd)                                   # <cwd>/.env 반영
-    return out
+    return out                                               # 적용된 사본 반환
 
 
-def api_base(environ: Mapping[str, str]) -> str:
+def api_base(environ: Mapping[str, str]) -> str:             # env.apiBase 대응 함수
     """env.apiBase — CONTINUE_API_BASE ?? 기본(빈 글도 그대로 씀). ncn 은 이 주소로 아무것도 보내지 않는다(폐쇄망)."""
-    v = environ.get("CONTINUE_API_BASE")
-    return DEFAULT_API_BASE if v is None else v
+    v = environ.get("CONTINUE_API_BASE")                     # CONTINUE_API_BASE 값(없으면 None)
+    return DEFAULT_API_BASE if v is None else v              # 지정이 없을 때만 기본 주소(빈 글은 그대로)

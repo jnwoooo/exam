@@ -9,82 +9,83 @@ from typing import Any, Optional                             # 타입
 from ncn.security.ignore import throw_if_file_is_security_concern   # 민감 파일 차단
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
 from ncn.tools.findreplace import (MISSING, REASON_EDIT_TOOL_FILE_NOT_READ, REASON_FILE_NOT_FOUND,   # 찾아 바꾸기·오류 이유
-                                   REASON_FILE_WRITE_ERROR, REASON_FIND_AND_REPLACE_MISSING_FILEPATH, REASON_UNKNOWN,
-                                   execute_find_and_replace, validate_single_edit)
+                                   REASON_FILE_WRITE_ERROR, REASON_FIND_AND_REPLACE_MISSING_FILEPATH, REASON_UNKNOWN,  # 이어서 가져오는 이름들(오류 이유 코드)
+                                   execute_find_and_replace, validate_single_edit)  # 검증·실행 함수
 from ncn.tools.formatters import (NodeFsError, exists_sync, path_is_absolute, path_resolve,   # Node fs·path 흉내
-                                  read_file_utf8, realpath_sync, write_file_utf8)
+                                  read_file_utf8, realpath_sync, write_file_utf8)  # 읽기·실경로·쓰기 함수
 from ncn.tools.read_file import READ_TOOL, read_files_set    # 읽은 파일 기록
-from ncn.tools.write_file import generate_diff               # diff
+from ncn.tools.write_file import generate_diff              # diff 생성 함수
 
 
-def validate_and_resolve_file_path(args: Any) -> dict:
+def validate_and_resolve_file_path(args: Any) -> dict:      # Edit·MultiEdit 공용 경로 검증
     """validateAndResolveFilePath — 경로 필수 → 절대경로 → 실경로 → 민감 파일 → 존재 → Read 했나. {originalPath, resolvedPath}."""
-    file_path = args.get("file_path") if isinstance(args, dict) else None   # const { file_path } = args
+    file_path = args.get("file_path") if isinstance(args, dict) else None  # 인자가 dict면 file_path 꺼냄
     if not file_path:                                        # 없음·빈 글
-        raise ContinueError(REASON_FIND_AND_REPLACE_MISSING_FILEPATH, "file_path is required")
+        raise ContinueError(REASON_FIND_AND_REPLACE_MISSING_FILEPATH, "file_path is required")  # 경로가 없으면 오류
     if not isinstance(file_path, str):                       # JS: path.isAbsolute 가 TypeError
-        raise ContinueError(REASON_UNKNOWN, f'The "path" argument must be of type string. Received {_js_received(file_path)}')
+        raise ContinueError(REASON_UNKNOWN, f'The "path" argument must be of type string. Received {_js_received(file_path)}')  # 문자열이 아니면 Node 형식의 타입 오류
     absolute_path = file_path if path_is_absolute(file_path) else path_resolve(os.getcwd(), file_path)   # 절대경로로
-    try:
+    try:                                                    # 실경로 변환 시도
         resolved_path = realpath_sync(absolute_path)         # 실경로 — 없는 파일이면 여기서 Node ENOENT(lstat) 글로 오류
     except NodeFsError as e:                                 # cn: 일반 Error 가 그대로 올라감
-        raise ContinueError(REASON_UNKNOWN, str(e)) from e
+        raise ContinueError(REASON_UNKNOWN, str(e)) from e  # Node fs 오류를 ContinueError로 감싼다
     throw_if_file_is_security_concern(resolved_path)         # 민감 파일
     if not exists_sync(resolved_path):                       # Check if file exists(위 realpath 때문에 실제로는 거의 안 옴)
-        raise ContinueError(REASON_FILE_NOT_FOUND, f"File {file_path} does not exist")
-    if resolved_path not in read_files_set:                  # Check if file has been read
-        raise ContinueError(REASON_EDIT_TOOL_FILE_NOT_READ,
-                            f"You must use the {READ_TOOL.name} tool to read {file_path} before editing it.")
-    return {"originalPath": file_path, "resolvedPath": resolved_path}
+        raise ContinueError(REASON_FILE_NOT_FOUND, f"File {file_path} does not exist")  # 파일이 없으면 오류
+    if resolved_path not in read_files_set:                 # 이번 프로세스에서 Read 한 파일만 허용
+        raise ContinueError(REASON_EDIT_TOOL_FILE_NOT_READ,  # Read 선행 위반 오류
+                            f"You must use the {READ_TOOL.name} tool to read {file_path} before editing it.")  # Read 하라는 안내 메시지
+    return {"originalPath": file_path, "resolvedPath": resolved_path}  # 원래 경로와 실경로를 함께 반환
 
 
-def _js_received(v: Any) -> str:
+def _js_received(v: Any) -> str:                            # JS 타입 이름 흉내(오류 메시지용)
     """Node ERR_INVALID_ARG_TYPE 의 'Received …' 부분(대표 경우만)."""
-    if isinstance(v, bool):
-        return f"type boolean ({'true' if v else 'false'})"
-    if isinstance(v, (int, float)):
-        return f"type number ({v})"
-    if isinstance(v, list):
-        return "an instance of Array"
-    if isinstance(v, dict):
-        return "an instance of Object"
-    return f"type {type(v).__name__}"
+    if isinstance(v, bool):                                 # 불리언
+        return f"type boolean ({'true' if v else 'false'})"  # JS 의 boolean 표기
+    if isinstance(v, (int, float)):                         # 숫자
+        return f"type number ({v})"                         # JS 의 number 표기
+    if isinstance(v, list):                                 # 배열
+        return "an instance of Array"                       # JS 의 Array 표기
+    if isinstance(v, dict):                                 # 객체
+        return "an instance of Object"                      # JS 의 Object 표기
+    return f"type {type(v).__name__}"                       # 그 밖은 파이썬 타입 이름
 
 
-async def _preprocess(args: dict) -> PreprocessResult:
+async def _preprocess(args: dict) -> PreprocessResult:      # Edit 의 preprocess(검증 + 새 내용 계산)
     """preprocess — 검증 후 새 내용 계산 + diff 미리보기. run 인자는 {resolvedPath, newContent, oldContent}."""
     old_string = args.get("old_string")                      # 구조 분해(없으면 undefined)
-    new_string = args.get("new_string")
+    new_string = args.get("new_string")                     # 바꿀 새 글(없으면 None)
     replace_all = args["replace_all"] if "replace_all" in args else MISSING   # 없음과 null 구분
     resolved_path = validate_and_resolve_file_path(args)["resolvedPath"]   # 경로 검증
     old_s, new_s, rep_all = validate_single_edit(old_string, new_string, replace_all)   # 인자 검증
     old_content = read_file_utf8(resolved_path)              # 지금 내용
-    new_content = execute_find_and_replace(old_content, old_s, new_s, rep_all if rep_all is not None else False, 0)   # replaceAll ?? false
+    new_content = execute_find_and_replace(old_content, old_s, new_s, rep_all if rep_all is not None else False, 0)  # 바꾼 새 내용 계산(replaceAll ?? false)
     diff = generate_diff(old_content, new_content, resolved_path)   # 미리보기 diff
-    return PreprocessResult(
-        args={"resolvedPath": resolved_path, "newContent": new_content, "oldContent": old_content},
-        preview=[ToolCallPreview("text", "Will make the following changes:"), ToolCallPreview("diff", diff)],
-    )
+    return PreprocessResult(                                # run 인자와 미리보기를 묶어 반환
+        args={"resolvedPath": resolved_path, "newContent": new_content, "oldContent": old_content},  # run 에 넘길 인자(실경로·새 내용·옛 내용)
+        preview=[ToolCallPreview("text", "Will make the following changes:"), ToolCallPreview("diff", diff)],  # 미리보기: 안내 글 + diff
+    )                                                       # PreprocessResult 닫기
 
 
-async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:
+async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # Edit 의 run(쓰기만 한다)
     """run — 새 내용을 쓰고 diff 를 돌려줌."""
-    try:
+    try:                                                    # 쓰기 시도
         write_file_utf8(args["resolvedPath"], args["newContent"])   # 쓰기
         diff = generate_diff(args["oldContent"], args["newContent"], args["resolvedPath"])   # 결과용 diff
-        return f"Successfully edited {args['resolvedPath']}\nDiff:\n{diff}"
-    except ContinueError:
-        raise
+        return f"Successfully edited {args['resolvedPath']}\nDiff:\n{diff}"  # 성공 메시지 + diff
+    except ContinueError:                                   # ContinueError 는 그대로 올린다
+        raise                                               # 재전파
     except Exception as e:                                   # 쓰기 실패
-        raise ContinueError(REASON_FILE_WRITE_ERROR, f"Error: failed to edit {args.get('resolvedPath')}: {e}") from e
+        raise ContinueError(REASON_FILE_WRITE_ERROR, f"Error: failed to edit {args.get('resolvedPath')}: {e}") from e  # 그 밖 오류는 쓰기 실패로 감싼다
 
 
-EDIT_TOOL = Tool(
-    name="Edit",
-    display_name="Edit",
-    readonly=False,
-    is_built_in=True,
+EDIT_TOOL = Tool(                                           # Edit 도구 정의(cn edit.ts)
+    name="Edit",                                            # LLM 에 보이는 이름
+    display_name="Edit",                                    # 화면 표시 이름
+    readonly=False,                                         # 쓰기 도구라 읽기 전용 아님
+    is_built_in=True,                                       # 내장 도구
     # "USAGE: " 끝 공백은 cn 원문에 있음 — 편집기가 지우지 않게 \x20 으로 적음
+    # 도구 설명(cn 원문, 아래 여러 줄)
     description=f"""Performs exact string replacements in a file.
 
 USAGE:\x20
@@ -97,28 +98,28 @@ USAGE:\x20
 WARNINGS:
 - When not using `replace_all`, the edit will FAIL if `old_string` is not unique in the file. Either provide a larger string with more surrounding context to make it unique or use `replace_all` to change every instance of `old_string`.
 - The edit will FAIL if you have not recently used the `{READ_TOOL.name}` tool to view up-to-date file contents.""",
-    parameters={
-        "type": "object",
-        "required": ["file_path", "old_string", "new_string"],
-        "properties": {
-            "file_path": {
-                "type": "string",
-                "description": "Absolute or relative path to the file to modify. Absolute preferred",
-            },
-            "old_string": {
-                "type": "string",
-                "description": "The text to replace - must be exact including whitespace/indentation",
-            },
-            "new_string": {
-                "type": "string",
-                "description": "The text to replace it with (MUST be different from old_string)",
-            },
-            "replace_all": {
-                "type": "boolean",
-                "description": "Replace all occurrences of old_string (default false)",
-            },
-        },
-    },
-    run=_run,
-    preprocess=_preprocess,
-)
+    parameters={                                            # 인자 스키마(키 순서도 cn 과 같게)
+        "type": "object",                                   # 최상위는 객체
+        "required": ["file_path", "old_string", "new_string"],  # 필수 인자
+        "properties": {                                     # 인자별 정의
+            "file_path": {                                  # 수정할 파일 경로
+                "type": "string",                           # 문자열 타입
+                "description": "Absolute or relative path to the file to modify. Absolute preferred",  # 설명(cn 원문)
+            },                                              # 여기까지 닫기
+            "old_string": {                                 # 바꿀 기존 글
+                "type": "string",                           # 문자열 타입
+                "description": "The text to replace - must be exact including whitespace/indentation",  # 설명(cn 원문)
+            },                                              # 여기까지 닫기
+            "new_string": {                                 # 바꿀 새 글
+                "type": "string",                           # 문자열 타입
+                "description": "The text to replace it with (MUST be different from old_string)",  # 설명(cn 원문)
+            },                                              # 여기까지 닫기
+            "replace_all": {                                # 전부 바꿀지 여부
+                "type": "boolean",                          # 불리언 타입
+                "description": "Replace all occurrences of old_string (default false)",  # 설명(cn 원문)
+            },                                              # 여기까지 닫기
+        },                                                  # 여기까지 닫기
+    },                                                      # 여기까지 닫기
+    run=_run,                                               # 실행 함수 연결
+    preprocess=_preprocess,                                 # 실행 전 검사 함수 연결
+)                                                           # 여기까지 닫기

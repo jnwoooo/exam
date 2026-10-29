@@ -3,3 +3,4 @@
 __pycache__/
 .pytest_cache/
 parity/out/
+scripts/.ast_snapshot.json

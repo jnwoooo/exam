@@ -16,52 +16,52 @@ DEFAULT_READ_FILE_MAX_CHARS = 100000                         # ~25k tokens
 DEFAULT_READ_FILE_MAX_LINES = 5000                           # 최대 줄
 
 
-def get_read_file_max_chars() -> int:
+def get_read_file_max_chars() -> int:                       # 환경변수로 정한 글자 한도를 구한다
     """CONTINUE_CLI_READ_FILE_MAX_OUTPUT_CHARS(기본 100000) — 호출할 때마다 읽음(cn 그대로)."""
-    return parse_env_number(os.environ.get("CONTINUE_CLI_READ_FILE_MAX_OUTPUT_CHARS"), DEFAULT_READ_FILE_MAX_CHARS)
+    return parse_env_number(os.environ.get("CONTINUE_CLI_READ_FILE_MAX_OUTPUT_CHARS"), DEFAULT_READ_FILE_MAX_CHARS)  # 매번 환경변수를 다시 읽어 숫자로(없으면 기본값)
 
 
-def get_read_file_max_lines() -> int:
+def get_read_file_max_lines() -> int:                       # 환경변수로 정한 줄 한도를 구한다
     """CONTINUE_CLI_READ_FILE_MAX_OUTPUT_LINES(기본 5000)."""
-    return parse_env_number(os.environ.get("CONTINUE_CLI_READ_FILE_MAX_OUTPUT_LINES"), DEFAULT_READ_FILE_MAX_LINES)
+    return parse_env_number(os.environ.get("CONTINUE_CLI_READ_FILE_MAX_OUTPUT_LINES"), DEFAULT_READ_FILE_MAX_LINES)  # 매번 환경변수를 다시 읽어 숫자로(없으면 기본값)
 
 
 # Track files that have been read in the current session
 read_files_set: set[str] = set()                             # 읽은 파일의 실경로들(Edit·MultiEdit 의 전제 조건)
 
 
-def mark_file_as_read(file_path: str) -> None:
+def mark_file_as_read(file_path: str) -> None:              # 읽은 파일을 기록하는 함수
     """markFileAsRead — 실경로를 기록."""
-    read_files_set.add(file_path)
+    read_files_set.add(file_path)                           # 집합에 실경로 추가
 
 
-def _strip_dot_slash(filepath: str) -> str:
+def _strip_dot_slash(filepath: str) -> str:                 # 경로 앞의 './' 제거 도우미
     """앞의 './' 만 한 번 뗌(cn은 '.\\' 는 안 뗌)."""
-    return filepath[2:] if filepath.startswith("./") else filepath
+    return filepath[2:] if filepath.startswith("./") else filepath  # './' 로 시작할 때만 두 글자 뗌
 
 
-async def _preprocess(args: dict) -> PreprocessResult:
+async def _preprocess(args: dict) -> PreprocessResult:      # Read 의 preprocess(민감 파일 검사 + 미리보기)
     """preprocess — './' 뗀 원문 경로로 민감 파일 검사(실경로 전), 미리보기."""
     filepath = args["filepath"]                              # let { filepath } = args
     if not isinstance(filepath, str):                        # JS: filepath.startsWith 가 함수 아님
-        raise ContinueError(REASON_UNKNOWN, "filepath.startsWith is not a function")
-    filepath = _strip_dot_slash(filepath)
+        raise ContinueError(REASON_UNKNOWN, "filepath.startsWith is not a function")  # 문자열이 아니면 JS 와 같은 오류
+    filepath = _strip_dot_slash(filepath)                   # './' 제거
     throw_if_file_is_security_concern(filepath)              # 민감 파일이면 오류
-    return PreprocessResult(args=args, preview=[ToolCallPreview("text", f"Will read {format_tool_argument(filepath)}")])
+    return PreprocessResult(args=args, preview=[ToolCallPreview("text", f"Will read {format_tool_argument(filepath)}")])  # "Will read ..." 미리보기와 함께 반환
 
 
-async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:
+async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # Read 의 run(실제로 읽는다)
     """run — 있으면 실경로로 읽고, 한도(병렬 호출 수로 나눔) 넘으면 오류, 성공하면 기록 후 'Content of …'."""
-    try:
+    try:                                                    # 전체를 감싸 오류 형식을 맞춘다
         filepath = _strip_dot_slash(args["filepath"])        # './' 제거
         if not exists_sync(filepath):                        # 없음
-            raise ContinueError(REASON_UNSPECIFIED, f"File does not exist: {filepath}")
+            raise ContinueError(REASON_UNSPECIFIED, f"File does not exist: {filepath}")  # 파일이 없으면 오류
         real_path = realpath_sync(filepath)                  # 실경로
         content = read_file_utf8(real_path)                  # utf-8 로 읽기
 
-        parallel_count = context.parallel_tool_call_count if context is not None and context.parallel_tool_call_count is not None else 1   # context?.parallelToolCallCount ?? 1
+        parallel_count = context.parallel_tool_call_count if context is not None and context.parallel_tool_call_count is not None else 1  # 동시에 실행 중인 도구 수(없으면 1) — 출력 한도를 나누는 데 쓴다
         base_max_lines = get_read_file_max_lines()           # 한 도구 기준 한도
-        base_max_chars = get_read_file_max_chars()
+        base_max_chars = get_read_file_max_chars()          # 글자 한도의 기준값
         max_lines = base_max_lines // parallel_count         # Math.floor(나눗셈)
         max_chars = base_max_chars // parallel_count
         line_count = len(content.split("\n"))                # 줄 수
@@ -69,41 +69,41 @@ async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:
 
         if char_count > max_chars or line_count > max_lines:   # 한도 초과
             parallel_note = (                                # 병렬 호출로 한도가 줄었다는 안내
-                f" (Note: limit reduced due to {parallel_count} parallel tool calls. Single-tool limit: "
-                f"{to_locale_string(base_max_chars)} characters or {to_locale_string(base_max_lines)} lines.)"
-                if parallel_count > 1 else ""
-            )
-            raise ContinueError(
-                REASON_FILE_TOO_LARGE,
-                f"File is too large to read: {filepath} ({to_locale_string(char_count)} characters, {to_locale_string(line_count)} lines). "
-                f"Maximum allowed: {to_locale_string(max_chars)} characters or {to_locale_string(max_lines)} lines.{parallel_note} "
-                f"Consider using terminal commands like 'head', 'tail', 'sed', or 'grep' to read targeted parts of the file.",
-            )
+                f" (Note: limit reduced due to {parallel_count} parallel tool calls. Single-tool limit: "  # 병렬 호출 안내 앞부분
+                f"{to_locale_string(base_max_chars)} characters or {to_locale_string(base_max_lines)} lines.)"  # 병렬 호출 안내 뒷부분(기준 한도)
+                if parallel_count > 1 else ""               # 병렬이 아니면 안내 없음
+            )                                               # 여기까지 닫기
+            raise ContinueError(                            # 한도 초과 오류를 만든다
+                REASON_FILE_TOO_LARGE,                      # 이유 코드
+                f"File is too large to read: {filepath} ({to_locale_string(char_count)} characters, {to_locale_string(line_count)} lines). "  # 실제 크기 안내
+                f"Maximum allowed: {to_locale_string(max_chars)} characters or {to_locale_string(max_lines)} lines.{parallel_note} "  # 허용 한도 안내
+                f"Consider using terminal commands like 'head', 'tail', 'sed', or 'grep' to read targeted parts of the file.",  # 대안 안내(cn 원문)
+            )                                               # 여기까지 닫기
 
-        mark_file_as_read(real_path)                         # Mark this file as read for the edit tool
-        return f"Content of {filepath}:\n{content}"
+        mark_file_as_read(real_path)                        # 읽기에 성공한 파일로 기록(Edit 의 전제)
+        return f"Content of {filepath}:\n{content}"         # 파일 내용을 모델에게 돌려줌
     except ContinueError:                                    # 알려진 오류는 그대로
         raise
     except Exception as e:                                   # 그 밖(cn: 일반 Error) → "Error reading file: …"
         raise ContinueError(REASON_UNKNOWN, f"Error reading file: {e}") from e
 
 
-READ_TOOL = Tool(
-    name="Read",
-    display_name="Read",
-    description="Read the contents of a file at the specified path",
-    parameters={
-        "type": "object",
-        "required": ["filepath"],
-        "properties": {
-            "filepath": {
-                "type": "string",
-                "description": "The path to the file to read",
-            },
-        },
-    },
-    run=_run,
-    preprocess=_preprocess,
-    readonly=True,
-    is_built_in=True,
-)
+READ_TOOL = Tool(                                           # Read 도구 정의(cn readFile.ts)
+    name="Read",                                            # LLM 에 보이는 이름
+    display_name="Read",                                    # 화면 표시 이름
+    description="Read the contents of a file at the specified path",  # 도구 설명(cn 원문)
+    parameters={                                            # 인자 스키마
+        "type": "object",                                   # 최상위는 객체
+        "required": ["filepath"],                           # 필수 인자
+        "properties": {                                     # 인자별 정의
+            "filepath": {                                   # 읽을 파일 경로
+                "type": "string",                           # 문자열 타입
+                "description": "The path to the file to read",  # 설명(cn 원문)
+            },                                              # 여기까지 닫기
+        },                                                  # 여기까지 닫기
+    },                                                      # 여기까지 닫기
+    run=_run,                                               # 실행 함수 연결
+    preprocess=_preprocess,                                 # 실행 전 검사 함수 연결
+    readonly=True,                                          # 읽기 전용 도구
+    is_built_in=True,                                       # 내장 도구
+)                                                           # 여기까지 닫기

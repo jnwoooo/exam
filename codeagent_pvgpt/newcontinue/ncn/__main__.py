@@ -6,5 +6,5 @@ import sys                                     # 종료 코드
 from ncn.app import main                       # 옵션 해석 + 헤드리스 실행
 
 
-if __name__ == "__main__":
-    sys.exit(main())                           # python -m ncn
+if __name__ == "__main__":                                   # python -m ncn 으로 직접 실행될 때만
+    sys.exit(main())                                         # main() 의 종료 코드로 프로세스 종료
