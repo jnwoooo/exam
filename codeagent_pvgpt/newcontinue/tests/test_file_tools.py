@@ -1,6 +1,7 @@
 # tests/test_file_tools.py — 파일 도구(Read·Write·Edit·MultiEdit·List)·민감 파일 판정·출력 자르기·diff 시험
 # cn edit.test.ts·multiEdit.test.ts·truncateOutput.test.ts 대표 사례 + node 가 있으면 cn 원본 라이브러리와 차등 비교
 import asyncio                                               # 도구는 async
+import sys                                                   # OS 판별(readdir 순서)
 import json                                                  # Node 결과
 import os                                                    # 작업 폴더·환경변수
 import random                                                # 무작위 입력
@@ -275,7 +276,10 @@ def test_list(ws):                                          # List 시험
     assert pre.args == {"dirpath": str(ws)}                 # 절대경로로 바뀐 인자 확인
     assert pre.preview[0].content == f"Will list files in: {str(ws).replace(os.sep, '/')}"   # 같은 폴더면 상대경로가 빈 글 → 원래 값(cn: '\\'→'/')
     out = run(LIST_TOOL.run(pre.args, ToolRunContext("t")))  # run 실행
-    assert out == f"Files in {ws}:\nC.txt (file, 0 bytes)\na_dir (directory)\nb.txt (file, 5 bytes)"   # 바이트 순
+    if sys.platform == "win32":                              # Windows: Node readdirSync 는 파일 시스템 순서 — NTFS 는 대소문자 무시 순
+        assert out == f"Files in {ws}:\na_dir (directory)\nb.txt (file, 5 bytes)\nC.txt (file, 0 bytes)"   # NTFS 순(2026-10-30 CI 확인)
+    else:                                                    # posix: libuv scandir 가 strcmp(바이트) 정렬
+        assert out == f"Files in {ws}:\nC.txt (file, 0 bytes)\na_dir (directory)\nb.txt (file, 5 bytes)"   # 바이트 순
     with pytest.raises(ContinueError) as e:                 # 없는 폴더는 오류
         run(LIST_TOOL.preprocess({"dirpath": "nope"}))      # 없는 폴더 preprocess
     assert str(e.value) == f"Directory does not exist: {ws / 'nope'}"  # 오류 글 확인

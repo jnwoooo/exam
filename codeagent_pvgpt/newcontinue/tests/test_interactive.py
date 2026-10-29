@@ -149,7 +149,7 @@ def test_request_body_same_as_acp(tmp_path, monkeypatch):    # 같은 시나리�
     def norm(body, work):                                    # 작업 폴더 정규화
         s = json.dumps(body, ensure_ascii=False)             # 글로
         for p in (str(work.resolve()), str(work)):           # 실제·심볼릭 경로
-            s = s.replace(p, "<CWD>")                        # 자리표시
+            s = s.replace(json.dumps(p, ensure_ascii=False)[1:-1], "<CWD>")   # JSON 글 안의 모양으로 치환(Windows 는 \ 가 \\ 로 이스케이프됨 — 2026-10-30 CI)
         return json.loads(s)                                 # 다시 객체
 
     a, t = norm(acp_body, h.work), norm(tui_body, d.work)    # 정규화
