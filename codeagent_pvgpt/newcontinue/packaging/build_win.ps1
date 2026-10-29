@@ -1,4 +1,4 @@
-# packaging/build_win.ps1 — Windows 에서 ncn.exe 빌드(PyInstaller onedir) + 배포 zip. CI(ncn.yml·ncn-vsix.yml)와 로컬 공용
+﻿# packaging/build_win.ps1 — Windows 에서 ncn.exe 빌드(PyInstaller onedir) + 배포 zip. CI(ncn.yml·ncn-vsix.yml)와 로컬 공용
 # 사용법:  powershell -NoProfile -ExecutionPolicy Bypass -File codeagent_pvgpt\newcontinue\packaging\build_win.ps1 <출력 폴더> [-NoZip] [-Smoke]
 #   인자 1(위치 0) OutDir : 출력 폴더(상대경로면 지금 폴더 기준, 기본 newcontinue\dist). 없으면 만든다.
 #   -NoZip               : onedir 만(VSIX 작업용 — 묶음 폴더·zip 생략)
@@ -17,7 +17,7 @@ $ErrorActionPreference = 'Stop'                                    # 오류면 �
 
 $Root = Split-Path -Parent $PSScriptRoot                           # newcontinue 폴더(이 파일의 상위)
 if (-not $OutDir) { $OutDir = Join-Path $Root 'dist' }             # 기본 출력 폴더
-$OutDir = [IO.Path]::GetFullPath((Join-Path (Get-Location) $OutDir))   # 절대 경로(지금 폴더 기준 — 이미 절대면 그대로)
+$OutDir = [IO.Path]::GetFullPath([IO.Path]::Combine((Get-Location).Path, $OutDir))   # 절대 경로 — Path.Combine 은 OutDir 이 이미 절대면 그것을 쓴다(Join-Path 는 그냥 이어 붙여 D:\..\D:\.. 가 됨)
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {         # uv 확인
     throw 'uv 가 PATH 에 없습니다. CI 는 astral-sh/setup-uv, 로컬은 https://docs.astral.sh/uv/ 설치 후 다시 실행하세요.'   # 안내
 }

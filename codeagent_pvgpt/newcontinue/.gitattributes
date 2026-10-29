@@ -1,0 +1,11 @@
+# .gitattributes — Windows 체크아웃(GitHub Windows 러너는 core.autocrlf=true)에서도 macOS와 같은 바이트가 되게
+* text=auto eol=lf
+# ↑ 기본: 모든 텍스트는 LF(시험 자료·시나리오 JSON·파이썬 소스가 OS마다 달라지지 않게)
+*.tiktoken binary
+# ↑ 토큰 인코딩 표(ncn/data) — 줄바꿈이 바뀌면 sha256 검사 실패 → 절대 변환 금지
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+# ↑ Windows 스크립트는 CRLF(packaging/.gitattributes 와 같은 규칙 — 여기서도 지정해 vs/ 등에도 적용)
+*.sln text eol=crlf
+*.csproj text eol=crlf
+# ↑ VS 솔루션·프로젝트 파일은 VS 기본(CRLF)

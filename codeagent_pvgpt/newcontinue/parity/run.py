@@ -53,8 +53,9 @@ def expand_placeholders(text: str) -> str:
 
 
 def isolated_env(tmp: Path) -> dict:
-    """env -i 처럼 깨끗한 환경. OTEL_*·ANTHROPIC_API_KEY·CONTINUE_USE_AI_SDK·프록시 변수는 넣지 않는다(P0 2.3~2.5)."""
-    return {                                                 # 환경변수 사전
+    """env -i 처럼 깨끗한 환경. OTEL_*·ANTHROPIC_API_KEY·CONTINUE_USE_AI_SDK·프록시 변수는 넣지 않는다(P0 2.3~2.5).
+    Windows 는 OS 가 요구하는 변수(SYSTEMROOT 등)가 없으면 파이썬·node 가 시작조차 못 하므로 그것만 덧붙인다."""
+    return {**windows_base_env(tmp), **{                     # 환경변수 사전(Windows 필수 변수 + 공통)
         "PATH": os.environ.get("PATH", ""),                  # 실행 파일 찾기(rg 유무도 PATH로 같게)
         "HOME": str(tmp / "home"),                           # ~/.claude/settings.json 등 실제 홈 차단
         "CONTINUE_GLOBAL_DIR": str(tmp / "cnhome"),          # ~/.continue 대신
@@ -65,7 +66,23 @@ def isolated_env(tmp: Path) -> dict:
         "CONTINUE_CLI_TEST_SESSION_ID": "parity-0001",       # 세션 id 고정
         "NO_PROXY": "127.0.0.1,localhost",                   # 가짜 LLM은 프록시 없이
         "LANG": "en_US.UTF-8",                               # 출력 인코딩 고정
-    }
+    }}                                                       # 사전 끝
+
+
+def windows_base_env(tmp: Path) -> dict:
+    """Windows 자식 프로세스가 시작하는 데 꼭 필요한 변수(다른 OS 에서는 빈 사전).
+    SYSTEMROOT 가 없으면 파이썬이 "_Py_HashRandomization_Init: failed to get random numbers" 로 죽는다(CI 에서 확인).
+    홈 폴더는 격리: Windows 의 os.homedir()·Path.home() 은 HOME 이 아니라 USERPROFILE 을 본다."""
+    if sys.platform != "win32":                              # Windows 가 아니면
+        return {}                                            # 덧붙일 것 없음
+    keep = ("SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "SYSTEMDRIVE", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS")   # OS 필수(사용자 정보 아님)
+    env = {k: os.environ[k] for k in keep if k in os.environ}   # 있는 것만 그대로 전달
+    home = tmp / "home"                                      # 격리된 홈
+    env.update({"USERPROFILE": str(home),                    # Windows 홈(cn os.homedir(), 파이썬 Path.home())
+                "APPDATA": str(home / "AppData" / "Roaming"),   # 사용자 설정 폴더도 격리
+                "LOCALAPPDATA": str(home / "AppData" / "Local"),   # 로컬 데이터 폴더도 격리
+                "TEMP": str(tmp), "TMP": str(tmp)})           # 임시 폴더(없으면 일부 도구가 C:\Windows 에 쓰려 함)
+    return env                                               # Windows 필수 변수
 
 
 def normalize_text(s: str, repl: dict[str, str]) -> str:

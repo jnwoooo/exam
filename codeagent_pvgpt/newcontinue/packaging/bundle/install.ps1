@@ -1,4 +1,4 @@
-# install.ps1 — ncn 사용자 단위 설치(관리자 권한 불필요). install.cmd 가 이 파일 내용을 읽어 실행한다(계획 8-2)
+﻿# install.ps1 — ncn 사용자 단위 설치(관리자 권한 불필요). install.cmd 가 이 파일 내용을 읽어 실행한다(계획 8-2)
 # 하는 일: ① ncn\ 폴더를 %LOCALAPPDATA%\ncn 으로 복사 ② 사용자 PATH(레지스트리 HKCU\Environment)에 추가(이미 있으면 그대로)
 #          ③ %USERPROFILE%\.continue\config.yaml 이 없을 때만 템플릿 복사(서버 주소 입력) ④ 개인 토큰을 물어 .continue\.env 에 기록
 #          ⑤ ncn --doctor 로 점검

@@ -125,7 +125,8 @@ jobs:                                                          # 작업들
       matrix:                                                  # 조합
         include:                                               # 직접 나열
           - { label: windows-x64, os: windows-latest, python: "3.14", optional: false }   # 필수(현장 PC)
-          - { label: windows-arm64, os: windows-11-arm, python: "cpython-3.14-windows-aarch64-none", optional: true }   # 선택(arm64 파이썬을 명시)
+          # windows-arm64 는 뺐다(2026-10-30 첫 CI): mcp 의존성 cryptography 에 win_arm64 + Py3.14 휠이 없어 소스 빌드(openssl·Rust)로 실패.
+          #   arm64 Windows 는 x64 ncn.exe 를 에뮬레이션으로 그대로 실행한다(VS 2022 arm64 도 x64 자식 프로세스 실행 가능) → x64 묶음 하나로 충분.
           - { label: macos-arm64, os: macos-latest, python: "3.14", optional: false }     # macOS(Apple 실리콘)
           - { label: linux-x64, os: ubuntu-latest, python: "3.14", optional: false }      # Linux — 러너의 glibc 보다 오래된 배포판에서는 안 돌 수 있음
     defaults:                                                  # 기본값

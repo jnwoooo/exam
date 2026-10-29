@@ -1,4 +1,4 @@
-# uninstall.ps1 — ncn 제거(관리자 권한 불필요). uninstall.cmd 가 이 파일 내용을 읽어 실행한다(계획 8-3)
+﻿# uninstall.ps1 — ncn 제거(관리자 권한 불필요). uninstall.cmd 가 이 파일 내용을 읽어 실행한다(계획 8-3)
 # 하는 일: 사용자 PATH 에서 %LOCALAPPDATA%\ncn 항목만 빼기 → NCN_HOME 변수 지우기 → 설치 폴더 지우기
 # 남기는 것: %USERPROFILE%\.continue(설정·토큰·대화 기록 — Continue 와 공용이므로)
 # 입력(환경변수): NCN_QUIET=1 이면 확인 질문 없이 진행
