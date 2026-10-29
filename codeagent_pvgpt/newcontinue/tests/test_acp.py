@@ -296,6 +296,50 @@ def test_reject_once_stops_and_records_system_message(tmp_path):   # 거부 reje
     assert msgs[4]["content"] == "[Tool canceled - please tell Continue what to do differently]"   # system 글 원문
 
 
+def test_reject_once_then_next_tool_in_batch_is_asked(tmp_path):   # 한 응답에 도구 둘: 3번 거부 뒤 다음 도구도 묻는다(cn 대화형)
+    steps = [{"tool_calls": [{"name": "Write", "arguments": {"filepath": "a.txt", "content": "a"}},   # 첫 Write(거부)
+                             {"name": "Write", "arguments": {"filepath": "b.txt", "content": "b"}}]},   # 둘째 Write(승인)
+             {"content": "알겠어요"}]                          # 다음 질문의 답
+    h = Harness(tmp_path, steps)                             # 준비
+    ide = FakeIDE(["reject_once", "allow_once"])             # 3 아니오 → 1 계속
+
+    async def go():                                          # 시나리오
+        await h.start(ide)                                   # 시작
+        s = await h.new()                                    # 세션
+        r = await h.conn.prompt(session_id=s.session_id, prompt=[text_block("둘 다")])   # 질문
+        assert r.stop_reason == "end_turn" and r.field_meta == {"ncn": {"stoppedByRejection": True}}   # 멈춤 표시 확인
+        assert len(h.bodies()) == 1                          # 중단 → 더 요청하지 않음
+        await h.conn.prompt(session_id=s.session_id, prompt=[text_block("다음")])   # 다음 질문
+        await h.stop()                                       # 종료
+
+    run(go())                                                # 실행
+    assert len(ide.permissions) == 2                         # 둘째 도구도 물었음(executeStreamedToolCalls 권한 단계 순서)
+    assert not (h.work / "a.txt").exists() and (h.work / "b.txt").read_text() == "b"   # 거부한 것만 안 씀
+    msgs = h.bodies()[1]["messages"]                         # 두 번째 요청
+    assert [m["role"] for m in msgs] == ["system", "user", "assistant", "tool", "tool", "system", "user"]   # system 글은 한 번
+    assert msgs[3]["content"] == "Permission denied by user" and "Successfully" in msgs[4]["content"]   # 결과 순서 확인
+
+
+def test_write_old_text_from_ide_buffer(tmp_path):         # fs 위임이면 Write 카드 oldText 는 fs/read_text_file 로
+    steps = [{"tool_calls": [{"name": "Write", "arguments": {"filepath": "w.txt", "content": "NEW"}}]}, {"content": "끝"}]   # 덮어쓰기
+    h = Harness(tmp_path, steps, {"w.txt": "DISK"})          # 디스크 내용
+    buf = str(h.work / "w.txt")                              # 버퍼 경로
+    ide = FakeIDE(["allow_once"], fs_files={buf: "BUF"})      # 저장 안 한 버퍼
+
+    async def go():                                          # 시나리오
+        caps = ClientCapabilities(fs=FileSystemCapabilities(read_text_file=True, write_text_file=True))   # fs 능력
+        await h.start(ide, caps)                             # 시작
+        s = await h.new()                                    # 세션
+        await h.conn.prompt(session_id=s.session_id, prompt=[text_block("써")])   # 질문
+        await h.stop()                                       # 종료
+
+    run(go())                                                # 실행
+    card = [u for u in ide.of("tool_call") if u["kind"] == "edit"][0]   # Write 카드
+    assert card["content"][0]["oldText"] == "BUF" and card["content"][0]["newText"] == "NEW"   # 버퍼 기준 원래 내용
+    assert ide.permissions[0]["tool_call"]["content"][0]["oldText"] == "BUF"   # 승인 요청 diff 도
+    assert ide.fs_files[buf] == "NEW"                        # 위임 쓰기
+
+
 def test_allow_always_not_asked_again(tmp_path):            # allow_always 뒤 다시 안 묻기
     steps = [{"tool_calls": [{"name": "Write", "arguments": {"filepath": "a.txt", "content": "a\n"}}]},   # 첫 Write
              {"tool_calls": [{"name": "Write", "arguments": {"filepath": "b.txt", "content": "b\n"}}]},   # 둘째 Write

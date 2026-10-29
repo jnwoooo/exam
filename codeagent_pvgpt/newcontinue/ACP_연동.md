@@ -160,7 +160,7 @@ IDE 응답: `{"jsonrpc":"2.0","id":7,"result":{"outcome":{"outcome":"selected","
 |---|---|
 | allow_once | 실행 |
 | allow_always | `<전역>/permissions.yaml` allow에 규칙 추가 후 다시 읽음 → 같은 규칙은 이후 묻지 않음 |
-| reject_once | 모델에 `Permission denied by user`, **응답 중단**, 기록에 system `[Tool canceled - please tell Continue what to do differently]`(다음 질문 때 모델에 보임). prompt는 `end_turn` + `_meta.ncn.stoppedByRejection` |
+| reject_once | 모델에 `Permission denied by user`, **응답 중단**(같은 응답의 남은 도구는 계속 묻는다 — 두 번째 거부부터는 중단·system 글 없음), 기록에 system `[Tool canceled - please tell Continue what to do differently]`(다음 질문 때 모델에 보임). prompt는 `end_turn` + `_meta.ncn.stoppedByRejection` |
 | cancelled | 거부(`Permission denied by user`), system 글 없음 |
 
 `diff`의 `oldText/newText`로 VS 내장 비교 창(`IVsDifferenceService`)을 띄우면 된다(V4). diff가 없는 도구(Bash 등)는 cn 승인 미리보기 글이 있으면 content text로 실리고, 없으면 `rawInput`(예: `command`)을 보여 주면 된다.
@@ -189,7 +189,15 @@ plan = 쓰기 도구(Edit·MultiEdit·Write) 목록에서 빠지고 호출돼도
 ### 3-9. session/cancel
 `{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"6f0c…"}}` — LLM 스트림·재시도를 멈추고, 기다리던 승인·질문을 풀고(규격상 IDE는 걸린 승인 요청에 `cancelled`로 답해야 함), 도구가 1초 안에 안 끝나면 턴 작업을 취소한다. 받은 데까지의 응답 글은 기록에 넣지 않는다(cn Esc와 같음). prompt 응답은 `cancelled`.
 
-## 4. ncn 확장(규격 밖)
+## 4. VS 확장 요구사항
+| # | 요구 | 이유 |
+|---|---|---|
+| R1 | **`fs/write_text_file`을 받으면 텍스트 버퍼를 고친 뒤 그 문서를 저장(디스크 반영)하고 나서 응답할 것** | ACP 규격상 "파일에 쓰기" 요청. 저장 전에 응답하면 같은 턴의 Bash·Search·빌드(`msbuild`·`dotnet test`)가 옛 디스크 내용을 본다. 버퍼 편집이므로 Ctrl+Z는 그대로 가능 |
+| R2 | `fs/read_text_file`은 열린 문서면 버퍼(저장 안 한 변경 포함), 아니면 디스크 내용을 줄 것. 파일이 없으면 오류 응답 | Read·Edit·Write 원래 내용(diff `oldText`)이 IDE 화면과 같게. 오류면 ncn이 디스크로 다시 읽는다 |
+| R3 | 걸린 `session/request_permission`·`elicitation/create`는 `session/cancel`을 보낸 뒤 `cancelled`로 답할 것 | 규격 |
+| R4 | 한 응답에 도구가 여러 개면 승인 요청이 연달아 올 수 있다(3번 "아니오" 뒤에도 같은 묶음의 다음 도구를 묻는다 — cn 대화형과 같음) | cn executeStreamedToolCalls 권한 단계 |
+
+## 5. ncn 확장(규격 밖)
 | 이름 | 방향 | 내용 |
 |---|---|---|
 | `clientCapabilities._meta.ncn.ask` | IDE→ncn | `_ncn/ask`로 질문 받기 |
@@ -199,7 +207,7 @@ plan = 쓰기 도구(Edit·MultiEdit·Write) 목록에서 빠지고 호출돼도
 | `PromptResponse._meta.ncn.stoppedByRejection` | ncn→IDE | 승인 3번으로 멈춤 |
 | 모드 id | — | `normal`·`plan`·`auto`(cn PermissionMode 그대로), config option id `mode` |
 
-## 5. 오류 처리
+## 6. 오류 처리
 | 상황 | ncn 응답 |
 |---|---|
 | 설정 파일 오류·chat 모델 없음(session/new·load) | -32603 `Internal error`, `data.message` = cn 원문 오류 글 |
@@ -212,7 +220,7 @@ plan = 쓰기 도구(Edit·MultiEdit·Write) 목록에서 빠지고 호출돼도
 | JSON이 아닌 입력 줄 | 버리고 stderr 로그(응답 없음) |
 | 프로세스가 죽음 | 확장이 재시작 후 `session/load`(마지막 세션 id)로 이어 가기 |
 
-## 6. 제한(현재)
+## 7. 제한(현재)
 - MCP 서버(`mcpServers`)·`terminal/*`·이미지 입력 미지원. 세션은 여러 개 열 수 있지만 작업 폴더(프로세스 cwd)는 하나라 **동시에 다른 폴더의 세션을 돌리면 안 된다**(prompt마다 그 세션 폴더로 이동).
-- Write 카드의 `oldText`는 디스크 기준(IDE 버퍼와 다를 수 있음). Edit·MultiEdit는 위임 읽기 기준.
-- fs 위임 쓰기는 IDE 버퍼만 바꾼다 — 저장 전에는 Bash·Search가 디스크의 옛 내용을 본다(IDE가 바로 저장하면 같음).
+- Write·Edit·MultiEdit 카드의 `oldText`는 fs 위임이 켜졌으면 `fs/read_text_file`(IDE 버퍼) 기준, 아니면 디스크 기준.
+- 디스크 일관성은 R1(쓰기 후 저장)에 달려 있다.

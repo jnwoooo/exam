@@ -45,7 +45,9 @@ class _Card:                                                # 도구 카드 하�
     title: str                                               # 카드 제목(ToolCallTitle)
     kind: str                                                # ACP kind 항목
     pre_args: Any = None                                     # 사전 처리로 고쳐진 인자(Edit oldContent·newContent 등)
-    old_text: Optional[str] = None                           # Write: 쓰기 전 디스크 내용(새 파일이면 None)
+    old_text: Optional[str] = None                           # Write: 쓰기 전 내용(fs 위임이면 IDE 버퍼, 아니면 디스크. 새 파일이면 None)
+    write_path: Optional[str] = None                         # Write: 대상 절대 경로
+    old_read: bool = False                                   # Write: 원래 내용을 읽었나
 
 
 @dataclass   # 자료 클래스로 선언
@@ -65,6 +67,7 @@ class AcpSession:                                           # ACP 세션 하나 
     signal: Any = None                                       # 지금 턴의 AbortSignal
     task: Optional[asyncio.Task] = None                      # 지금 턴의 작업
     cancel_requested: bool = False                           # session/cancel 을 받았나
+    cancel_ev: Any = None                                    # session/cancel 이벤트(승인·질문 대기를 푼다 — 3번 거부의 중단 신호와 구분)
     rejected: bool = False                                   # 승인 3번(아니오)으로 멈췄나
     first_prompt: bool = True                                # 첫 질문인가(--prompt 를 앞에 붙임)
     turn_usage: Optional[dict] = None                        # 이번 턴 사용량 누적
@@ -238,7 +241,7 @@ class NcnAgent:                                             # acp Agent 구현
 
         s.deps = LoopDeps(                                   # 루프 의존성
             llm=llm, tools=all_tools,                        # LLM·도구 목록 함수
-            check_permission=lambda tool, args: perms.check(tool, args),   # 실행 시점 판정(Bash 위험 판정 포함)
+            check_permission=lambda tool, args: self._check(s, tool, args),   # 실행 시점 판정(Bash 위험 판정 포함) — 카드 먼저 보낸 뒤
             list_permission=lambda tool, args: perms.base_permission(tool.name, {}),   # 목록용(ask 도 대화형이면 포함)
             ask_user=self._ask_user,                         # 승인 질문 → session/request_permission
             system_message=system_message, on_event=lambda e: self._on_event(s, e),   # 시스템 메시지·이벤트
@@ -338,6 +341,7 @@ class NcnAgent:                                             # acp Agent 구현
         s.first_prompt = False                               # 다음부터는 아님
         s.signal = AbortSignal()                             # 이번 턴 중단 신호
         s.cancel_requested = False                           # 취소 표시 초기화
+        s.cancel_ev = asyncio.Event()                        # 이번 턴 취소 이벤트
         s.rejected = False                                   # 거부 표시 초기화
         s.turn_usage = None                                  # 사용량 초기화
 
@@ -368,6 +372,7 @@ class NcnAgent:                                             # acp Agent 구현
         if s is None or s.task is None or s.task.done():     # 돌고 있는 턴이 없으면
             return                                          # 할 일 없음
         s.cancel_requested = True                            # 취소 표시
+        s.cancel_ev.set()                                    # 승인·질문 대기 풀기
         s.signal.abort()                                     # 중단 신호
         try:                                                # 스스로 끝나기를 잠깐 기다림
             await asyncio.wait_for(asyncio.shield(s.task), CANCEL_GRACE_S)   # shield: 기다림이 끝나도 턴 작업은 그대로
@@ -410,15 +415,28 @@ class NcnAgent:                                             # acp Agent 구현
         card = s.cards.get(tcid)                             # 이미 보낸 카드인가
         if card is None:                                     # 처음이면
             card = _Card(name=name, args=args, title=convert.tool_title(name, args), kind=convert.tool_kind(name))   # 카드 상태
+            s.cards[tcid] = card                             # 보관
             if name == "Write" and isinstance(args, dict) and isinstance(args.get("filepath"), str):   # Write: 쓰기 전 내용
                 p = args["filepath"]                         # 경로
-                card.old_text = fsio.read_text_file_disk(p if os.path.isabs(p) else os.path.join(s.cwd, p))   # 디스크 내용(없으면 None)
-            s.cards[tcid] = card                             # 보관
+                card.write_path = p if os.path.isabs(p) else os.path.join(s.cwd, p)   # 절대 경로(보낼 때 읽음)
         card.pre_args = e.get("preprocessed_args", card.pre_args)   # 사전 처리 인자(있으면)
-        diff = convert.edit_diff(name, card.pre_args if card.pre_args is not None else args, card.old_text, s.cwd)   # diff 내용
-        self._update(s, start_tool_call(tcid, card.title, kind=card.kind, status="pending",   # tool_call 알림 보냄
-                                        content=[diff] if diff is not None else None,   # 바뀔 내용
-                                        locations=convert.tool_locations(args, s.cwd), raw_input=convert.public_args(args)))   # 위치·인자(내부 키 제외)
+
+        async def send():                                    # 보낼 때 만든다(Write 원래 내용을 fs 위임으로 읽기 위해 async)
+            if card.write_path is not None and not card.old_read:   # Write 원래 내용을 아직 안 읽었으면
+                card.old_read = True                         # 한 번만
+                if s.files is not None and s.files.can_read:   # fs 위임이 켜졌으면 IDE 버퍼 기준
+                    try:                                    # 위임 읽기(실패하면 디스크, 없으면 오류)
+                        card.old_text = await s.files.read_text(card.write_path)   # 버퍼 내용
+                    except Exception:                        # 새 파일
+                        card.old_text = None                # 없음
+                else:                                        # 위임 없음
+                    card.old_text = fsio.read_text_file_disk(card.write_path)   # 디스크 내용(없으면 None)
+            diff = convert.edit_diff(name, card.pre_args if card.pre_args is not None else args, card.old_text, s.cwd)   # diff 내용
+            await self.conn.session_update(session_id=s.id, update=start_tool_call(tcid, card.title, kind=card.kind, status="pending",   # tool_call 알림 보냄
+                                           content=[diff] if diff is not None else None,   # 바뀔 내용
+                                           locations=convert.tool_locations(args, s.cwd), raw_input=convert.public_args(args)))   # 위치·인자(내부 키 제외)
+
+        self._enqueue(send)                                  # 순서대로 보냄(실행 전에 _check 가 flush)
 
     def _on_tool_end(self, s: AcpSession, e: dict) -> None:  # 도구 카드 끝내기
         """tool_call_update: 성공 → completed(+diff, 결과 글), 거부(canceled)·오류 → failed(글). Checklist 성공이면 plan 도."""
@@ -427,23 +445,32 @@ class NcnAgent:                                             # acp Agent 구현
         name = e.get("name") or (card.name if card else "")  # 도구 이름
         ok = e.get("type") == "tool_result" and e.get("status") == "done"   # 성공인가
         text = e.get("result") if e.get("type") == "tool_result" else e.get("error")   # 결과 또는 오류 글
-        content = []                                         # 카드 내용
-        if ok and card is not None:                          # 성공이면 diff 도
-            diff = convert.edit_diff(name, card.pre_args if card.pre_args is not None else card.args, card.old_text, s.cwd)   # diff 항목
-            if diff is not None:                             # 편집 도구면
-                content.append(diff)                        # diff 먼저
-        if text:                                             # 글이 있으면
-            content.append(convert.text_content(str(text)))  # 결과 글
-        self._update(s, update_tool_call(tcid, status="completed" if ok else "failed",   # tool_call_update 알림 보냄
-                                         content=content or None, raw_output=text))   # 내용·원문 결과
+
+        async def send():                                    # 보낼 때 만든다(카드 시작 알림이 원래 내용을 채운 뒤)
+            content = []                                     # 카드 내용
+            if ok and card is not None:                      # 성공이면 diff 도
+                diff = convert.edit_diff(name, card.pre_args if card.pre_args is not None else card.args, card.old_text, s.cwd)   # diff 항목
+                if diff is not None:                         # 편집 도구면
+                    content.append(diff)                    # diff 먼저
+            if text:                                         # 글이 있으면
+                content.append(convert.text_content(str(text)))   # 결과 글
+            await self.conn.session_update(session_id=s.id, update=update_tool_call(tcid, status="completed" if ok else "failed",   # tool_call_update 알림 보냄
+                                                                                    content=content or None, raw_output=text))   # 내용·원문 결과
+
+        self._enqueue(send)                                  # 순서대로 보냄
         if ok and name == "Checklist" and card is not None and isinstance(card.args, dict):   # Checklist 성공
             self._update(s, update_plan(convert.checklist_to_plan(card.args.get("checklist"))))   # plan 알림 보냄
 
     # ───────── 승인(ask_user) → session/request_permission ─────────
-    async def _race(self, s: AcpSession, coro) -> Any:       # 요청과 중단 중 먼저 끝나는 것
-        """IDE 응답을 기다리다 중단 신호가 오면 요청을 버리고 None."""
+    async def _check(self, s: AcpSession, tool: Any, args: Any) -> str:   # 실행 시점 권한 판정(루프가 await)
+        """도구 카드(tool_start 직후 줄 선 알림 — Write 원래 내용 읽기 포함)를 먼저 다 보낸 뒤 판정 → 도구가 실행되기 전에 원래 내용이 확정된다."""
+        await self.flush()                                   # 카드 먼저
+        return s.perms.check(tool, args)                     # allow|ask|exclude
+
+    async def _race(self, s: AcpSession, coro) -> Any:       # 요청과 취소 중 먼저 끝나는 것
+        """IDE 응답을 기다리다 session/cancel 이 오면 요청을 버리고 None(3번 거부의 중단 신호로는 풀지 않음 — cn은 다음 승인도 띄움)."""
         task = asyncio.ensure_future(coro)                   # 요청 작업
-        waiter = asyncio.ensure_future(s.signal.wait())      # 중단 기다림
+        waiter = asyncio.ensure_future(s.cancel_ev.wait())   # 취소 기다림
         try:                                                # 둘 중 하나
             done, _ = await asyncio.wait({task, waiter}, return_when=asyncio.FIRST_COMPLETED)   # 먼저 끝나는 것
         finally:                                            # 정리
@@ -459,8 +486,9 @@ class NcnAgent:                                             # acp Agent 구현
         if s is None:                                        # 세션 밖(있을 수 없음)
             return "reject"                                  # 거부
         await self.flush()                                   # 도구 카드가 먼저 도착하게
-        if s.signal.aborted:                                 # 이미 멈춘 턴(앞 도구에서 3번 선택·취소)
+        if s.cancel_requested:                               # session/cancel 을 받은 턴
             return "reject"                                  # 묻지 않고 거부
+        # 앞 도구에서 3번(아니오)을 골랐어도 cn 대화형은 같은 묶음의 다음 도구 승인을 또 띄운다(executeStreamedToolCalls 권한 단계는 중단 신호를 보지 않음)
         card = s.cards.get(tool_call_id)                     # 카드
         old = card.old_text if card is not None else None    # Write 원래 내용
         diff = convert.edit_diff(name, args, old, s.cwd)      # 바뀔 내용(Edit·MultiEdit 는 사전 처리 인자)
@@ -481,8 +509,9 @@ class NcnAgent:                                             # acp Agent 구현
                 s.perms.add_always_allow(name, args)         # permissions.yaml allow 에 규칙 추가 후 다시 읽기
             self._update(s, update_tool_call(tool_call_id, status="in_progress"))   # 실행 중
             return "allow"                                   # 승인
-        s.signal.abort()                                     # 3: 응답 중단(useChat.ts stopStream)
-        s.history.add_system_message(convert.TOOL_CANCELED_SYSTEM_MESSAGE)   # 기록에 system 글(다음 요청에 들어감)
+        if not s.rejected:                                   # 이 턴의 첫 3번 선택만(cn: 중단 뒤 isWaitingForResponse=false 라 두 번째부터는 중단·system 글 없음)
+            s.signal.abort()                                 # 3: 응답 중단(useChat.ts stopStream)
+            s.history.add_system_message(convert.TOOL_CANCELED_SYSTEM_MESSAGE)   # 기록에 system 글(다음 요청에 들어감)
         s.rejected = True                                    # 거부로 멈춤 표시
         return "reject"                                      # 거부 → "Permission denied by user"
 
