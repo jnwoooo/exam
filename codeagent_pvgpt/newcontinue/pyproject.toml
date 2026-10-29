@@ -4,7 +4,12 @@ name = "ncn"                                   # 명령 이름도 ncn
 version = "0.0.1"                              # P0 뼈대
 description = "Continue CLI(cn) 호환 하네스 + VS 2022 확장용 ACP stdio"
 requires-python = ">=3.10"                     # 하한 3.10 = 공식 mcp·ACP SDK 요구(계획 14-5). 개발 기준은 3.14
-dependencies = []                              # P1부터 추가(httpx·PyYAML·mcp·agent-client-protocol·tiktoken 등)
+dependencies = [                               # 실행 의존성(P2에서 mcp·agent-client-protocol 추가)
+    "httpx>=0.28.1",
+    "pathspec>=1.1.1",
+    "pyyaml>=6.0.3",
+    "tiktoken>=0.14.0",
+]                                              # httpx=LLM 호출, pyyaml=설정, tiktoken=토큰 세기, pathspec=gitignore식 판정
 
 [project.scripts]
 ncn = "ncn.__main__:main"                      # uv run ncn

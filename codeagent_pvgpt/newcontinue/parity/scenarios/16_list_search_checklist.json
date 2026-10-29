@@ -1,0 +1,40 @@
+{
+  "name": "16_list_search_checklist",
+  "description": "List·Checklist 결과 글",
+  "workspace": {
+    "files": {
+      "src/a.py": "x=1\n",
+      "README.md": "# shop\n"
+    }
+  },
+  "prompt": "폴더 보여줘",
+  "args": [],
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "List",
+          "arguments": {
+            "dirpath": "."
+          }
+        },
+        {
+          "name": "Checklist",
+          "arguments": {
+            "checklist": "- [ ] a\n- [x] b"
+          }
+        }
+      ]
+    },
+    {
+      "content": "보여드렸습니다."
+    }
+  ],
+  "expect": {
+    "files": {
+      "README.md": "# shop\n",
+      "src/a.py": "x=1\n"
+    },
+    "requests": 2
+  }
+}

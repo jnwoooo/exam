@@ -1,0 +1,29 @@
+{
+  "name": "09_bash_dangerous",
+  "description": "위험 명령(rm -rf /) 차단 — disabled → 정책 거부 후 턴 종료 (추가 응답을 준비하지 않음 — 요청이 더 가면 요청 수 불일치로 드러남)",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "전부 지워줘",
+  "args": [],
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "Bash",
+          "arguments": {
+            "command": "rm -rf /"
+          }
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 1
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "name": "10_edit_not_found",
+  "description": "Edit 실패(old_string 없음) 오류 글(--auto)",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "할인율을 바꿔줘",
+  "args": [
+    "--auto"
+  ],
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "Read",
+          "arguments": {
+            "filepath": "coupon.py"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "Edit",
+          "arguments": {
+            "file_path": "coupon.py",
+            "old_string": "price * 0.5",
+            "new_string": "price * 0.8"
+          }
+        }
+      ]
+    },
+    {
+      "content": "찾지 못했습니다."
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 3
+  }
+}

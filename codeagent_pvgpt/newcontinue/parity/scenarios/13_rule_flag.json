@@ -1,0 +1,25 @@
+{
+  "name": "13_rule_flag",
+  "description": "--rule 글 규칙 — 시스템 메시지 userRules(설정 주입 규칙과 중복 여부)",
+  "workspace": {
+    "files": {
+      "README.md": "# shop\n"
+    }
+  },
+  "prompt": "안녕",
+  "args": [
+    "--rule",
+    "Always answer briefly."
+  ],
+  "llm": [
+    {
+      "content": "네."
+    }
+  ],
+  "expect": {
+    "files": {
+      "README.md": "# shop\n"
+    },
+    "requests": 1
+  }
+}

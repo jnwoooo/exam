@@ -1,0 +1,40 @@
+{
+  "name": "11_parallel_read",
+  "description": "한 응답에 Read 2개 — 결과 순서·출력 한도 나눔",
+  "workspace": {
+    "files": {
+      "a.txt": "alpha\n",
+      "b.txt": "beta\n"
+    }
+  },
+  "prompt": "a.txt와 b.txt를 읽어줘",
+  "args": [],
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "Read",
+          "arguments": {
+            "filepath": "a.txt"
+          }
+        },
+        {
+          "name": "Read",
+          "arguments": {
+            "filepath": "b.txt"
+          }
+        }
+      ]
+    },
+    {
+      "content": "alpha와 beta입니다."
+    }
+  ],
+  "expect": {
+    "files": {
+      "a.txt": "alpha\n",
+      "b.txt": "beta\n"
+    },
+    "requests": 2
+  }
+}

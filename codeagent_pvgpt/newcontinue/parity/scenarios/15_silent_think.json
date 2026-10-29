@@ -1,0 +1,24 @@
+{
+  "name": "15_silent_think",
+  "description": "--silent — <think> 제거·빈 줄 줄이기",
+  "workspace": {
+    "files": {
+      "README.md": "# shop\n"
+    }
+  },
+  "prompt": "생각하고 답해줘",
+  "args": [
+    "--silent"
+  ],
+  "llm": [
+    {
+      "content": "<think>음...\n고민</think>\n\n\n\n답입니다.\n"
+    }
+  ],
+  "expect": {
+    "files": {
+      "README.md": "# shop\n"
+    },
+    "requests": 1
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "12_format_json",
+  "description": "--format json — 시스템 메시지 JSON 지시 + JSON 아닌 답 감싸기",
+  "workspace": {
+    "files": {
+      "README.md": "# shop\n"
+    }
+  },
+  "prompt": "한 줄로 답해줘",
+  "args": [
+    "--format",
+    "json"
+  ],
+  "llm": [
+    {
+      "content": "안녕하세요"
+    }
+  ],
+  "expect": {
+    "files": {
+      "README.md": "# shop\n"
+    },
+    "requests": 1
+  }
+}

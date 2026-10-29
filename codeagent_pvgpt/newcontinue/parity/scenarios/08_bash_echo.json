@@ -1,0 +1,32 @@
+{
+  "name": "08_bash_echo",
+  "description": "Bash 실행(결정적 명령 echo hi) 결과 글",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "echo hi 실행해줘",
+  "args": [],
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "Bash",
+          "arguments": {
+            "command": "echo hi"
+          }
+        }
+      ]
+    },
+    {
+      "content": "hi가 출력됐습니다."
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 2
+  }
+}

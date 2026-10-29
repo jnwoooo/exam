@@ -166,13 +166,18 @@ def check_expect(scen: dict, res: dict) -> list[str]:
     return errs
 
 
+def absolutize(cmd: list[str]) -> list[str]:
+    """명령 속 상대 경로(지금 폴더에 실제로 있는 것)를 절대 경로로 — 하네스는 임시 작업 폴더에서 실행되므로."""
+    return [str(Path(c).resolve()) if not c.startswith("-") and Path(c).is_file() else c for c in cmd]   # 파일만(폴더 이름 ncn 등은 그대로)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="cn ↔ ncn 차등 시험")
     ap.add_argument("--cn", help='cn 실행 명령(예: "node .ref/continue/extensions/cli/dist/cn.js")')
     ap.add_argument("--ncn", help='ncn 실행 명령(예: "uv run ncn")')
     ap.add_argument("names", nargs="*", help="시나리오 이름(비우면 전부)")
     a = ap.parse_args(argv)
-    harnesses = {k: shlex.split(v) for k, v in (("cn", a.cn), ("ncn", a.ncn)) if v}   # 돌릴 하네스
+    harnesses = {k: absolutize(shlex.split(v)) for k, v in (("cn", a.cn), ("ncn", a.ncn)) if v}   # 돌릴 하네스
     if not harnesses:
         ap.error("--cn 또는 --ncn 중 하나 이상 필요")
     files = sorted(SCEN_DIR.glob("*.json"))

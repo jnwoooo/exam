@@ -1,0 +1,27 @@
+{
+  "name": "14_exit_tool",
+  "description": "Exit 도구 — 종료 코드 1, 출력 없음 (추가 응답을 준비하지 않음 — 요청이 더 가면 요청 수 불일치로 드러남)",
+  "workspace": {
+    "files": {
+      "README.md": "# shop\n"
+    }
+  },
+  "prompt": "실패로 끝내줘",
+  "args": [],
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "Exit",
+          "arguments": {}
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "files": {
+      "README.md": "# shop\n"
+    },
+    "requests": 1
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "04_unknown_tool",
+  "description": "존재하지 않는 도구 호출 — 'Tool {name} not found' 글",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "도구를 써줘",
+  "args": [],
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "NoSuchTool",
+          "arguments": {
+            "x": 1
+          }
+        }
+      ]
+    },
+    {
+      "content": "그런 도구는 없습니다."
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 2
+  }
+}

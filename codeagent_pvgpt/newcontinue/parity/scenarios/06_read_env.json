@@ -1,0 +1,33 @@
+{
+  "name": "06_read_env",
+  "description": "민감 파일(.env) Read 거부 글",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n",
+      ".env": "PARITY_SECRET=abc\n"
+    }
+  },
+  "prompt": ".env를 읽어줘",
+  "args": [],
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "Read",
+          "arguments": {
+            "filepath": ".env"
+          }
+        }
+      ]
+    },
+    {
+      "content": "읽을 수 없습니다."
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 2
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "07_write_headless_ask",
+  "description": "헤드리스 Write(ask → 목록에 없음)를 억지로 호출 — 정책 거부 후 턴 종료 (추가 응답을 준비하지 않음 — 요청이 더 가면 요청 수 불일치로 드러남)",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "new.txt를 만들어줘",
+  "args": [],
+  "llm": [
+    {
+      "content": "파일을 만들겠습니다.",
+      "tool_calls": [
+        {
+          "name": "Write",
+          "arguments": {
+            "filepath": "new.txt",
+            "content": "hi\n"
+          }
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 1
+  }
+}

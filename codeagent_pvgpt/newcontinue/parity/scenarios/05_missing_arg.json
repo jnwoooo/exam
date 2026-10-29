@@ -1,0 +1,30 @@
+{
+  "name": "05_missing_arg",
+  "description": "필수 인자 누락 — 'Required parameter ... missing' 글",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "파일을 읽어줘",
+  "args": [],
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "Read",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "content": "인자가 빠졌습니다."
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 2
+  }
+}
