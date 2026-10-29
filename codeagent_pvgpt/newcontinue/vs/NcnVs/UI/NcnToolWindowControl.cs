@@ -159,7 +159,9 @@ namespace NcnVs.UI                                                  // 화면 �
             {
                 ProcessFactory = () => NcnProcess.Start(launch, pkg.Lifetime, line => pkg.Log.Write("[ncn] " + line)),   // 띄우기(재시작 때도)
                 Ide = new VsIdeBridge(pkg, pkg.Log),                // fs 위임(버퍼·저장)
+                #pragma warning disable VSTHRD001, VSTHRD110 // BeginInvoke 는 기다리지 않는(비동기) 예약이라 교착이 없고, 같은 우선순위 안에서 순서가 보장된다(JTF.RunAsync 는 순서 보장 없음 — 응답 조각 순서가 깨짐)
                 Post = a => dispatcher.BeginInvoke(DispatcherPriority.Normal, a),   // UI 스레드로(순서 보장)
+                #pragma warning restore VSTHRD001, VSTHRD110
                 Log = pkg.Log.Write,                                // 로그
             });
             Bind(_session);                                         // 화면 연결
@@ -226,7 +228,9 @@ namespace NcnVs.UI                                                  // 화면 �
                     foreach (var it in _session.State.Items) _list.Children.Add(ItemViews.Create(it, this));   // 전체
                     break;                                          // 끝
             }
+            #pragma warning disable VSTHRD001, VSTHRD110 // BeginInvoke 는 기다리지 않는(비동기) 예약이라 교착이 없고, 같은 우선순위 안에서 순서가 보장된다(JTF.RunAsync 는 순서 보장 없음 — 응답 조각 순서가 깨짐)
             if (atBottom) Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() => _scroll.ScrollToEnd()));   // 따라 내려감
+            #pragma warning restore VSTHRD001, VSTHRD110
         }
 
         private void RenderPlan()                                   // 계획 그리기

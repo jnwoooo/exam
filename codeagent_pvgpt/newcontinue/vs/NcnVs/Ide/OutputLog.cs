@@ -56,7 +56,9 @@ namespace NcnVs.Ide                                                 // IDE 연�
             {
                 try { _file?.WriteLine(line); } catch { }           // 파일
             }
+            #pragma warning disable VSTHRD010 // OutputStringThreadSafe 는 문서상 어느 스레드에서나 부를 수 있는 함수(로그는 백그라운드 스레드에서도 쓴다)
             try { _pane?.OutputStringThreadSafe(line + Environment.NewLine); } catch { }   // 출력 창(스레드 안전 함수)
+            #pragma warning restore VSTHRD010
         }
 
         public void Dispose()                                       // 정리

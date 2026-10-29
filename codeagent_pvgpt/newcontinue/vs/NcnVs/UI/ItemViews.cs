@@ -74,7 +74,9 @@ namespace NcnVs.UI                                                  // 화면 �
             {
                 if (scheduled) return;                              // 이미 예약
                 scheduled = true;                                   // 예약
+                #pragma warning disable VSTHRD001, VSTHRD110 // BeginInvoke 는 기다리지 않는(비동기) 예약이라 교착이 없고, 같은 우선순위 안에서 순서가 보장된다(JTF.RunAsync 는 순서 보장 없음 — 응답 조각 순서가 깨짐)
                 box.Dispatcher.BeginInvoke(DispatcherPriority.Background, render);   // 한가할 때 한 번(조각 여러 개를 묶어 그림)
+                #pragma warning restore VSTHRD001, VSTHRD110
             };
             AddCopyMenu(box, () => a.Text);                         // 복사(마크다운 원문)
             return box;                                             // 결과
