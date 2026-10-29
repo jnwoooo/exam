@@ -1,0 +1,12 @@
+# vs/.gitignore — 빌드 산출물(모든 프로젝트)
+bin/
+obj/
+# VS 사용자 파일
+.vs/
+*.user
+# 시험 결과
+TestResults/
+# 갤러리 생성물(로컬 시험)
+gallery/out/
+# 파이썬 캐시
+__pycache__/

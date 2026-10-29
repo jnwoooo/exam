@@ -1,0 +1,124 @@
+# .github/workflows/ncn-vsix.yml — ncn VS 2022 확장(VSIX) 빌드: ncn.exe(PyInstaller onedir) → Core 시험(+실제 ncn 통합) → VSIX(msbuild) → 아티팩트
+# 이 Mac 개발 환경에는 .NET·VS 가 없으므로 빌드·시험은 여기(Windows 러너)에서 한다. 결과 zip 은 사용자가 현장 파일 서버로 반입(계획 14-6).
+name: ncn-vsix                                                   # 워크플로 이름
+
+on:                                                              # 언제 도는가
+  push:                                                          # 푸시
+    branches: ['**']                                             # 모든 가지(아래 paths 에 걸릴 때만)
+    paths:                                                       # 이 경로가 바뀐 푸시만(태그 푸시에는 paths 가 적용되지 않음)
+      - 'codeagent_pvgpt/newcontinue/vs/**'                      # 확장 소스
+      - 'codeagent_pvgpt/newcontinue/packaging/**'               # ncn.exe 빌드 스크립트
+      - '.github/workflows/ncn-vsix.yml'                         # 이 파일
+    tags: ['ncn-v*']                                             # 배포 태그(예: ncn-v0.1.0)
+  workflow_dispatch: {}                                          # 손으로 실행
+
+permissions:                                                     # 토큰 권한
+  contents: read                                                 # 읽기만
+
+concurrency:                                                     # 같은 가지 중복 실행 정리
+  group: ncn-vsix-${{ github.ref }}                              # 가지·태그별
+  cancel-in-progress: true                                       # 앞 실행 취소
+
+jobs:                                                            # 작업들
+  vsix:                                                          # VSIX 작업
+    runs-on: windows-latest                                      # Windows 러너(VS 2022 + VSSDK)
+    timeout-minutes: 60                                          # 한도
+    defaults:                                                    # 기본값
+      run:                                                       # run 단계
+        shell: pwsh                                              # PowerShell 7
+    env:                                                         # 공용 환경변수
+      NCN_ROOT: codeagent_pvgpt/newcontinue                      # ncn 프로젝트 폴더
+      DOTNET_NOLOGO: '1'                                         # dotnet 안내 끔
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'                           # 텔레메트리 끔
+    steps:                                                       # 단계들
+      - name: 소스 받기                                           # checkout
+        uses: actions/checkout@v4                                # 저장소
+
+      - name: uv 설치                                            # build_win.ps1 이 uv 로 파이썬(3.14)·PyInstaller 를 받음
+        uses: astral-sh/setup-uv@v6                              # uv
+
+      - name: ncn.exe 빌드(packaging/build_win.ps1 -NoZip)       # 의존: 이 스크립트가 없으면 실패
+        run: |
+          # 스크립트 확인(다른 작업자 담당 — 없으면 VSIX 에 ncn 을 넣을 수 없으므로 실패)
+          $script = Join-Path $env:NCN_ROOT 'packaging/build_win.ps1'
+          if (-not (Test-Path $script)) { Write-Error "packaging/build_win.ps1 이 없습니다: $script"; exit 1 }
+          # 출력 폴더(러너 임시 폴더)
+          $dist = Join-Path $env:RUNNER_TEMP 'ncn-dist'
+          # onedir 만 빌드(<dist>\ncn\ncn.exe + _internal)
+          & pwsh -NoProfile -File $script $dist -NoZip
+          # 실패 전달
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # 결과 확인(경로는 build_win.ps1 머리 주석에 고정)
+          $exe = Join-Path $dist 'ncn\ncn.exe'
+          if (-not (Test-Path $exe)) { Write-Error "ncn.exe 가 없습니다: $exe"; exit 1 }
+          # 다음 단계로 넘김
+          "NCN_DIST=$dist" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "NCN_EXE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: .NET 8 SDK                                         # Core 시험용
+        uses: actions/setup-dotnet@v4                            # dotnet
+        with:                                                    # 설정
+          dotnet-version: '8.0.x'                                # 8.0
+
+      - name: Core 시험(가짜 에이전트 + 실제 ncn initialize·session/new)   # NCN_EXE 가 있으므로 통합 시험도 돈다
+        run: |
+          # 시험 결과 폴더
+          $results = Join-Path $env:RUNNER_TEMP 'test-results'
+          # 시험 실행(trx 로 남김)
+          dotnet test (Join-Path $env:NCN_ROOT 'vs/NcnVs.Core.Tests/NcnVs.Core.Tests.csproj') -c Release --logger "trx;LogFileName=core.trx" --logger "console;verbosity=normal" --results-directory $results
+          # 실패 전달
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: msbuild 준비                                       # VS 의 msbuild 를 PATH 에
+        uses: microsoft/setup-msbuild@v2                         # setup-msbuild
+
+      - name: VSIX 빌드                                          # 고전 VSIX 프로젝트(VSSDK BuildTools 패키지)
+        run: |
+          # 복원 + 빌드(ncn 폴더를 VSIX 의 ncn\ 아래로)
+          msbuild (Join-Path $env:NCN_ROOT 'vs/NcnVs/NcnVs.csproj') /restore /p:Configuration=Release "/p:NcnDistDir=$env:NCN_DIST" /p:DeployExtension=false /v:minimal /nologo
+          # 실패 전달
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: VSIX 내용 확인 + 갤러리 피드 예시                    # 필수 파일이 들어갔는지
+        run: |
+          # 만들어진 VSIX
+          $vsix = Get-ChildItem (Join-Path $env:NCN_ROOT 'vs/NcnVs/bin/Release') -Filter *.vsix | Select-Object -First 1
+          if (-not $vsix) { Write-Error 'VSIX 가 만들어지지 않았습니다'; exit 1 }
+          # zip 항목 목록
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($vsix.FullName)
+          $names = @($zip.Entries | ForEach-Object { $_.FullName })
+          $zip.Dispose()
+          # 꼭 있어야 할 것
+          foreach ($need in @('extension.vsixmanifest', 'NcnVs.dll', 'NcnVs.Core.dll', 'NcnVs.pkgdef', 'ncn/ncn.exe')) {
+            if ($names -notcontains $need) { Write-Error "VSIX 에 $need 가 없습니다"; exit 1 }
+          }
+          # 들어가면 안 되는 것(VS 가 이미 가진 Newtonsoft.Json)
+          if ($names -contains 'Newtonsoft.Json.dll') { Write-Warning 'Newtonsoft.Json.dll 이 VSIX 에 들어갔습니다(SuppressFromVsix 확인)' }
+          # 크기·항목 수 기록
+          Write-Host ("VSIX: {0} ({1:N0} 바이트, 항목 {2}개)" -f $vsix.Name, $vsix.Length, $names.Count)
+          # 아티팩트 폴더에 모으기
+          $out = Join-Path $env:RUNNER_TEMP 'vsix-out'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          Copy-Item $vsix.FullName $out
+          # 사설 갤러리 피드 예시(현장에서는 실제 UNC 경로로 다시 만든다 — vs/README.md)
+          uv run --no-project python (Join-Path $env:NCN_ROOT 'vs/gallery/make_feed.py') $out --base '\\fileserver\share\ncn-vs' --out (Join-Path $out 'feed.example.xml')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # 피드 스크립트도 같이(현장 반입용)
+          Copy-Item (Join-Path $env:NCN_ROOT 'vs/gallery/make_feed.py') $out
+          "VSIX_OUT=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 아티팩트 올리기(VSIX + 피드 예시)                    # 내려받아 반입
+        uses: actions/upload-artifact@v4                         # 업로드
+        with:                                                    # 설정
+          name: ncn-vsix-${{ github.run_number }}-${{ github.sha }}   # 이름(번호·커밋 — 가지 이름의 / 는 이름에 못 씀)
+          path: ${{ env.VSIX_OUT }}                              # 폴더
+          if-no-files-found: error                               # 없으면 실패
+
+      - name: 시험 결과 올리기                                     # 실패해도 올림
+        if: always()                                             # 항상
+        uses: actions/upload-artifact@v4                         # 업로드
+        with:                                                    # 설정
+          name: ncn-vsix-test-results-${{ github.run_number }}   # 이름
+          path: ${{ runner.temp }}/test-results                  # trx
+          if-no-files-found: ignore                              # 없으면 무시

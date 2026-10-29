@@ -1,0 +1,25 @@
+<!-- vs/NcnVs.Core/NcnVs.Core.csproj — VS 의존 없는 ACP 클라이언트·세션 상태·ncn 프로세스 호스트(단위 시험 대상) -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 빌드 기본 속성 -->
+  <PropertyGroup>
+    <!-- net472(VSIX)·net8.0(시험) 둘 다에서 쓰려고 netstandard2.0 -->
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <!-- 문법은 최신 컴파일러 기준(런타임 기능이 필요한 문법은 쓰지 않는다) -->
+    <LangVersion>latest</LangVersion>
+    <!-- 루트 이름공간 -->
+    <RootNamespace>NcnVs.Core</RootNamespace>
+    <!-- 어셈블리 이름 -->
+    <AssemblyName>NcnVs.Core</AssemblyName>
+    <!-- 버전(VSIX 매니페스트와 맞춤) -->
+    <Version>0.1.0</Version>
+    <!-- XML 문서 경고는 끈다 -->
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+  <!-- 의존 패키지 -->
+  <ItemGroup>
+    <!-- JSON 은 Newtonsoft.Json 13.0.1: VS 2022 17.0 이 devenv 안에 13.0.0.0(파일 13.0.1) 을 이미 싣고 있어
+         같은 어셈블리 버전에 묶인다 → VSIX 에는 넣지 않고(NcnVs.csproj 의 SuppressFromVsix) 참조만 한다.
+         System.Text.Json 을 쓰면 System.Memory 등 의존 DLL 을 VSIX 에 같이 넣어야 하고 VS 쪽 버전과 겹칠 위험이 있다 -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+  </ItemGroup>
+</Project>

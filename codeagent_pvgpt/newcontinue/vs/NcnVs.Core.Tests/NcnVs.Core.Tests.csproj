@@ -1,0 +1,35 @@
+<!-- vs/NcnVs.Core.Tests/NcnVs.Core.Tests.csproj — NcnVs.Core 단위 시험(가짜 에이전트) + 실제 ncn 통합 시험 1개(NCN_EXE 있을 때만) -->
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- 빌드 기본 속성 -->
+  <PropertyGroup>
+    <!-- 시험은 .NET 8(CI: setup-dotnet 8.0.x) -->
+    <TargetFramework>net8.0</TargetFramework>
+    <!-- 최신 문법 -->
+    <LangVersion>latest</LangVersion>
+    <!-- 패키지로 내보내지 않음 -->
+    <IsPackable>false</IsPackable>
+    <!-- 시험 프로젝트 표시 -->
+    <IsTestProject>true</IsTestProject>
+    <!-- nullable 경고 끔(Core 와 같은 기준) -->
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  <!-- 시험 도구 패키지 -->
+  <ItemGroup>
+    <!-- 시험 호스트 -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <!-- xunit 2 -->
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <!-- dotnet test 실행기(xunit 2 용 마지막 2.x) -->
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <!-- 실행기 자산 -->
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <!-- 전이 안 함 -->
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+  <!-- 시험 대상 -->
+  <ItemGroup>
+    <!-- Core 참조 -->
+    <ProjectReference Include="..\NcnVs.Core\NcnVs.Core.csproj" />
+  </ItemGroup>
+</Project>

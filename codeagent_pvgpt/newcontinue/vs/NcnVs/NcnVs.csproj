@@ -1,0 +1,208 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- vs/NcnVs/NcnVs.csproj — VS 2022 확장(VSIX, net472, 고전 VSIX 프로젝트 형식 = VS 템플릿과 같은 형식). CI: msbuild /restore /p:NcnDistDir=<build_win.ps1 출력> -->
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- VS 도구 위치(Microsoft.VSSDK.BuildTools 패키지 props 가 패키지 안 경로로 다시 덮어씀) -->
+  <PropertyGroup>
+    <!-- 최소 VS 버전 -->
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <!-- 명령줄 msbuild 에서 비어 있으면 최소 버전 -->
+    <VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">17.0</VisualStudioVersion>
+    <!-- VS 설치의 VSSDK 경로(패키지가 있으면 그쪽이 쓰임) -->
+    <VSToolsPath Condition="'$(VSToolsPath)' == ''">$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)</VSToolsPath>
+  </PropertyGroup>
+  <!-- 공통 props -->
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <!-- 프로젝트 기본 속성 -->
+  <PropertyGroup>
+    <!-- 기본 구성 -->
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <!-- 기본 플랫폼(AnyCPU: x64·arm64 VS 모두 로드) -->
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <!-- 스키마 버전 -->
+    <SchemaVersion>2.0</SchemaVersion>
+    <!-- VSIX 프로젝트 + C# 프로젝트 형식 GUID -->
+    <ProjectTypeGuids>{82b43b9b-a64c-4715-b499-d71e9ca2bd60};{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}</ProjectTypeGuids>
+    <!-- 프로젝트 GUID(NcnVs.sln 과 같음) -->
+    <ProjectGuid>{B9F684EE-2B46-408C-BE7B-A0861CA50B5D}</ProjectGuid>
+    <!-- 라이브러리 -->
+    <OutputType>Library</OutputType>
+    <!-- Properties 폴더 -->
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <!-- 이름공간 -->
+    <RootNamespace>NcnVs</RootNamespace>
+    <!-- 어셈블리 이름 -->
+    <AssemblyName>NcnVs</AssemblyName>
+    <!-- .NET Framework 4.7.2(VS 2022 in-proc, 계획 V9) -->
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <!-- 최신 C#(런타임 기능이 필요한 문법은 쓰지 않음) -->
+    <LangVersion>latest</LangVersion>
+    <!-- NuGet: PackageReference 형식 -->
+    <RestoreProjectStyle>PackageReference</RestoreProjectStyle>
+    <!-- pkgdef 생성(패키지 등록 특성 → pkgdef) -->
+    <GeneratePkgDefFile>true</GeneratePkgDefFile>
+    <!-- 코드베이스 등록(설치 폴더의 DLL 을 직접 로드) -->
+    <UseCodebase>true</UseCodebase>
+    <!-- 어셈블리를 VSIX 에 포함 -->
+    <IncludeAssemblyInVSIXContainer>true</IncludeAssemblyInVSIXContainer>
+    <!-- pdb 는 VSIX 에 넣지 않음 -->
+    <IncludeDebugSymbolsInVSIXContainer>false</IncludeDebugSymbolsInVSIXContainer>
+    <!-- 실험 인스턴스 배포에도 pdb 안 넣음 -->
+    <IncludeDebugSymbolsInLocalVSDeploymentContainer>false</IncludeDebugSymbolsInLocalVSDeploymentContainer>
+    <!-- 출력 폴더로 복사 -->
+    <CopyBuildOutputToOutputDirectory>true</CopyBuildOutputToOutputDirectory>
+    <!-- pdb 도 출력 폴더로 -->
+    <CopyOutputSymbolsToOutputDirectory>true</CopyOutputSymbolsToOutputDirectory>
+    <!-- F5: 실험 인스턴스로 devenv 실행 -->
+    <StartAction>Program</StartAction>
+    <!-- devenv 경로 -->
+    <StartProgram Condition="'$(DevEnvDir)' != ''">$(DevEnvDir)devenv.exe</StartProgram>
+    <!-- 실험 인스턴스 -->
+    <StartArguments>/rootsuffix Exp</StartArguments>
+    <!-- VS 밖(명령줄·CI) 빌드에서는 실험 인스턴스에 배포하지 않음 -->
+    <DeployExtension Condition="'$(BuildingInsideVisualStudio)' != 'true'">false</DeployExtension>
+    <!-- ncn onedir 결과 폴더(그 안의 ncn\ncn.exe). CI 는 /p:NcnDistDir=… 로 넘긴다 -->
+    <NcnDistDir Condition="'$(NcnDistDir)' == ''">$(MSBuildProjectDirectory)\..\..\packaging\dist</NcnDistDir>
+  </PropertyGroup>
+  <!-- Debug 구성 -->
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <!-- 디버그 기호 -->
+    <DebugSymbols>true</DebugSymbols>
+    <!-- 전체 pdb -->
+    <DebugType>full</DebugType>
+    <!-- 최적화 끔 -->
+    <Optimize>false</Optimize>
+    <!-- 출력 폴더 -->
+    <OutputPath>bin\Debug\</OutputPath>
+    <!-- 조건부 기호 -->
+    <DefineConstants>DEBUG;TRACE</DefineConstants>
+    <!-- 오류 보고 -->
+    <ErrorReport>prompt</ErrorReport>
+    <!-- 경고 수준 -->
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <!-- Release 구성 -->
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <!-- pdb 만 -->
+    <DebugType>pdbonly</DebugType>
+    <!-- 최적화 -->
+    <Optimize>true</Optimize>
+    <!-- 출력 폴더 -->
+    <OutputPath>bin\Release\</OutputPath>
+    <!-- 조건부 기호 -->
+    <DefineConstants>TRACE</DefineConstants>
+    <!-- 오류 보고 -->
+    <ErrorReport>prompt</ErrorReport>
+    <!-- 경고 수준 -->
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <!-- 소스 파일 -->
+  <ItemGroup>
+    <!-- 어셈블리 정보 -->
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <!-- 패키지 -->
+    <Compile Include="NcnPackage.cs" />
+    <!-- 도구 창 틀 -->
+    <Compile Include="NcnToolWindow.cs" />
+    <!-- 옵션 페이지 -->
+    <Compile Include="NcnOptionsPage.cs" />
+    <!-- 로그 -->
+    <Compile Include="Ide\OutputLog.cs" />
+    <!-- VS 맥락 -->
+    <Compile Include="Ide\VsContext.cs" />
+    <!-- fs 위임 -->
+    <Compile Include="Ide\VsIdeBridge.cs" />
+    <!-- 비교 창 -->
+    <Compile Include="Ide\VsDiffPresenter.cs" />
+    <!-- 마크다운·테마 -->
+    <Compile Include="UI\MarkdownView.cs" />
+    <!-- 항목 화면 -->
+    <Compile Include="UI\ItemViews.cs" />
+    <!-- 도구 창 화면 -->
+    <Compile Include="UI\NcnToolWindowControl.cs" />
+  </ItemGroup>
+  <!-- 매니페스트·메뉴 -->
+  <ItemGroup>
+    <!-- VSIX 매니페스트 -->
+    <None Include="source.extension.vsixmanifest">
+      <!-- 디자이너 표시 -->
+      <SubType>Designer</SubType>
+    </None>
+    <!-- 메뉴 명령 표 → Menus.ctmenu 리소스 -->
+    <VSCTCompile Include="NcnVsPackage.vsct">
+      <!-- ProvideMenuResource("Menus.ctmenu", 1) 과 같은 이름 -->
+      <ResourceName>Menus.ctmenu</ResourceName>
+    </VSCTCompile>
+  </ItemGroup>
+  <!-- .NET Framework 참조 -->
+  <ItemGroup>
+    <!-- 기본 -->
+    <Reference Include="System" />
+    <!-- LINQ 등 -->
+    <Reference Include="System.Core" />
+    <!-- 디자인 시간(DialogPage 속성 표) -->
+    <Reference Include="System.Design" />
+    <!-- WPF -->
+    <Reference Include="PresentationCore" />
+    <!-- WPF -->
+    <Reference Include="PresentationFramework" />
+    <!-- WPF -->
+    <Reference Include="WindowsBase" />
+    <!-- WPF XAML 형식 -->
+    <Reference Include="System.Xaml" />
+  </ItemGroup>
+  <!-- NuGet 패키지 -->
+  <ItemGroup>
+    <!-- VS SDK 17.0(VS 2022 17.0 부터 로드되게 가장 낮은 버전으로 컴파일). 런타임 DLL 은 VS 에 있으므로 제외 -->
+    <PackageReference Include="Microsoft.VisualStudio.SDK" Version="17.0.32112.339" ExcludeAssets="runtime" />
+    <!-- VSIX 빌드 도구(VSCT·pkgdef·VSIX 압축). 빌드 도구 버전은 대상 VS 버전과 무관 -->
+    <PackageReference Include="Microsoft.VSSDK.BuildTools" Version="17.14.2120">
+      <!-- 빌드 자산만 -->
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <!-- 전이 안 함 -->
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <!-- .NET Framework 4.7.2 참조 어셈블리(러너에 4.7.2 타기팅 팩이 없어도 빌드) -->
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3">
+      <!-- 빌드에만 -->
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+  <!-- 프로젝트 참조 -->
+  <ItemGroup>
+    <!-- VS 의존 없는 핵심(netstandard2.0) -->
+    <ProjectReference Include="..\NcnVs.Core\NcnVs.Core.csproj">
+      <!-- 프로젝트 GUID -->
+      <Project>{2EA25B20-7F2A-4A41-A081-012F6376AAAF}</Project>
+      <!-- 이름 -->
+      <Name>NcnVs.Core</Name>
+    </ProjectReference>
+  </ItemGroup>
+  <!-- VSIX 에서 뺄 DLL: Newtonsoft.Json 은 VS 가 이미 13.0.0.0 을 싣고 있다(NcnVs.Core.csproj 주석) -->
+  <ItemGroup>
+    <!-- 빼기 -->
+    <SuppressFromVsix Include="Newtonsoft.Json.dll" />
+  </ItemGroup>
+  <!-- ncn(PyInstaller onedir) 폴더 전체를 VSIX 의 ncn\ 아래에 넣는다(있을 때만) -->
+  <ItemGroup Condition="Exists('$(NcnDistDir)\ncn\ncn.exe')">
+    <!-- 폴더 안 모든 파일 -->
+    <Content Include="$(NcnDistDir)\ncn\**\*">
+      <!-- 프로젝트 안 보이는 위치 -->
+      <Link>ncn\%(RecursiveDir)%(Filename)%(Extension)</Link>
+      <!-- VSIX 에 포함 -->
+      <IncludeInVSIX>true</IncludeInVSIX>
+      <!-- VSIX 안 하위 폴더(ncn\_internal\… 구조 유지) -->
+      <VSIXSubPath>ncn\%(RecursiveDir)</VSIXSubPath>
+      <!-- 출력 폴더에는 복사하지 않음(VSIX 만) -->
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+  <!-- C# 빌드 -->
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- VSSDK 빌드(VSCT·pkgdef·VSIX) — VSToolsPath 는 BuildTools 패키지 안 -->
+  <Import Project="$(VSToolsPath)\VSSDK\Microsoft.VsSDK.targets" Condition="'$(VSToolsPath)' != ''" />
+  <!-- ncn 폴더가 없으면 경고만(VSIX 는 만들어지지만 ncn.exe 경로를 옵션에서 지정해야 함) -->
+  <Target Name="NcnWarnMissingDist" BeforeTargets="Build" Condition="!Exists('$(NcnDistDir)\ncn\ncn.exe')">
+    <!-- 경고 -->
+    <Warning Text="ncn 실행 파일이 없습니다: $(NcnDistDir)\ncn\ncn.exe — VSIX 에 ncn 이 들어가지 않습니다(packaging\build_win.ps1 결과 폴더를 /p:NcnDistDir= 로 지정)." />
+  </Target>
+</Project>

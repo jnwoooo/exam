@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- vs/NcnVs/NcnVsPackage.vsct — 메뉴 명령 표: 보기 → 다른 창 → ncn, 도구 → ncn 에이전트 열기 (NcnPackage.cs 의 GUID·ID 와 같게) -->
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <!-- 표준 명령 ID(VSSDK inc) -->
+  <Extern href="stdidcmd.h" />
+  <!-- 셸 메뉴·그룹 ID(guidSHLMainMenu, IDM_VS_MENU_TOOLS, IDG_VS_WNDO_OTRWNDWS1) -->
+  <Extern href="vsshlids.h" />
+
+  <!-- 이 패키지의 명령들 -->
+  <Commands package="guidNcnPackage">
+    <!-- 그룹: 도구 메뉴 안 우리 묶음 -->
+    <Groups>
+      <!-- 도구 메뉴 아래 그룹(구분선으로 묶임) -->
+      <Group guid="guidNcnCmdSet" id="ToolsGroup" priority="0x0600">
+        <!-- 부모 = 도구 메뉴 -->
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_TOOLS" />
+      </Group>
+    </Groups>
+
+    <!-- 버튼(명령) -->
+    <Buttons>
+      <!-- 보기 → 다른 창 → ncn -->
+      <Button guid="guidNcnCmdSet" id="ShowWindowViewCmd" priority="0x0100" type="Button">
+        <!-- 부모 = 보기 → 다른 창 그룹 -->
+        <Parent guid="guidSHLMainMenu" id="IDG_VS_WNDO_OTRWNDWS1" />
+        <!-- 메뉴 글 -->
+        <Strings>
+          <!-- 버튼 글 -->
+          <ButtonText>ncn</ButtonText>
+        </Strings>
+      </Button>
+      <!-- 도구 → ncn 에이전트 열기 -->
+      <Button guid="guidNcnCmdSet" id="ShowWindowToolsCmd" priority="0x0100" type="Button">
+        <!-- 부모 = 위 그룹 -->
+        <Parent guid="guidNcnCmdSet" id="ToolsGroup" />
+        <!-- 메뉴 글 -->
+        <Strings>
+          <!-- 버튼 글 -->
+          <ButtonText>ncn 에이전트 열기</ButtonText>
+        </Strings>
+      </Button>
+    </Buttons>
+  </Commands>
+
+  <!-- 기호(GUID·ID) -->
+  <Symbols>
+    <!-- 패키지 GUID(NcnPackage.PackageGuidString) -->
+    <GuidSymbol name="guidNcnPackage" value="{df57f35a-6e02-467f-bc82-4b361c36f3a9}" />
+    <!-- 명령 집합 GUID(NcnPackage.CommandSet) -->
+    <GuidSymbol name="guidNcnCmdSet" value="{9719a81e-c84e-4dd5-a7ca-adc90464212f}">
+      <!-- 도구 메뉴 그룹 -->
+      <IDSymbol name="ToolsGroup" value="0x1020" />
+      <!-- 보기 메뉴 명령(ShowWindowViewCmdId) -->
+      <IDSymbol name="ShowWindowViewCmd" value="0x0100" />
+      <!-- 도구 메뉴 명령(ShowWindowToolsCmdId) -->
+      <IDSymbol name="ShowWindowToolsCmd" value="0x0101" />
+    </GuidSymbol>
+  </Symbols>
+</CommandTable>

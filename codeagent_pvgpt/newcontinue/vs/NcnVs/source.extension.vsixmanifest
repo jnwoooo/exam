@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- vs/NcnVs/source.extension.vsixmanifest — VSIX 매니페스트: VS 2022 17.0 이상(VS 2026 포함) Community/Pro/Enterprise, amd64·arm64, 서명 없음 (계획 14-2 V9·V10) -->
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011" xmlns:d="http://schemas.microsoft.com/developer/vsx-schema-design/2011">
+  <!-- 확장 정보(갤러리 피드 make_feed.py 가 Identity·DisplayName·Description 을 읽는다) -->
+  <Metadata>
+    <!-- 고유 id·버전(올릴 때마다 Version 을 올려야 VS 가 업데이트로 본다) -->
+    <Identity Id="ncn.vs.df57f35a-6e02-467f-bc82-4b361c36f3a9" Version="0.1.0" Language="en-US" Publisher="ncn" />
+    <!-- 표시 이름 -->
+    <DisplayName>ncn — Continue 호환 에이전트</DisplayName>
+    <!-- 설명 -->
+    <Description>ncn(Continue CLI 호환 하네스)을 ACP(stdio)로 띄워 VS 안에서 대화·도구 승인·비교 창·열린 문서 편집을 한다. ncn.exe 포함.</Description>
+    <!-- 검색 태그 -->
+    <Tags>ncn, continue, agent, acp, llm</Tags>
+  </Metadata>
+  <!-- 설치 대상: 버전 범위 [17.0,) 는 VS 2022 전부와 그 뒤(VS 2026 = 18.x) -->
+  <Installation>
+    <!-- Community, x64 -->
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,)">
+      <!-- 64비트 VS -->
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+    <!-- Community, ARM64 -->
+    <InstallationTarget Id="Microsoft.VisualStudio.Community" Version="[17.0,)">
+      <!-- ARM64 VS(ncn.exe 는 x64 라 에뮬레이션으로 돈다) -->
+      <ProductArchitecture>arm64</ProductArchitecture>
+    </InstallationTarget>
+    <!-- Professional, x64 -->
+    <InstallationTarget Id="Microsoft.VisualStudio.Pro" Version="[17.0,)">
+      <!-- 64비트 VS -->
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+    <!-- Professional, ARM64 -->
+    <InstallationTarget Id="Microsoft.VisualStudio.Pro" Version="[17.0,)">
+      <!-- ARM64 VS -->
+      <ProductArchitecture>arm64</ProductArchitecture>
+    </InstallationTarget>
+    <!-- Enterprise, x64 -->
+    <InstallationTarget Id="Microsoft.VisualStudio.Enterprise" Version="[17.0,)">
+      <!-- 64비트 VS -->
+      <ProductArchitecture>amd64</ProductArchitecture>
+    </InstallationTarget>
+    <!-- Enterprise, ARM64 -->
+    <InstallationTarget Id="Microsoft.VisualStudio.Enterprise" Version="[17.0,)">
+      <!-- ARM64 VS -->
+      <ProductArchitecture>arm64</ProductArchitecture>
+    </InstallationTarget>
+  </Installation>
+  <!-- 의존: .NET Framework 4.7.2 이상(VS 2022 에 이미 있음) -->
+  <Dependencies>
+    <!-- .NET Framework -->
+    <Dependency Id="Microsoft.Framework.NDP" DisplayName="Microsoft .NET Framework" d:Source="Manual" Version="[4.7.2,)" />
+  </Dependencies>
+  <!-- 필수 구성 요소: 핵심 편집기만(어떤 워크로드든 설치 가능) -->
+  <Prerequisites>
+    <!-- 핵심 편집기 -->
+    <Prerequisite Id="Microsoft.VisualStudio.Component.CoreEditor" Version="[17.0,)" DisplayName="Visual Studio core editor" />
+  </Prerequisites>
+  <!-- 내용: 패키지(pkgdef). ncn 폴더는 csproj 의 Content(IncludeInVSIX)로 들어간다 -->
+  <Assets>
+    <!-- VsPackage = 이 프로젝트의 pkgdef -->
+    <Asset Type="Microsoft.VisualStudio.VsPackage" d:Source="Project" d:ProjectName="%CurrentProject%" Path="|%CurrentProject%;PkgdefProjectOutputGroup|" />
+  </Assets>
+</PackageManifest>
