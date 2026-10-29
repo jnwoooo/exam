@@ -733,7 +733,7 @@ class InteractiveApp:                                        # 콘솔 대화형 
         session = history_manager_load(sid, self.environ)    # 세션
         from datetime import datetime, timezone              # 내보낸 시각
         payload = {"version": 1, "exportedAt": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"), "session": session}   # 원문 모양
-        with open(p, "w", encoding="utf-8") as fh:           # 쓰기
+        with open(p, "w", encoding="utf-8", newline="") as fh:   # 쓰기(줄바꿈 변환 없음 — Windows 에서도 Node 처럼 \n)
             fh.write(json.dumps(payload, ensure_ascii=False, indent=2))   # JSON.stringify(…, null, 2) 대응
         msg = f"Session exported to {p}"                     # 원문
         self.core.history.add_system_message(msg)            # 기록

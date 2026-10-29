@@ -142,7 +142,7 @@ def test_legacy_mode_flags():                               # 구형 모드 플�
 
 # ───────── 우선순위: CLI > permissions.yaml > 기본 ─────────
 def test_precedence_order(tmp_path):                        # 우선순위 시험
-    (tmp_path / "permissions.yaml").write_text("allow: [Write]\nexclude: ['Bash(rm*)']\n", encoding="utf-8")  # yaml 파일 준비
+    (tmp_path / "permissions.yaml").write_text("allow: [Write]\nexclude: ['Bash(rm*)']\n", encoding="utf-8", newline="")  # yaml 파일 준비
     pols = resolve_permission_precedence(global_dir=tmp_path, allow=["Read", "A"], ask=["Bash(npm *)"], exclude=["Write"])  # CLI 플래그와 yaml 병합
     assert [(p.tool, p.permission) for p in pols[:6]] == [("Write", "exclude"), ("Bash(npm *)", "ask"), ("Read", "allow"),  # 앞 여섯 개의 순서 확인
                                                          ("A", "allow"), ("Bash", "exclude"), ("Write", "allow")]  # CLI → yaml 순서
@@ -177,15 +177,15 @@ def test_yaml_config_to_policies_order():                   # yaml 설정 → �
 def test_load_permissions_yaml_validation(tmp_path):        # yaml 읽기 검증 시험
     f = tmp_path / "permissions.yaml"                       # 임시 yaml 경로
     assert load_permissions_yaml(f) is None                  # 없음
-    f.write_text("allow: [Read]\nask:\n", encoding="utf-8")  # null 값이 든 파일 쓰기
+    f.write_text("allow: [Read]\nask:\n", encoding="utf-8", newline="")  # null 값이 든 파일 쓰기
     assert load_permissions_yaml(f) == {"allow": ["Read"], "ask": None}   # null 값 허용
-    f.write_text("allow: [Read]\nother: 1\n", encoding="utf-8")  # 모르는 키 파일 쓰기
+    f.write_text("allow: [Read]\nother: 1\n", encoding="utf-8", newline="")  # 모르는 키 파일 쓰기
     assert load_permissions_yaml(f) is None                  # 모르는 키
-    f.write_text("allow: Read\n", encoding="utf-8")         # 목록이 아닌 값 쓰기
+    f.write_text("allow: Read\n", encoding="utf-8", newline="")         # 목록이 아닌 값 쓰기
     assert load_permissions_yaml(f) is None                  # 목록 아님
-    f.write_text("allow: [\n", encoding="utf-8")            # 잘못된 yaml 쓰기
+    f.write_text("allow: [\n", encoding="utf-8", newline="")            # 잘못된 yaml 쓰기
     assert load_permissions_yaml(f) is None                  # 해석 실패
-    f.write_text("", encoding="utf-8")                      # 빈 파일 쓰기
+    f.write_text("", encoding="utf-8", newline="")                      # 빈 파일 쓰기
     assert load_permissions_yaml(f) is None                  # 빈 파일
 
 
@@ -203,7 +203,7 @@ def test_generate_policy_rule(name, args, rule, cn_compat_env):  # 표의 각 �
 
 def test_add_policy_to_yaml_format(tmp_path):               # yaml 쓰기 형식 시험
     f = tmp_path / "permissions.yaml"                       # 임시 yaml 경로
-    f.write_text(DEFAULT_PERMISSIONS_YAML, encoding="utf-8")  # 기본 내용 쓰기
+    f.write_text(DEFAULT_PERMISSIONS_YAML, encoding="utf-8", newline="")  # 기본 내용 쓰기
     add_policy_to_yaml(f, "Bash(ls*)")                      # 규칙 추가
     add_policy_to_yaml(f, "*")                              # 와일드카드 규칙 추가
     add_policy_to_yaml(f, "Bash(ls*)")                       # 중복은 무시
@@ -241,7 +241,7 @@ def test_service_cli_flags_and_bash_pattern(tmp_path):      # CLI 플래그와 B
 
 
 def test_service_modes_and_cycle(tmp_path):                 # 모드 전환과 순환 시험
-    (tmp_path / "permissions.yaml").write_text("allow: [Write]\n", encoding="utf-8")  # yaml에 Write 허용
+    (tmp_path / "permissions.yaml").write_text("allow: [Write]\n", encoding="utf-8", newline="")  # yaml에 Write 허용
     svc = PermissionService(headless=False, global_dir=tmp_path, exclude=["Read"])  # Read를 CLI로 금지한 서비스
     before = list(svc.policies)                             # 원래 정책 백업
     assert svc.base_permission("Write") == "allow" and svc.base_permission("Read") == "exclude"  # 초기 권한 확인

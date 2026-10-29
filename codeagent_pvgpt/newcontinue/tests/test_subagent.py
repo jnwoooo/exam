@@ -107,10 +107,10 @@ def test_parse_ncn_settings_and_load(tmp_path):             # ncn.yaml 해석
     assert sa.parse_ncn_settings({"subagent_max_parallel": True}).subagent_max_parallel == 2   # 참거짓은 정수 아님 → 기본 2
     assert sa.parse_ncn_settings(["a"]) == sa.NcnSettings()  # 최상위가 목록이면 기본값
     assert sa.load_ncn_settings(tmp_path) == sa.NcnSettings()   # 파일 없음 → 기본(cn과 같게)
-    (tmp_path / "ncn.yaml").write_text("subagents:\n  runner:\n    tools: [Bash, Read]\nsubagent_max_parallel: 1\n", encoding="utf-8")   # 파일 작성
+    (tmp_path / "ncn.yaml").write_text("subagents:\n  runner:\n    tools: [Bash, Read]\nsubagent_max_parallel: 1\n", encoding="utf-8", newline="")   # 파일 작성
     got = sa.load_ncn_settings(tmp_path)                     # 읽기
     assert got.subagent_max_parallel == 1 and got.subagents["runner"].tools == ["Bash", "Read"]   # 반영
-    (tmp_path / "ncn.yaml").write_text("subagents: [\n", encoding="utf-8")   # 문법 오류
+    (tmp_path / "ncn.yaml").write_text("subagents: [\n", encoding="utf-8", newline="")   # 문법 오류
     assert sa.load_ncn_settings(tmp_path) == sa.NcnSettings()   # 오류 → 기본값(시작은 계속)
 
 
@@ -160,9 +160,10 @@ def _two_children_steps(delay=0.4):                         # 부모가 자식 �
 
 def _fill_paths(steps, tmp_path):                           # 시나리오의 파일 자리표시자를 실제 경로로
     a, b = tmp_path / "a.txt", tmp_path / "b.txt"           # 자식 A·B 가 읽을 파일
-    a.write_text("alpha secret\n", encoding="utf-8")        # A 파일
-    b.write_text("beta secret\n", encoding="utf-8")         # B 파일
-    text = json.dumps(steps, ensure_ascii=False).replace("A_FILE", str(a)).replace("B_FILE", str(b))   # 자리표시자 치환
+    a.write_text("alpha secret\n", encoding="utf-8", newline="")        # A 파일
+    b.write_text("beta secret\n", encoding="utf-8", newline="")         # B 파일
+    esc = lambda p: json.dumps(str(p))[1:-1]                # JSON 글 안에 넣을 모양(Windows '\\' → '\\\\')
+    text = json.dumps(steps, ensure_ascii=False).replace("A_FILE", esc(a)).replace("B_FILE", esc(b))   # 자리표시자 치환
     return json.loads(text)                                 # 치환된 시나리오
 
 
@@ -248,11 +249,11 @@ def _headless(tmp_path, steps, env_extra=None, ncn_yaml=None):   # ncn -p --beta
     work, cnhome = tmp_path / "work", tmp_path / "cnhome"     # 작업·전역 폴더
     for d in (work, cnhome, tmp_path / "home"):              # 폴더 만들기
         d.mkdir(parents=True, exist_ok=True)                 # 생성
-    (work / "coupon.py").write_text("def discount(p):\n    return p\n", encoding="utf-8")   # 작업 파일
+    (work / "coupon.py").write_text("def discount(p):\n    return p\n", encoding="utf-8", newline="")   # 작업 파일
     if ncn_yaml:                                             # ncn.yaml 이 있으면
-        (cnhome / "ncn.yaml").write_text(ncn_yaml, encoding="utf-8")   # 전역 폴더에
+        (cnhome / "ncn.yaml").write_text(ncn_yaml, encoding="utf-8", newline="")   # 전역 폴더에
     cfg = cnhome / "config.yaml"                             # 설정
-    cfg.write_text(config_yaml(server.server_port, {"config_append": CHILD_YAML.format(port=server.server_port)}), encoding="utf-8")   # chat + subagent
+    cfg.write_text(config_yaml(server.server_port, {"config_append": CHILD_YAML.format(port=server.server_port)}), encoding="utf-8", newline="")   # chat + subagent
     env = {**isolated_env(tmp_path), **(env_extra or {})}    # 격리 환경
     try:                                                    # 서버 종료 보장
         proc = subprocess.run([sys.executable, "-m", "ncn", "-p", "찾아줘", "--config", str(cfg), "--beta-subagent-tool"],   # ncn -p
@@ -306,7 +307,7 @@ def test_headless_compat_fails_like_cn(tmp_path):           # NCN_CN_COMPAT=1 �
 def _acp(tmp_path, steps):                                  # ACP 하네스(설정에 subagent 모델 추가)
     from tests.test_acp import FakeIDE, Harness              # 가짜 IDE·자식 프로세스 하네스
     h = Harness(tmp_path, steps, args=["--beta-subagent-tool"])   # 준비
-    h.cfg.write_text(config_yaml(h.server.server_port, {"config_append": CHILD_YAML.format(port=h.server.server_port)}), encoding="utf-8")   # chat + subagent
+    h.cfg.write_text(config_yaml(h.server.server_port, {"config_append": CHILD_YAML.format(port=h.server.server_port)}), encoding="utf-8", newline="")   # chat + subagent
     return h, FakeIDE()                                      # 하네스·IDE
 
 

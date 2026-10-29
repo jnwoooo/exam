@@ -112,13 +112,37 @@ def _posix_normalize(path: str) -> str:                     # Node path.posix.no
     return f"/{path}" if is_absolute else path              # 절대경로면 앞에 '/'
 
 
+def _posix_cwd() -> str:                                    # Node posixCwd 이식(path.posix 가 보는 현재 폴더)
+    """Node posixCwd — 실제 Windows 에서는 cwd 의 '\\' 를 '/' 로 바꾸고 첫 '/' 앞(드라이브 글자)을 뗀다. 그 밖은 cwd 그대로."""
+    cwd = os.getcwd()                                        # process.cwd()
+    if not sys.platform.startswith("win"):                   # 실제 Windows 가 아니면(시험의 PLATFORM_OVERRIDE 와 무관 — Node 도 실제 OS 로 정함)
+        return cwd                                          # 그대로
+    cwd = cwd.replace("\\", "/")                           # StringPrototypeReplace(cwd, /\\/g, '/')
+    return cwd[cwd.find("/"):] if "/" in cwd else cwd[-1:]   # slice(indexOf('/')) — 없으면 indexOf -1 → 마지막 글자(JS slice(-1))
+
+
+def _win_drive_cwd(device: str) -> str | None:              # Node process.env[`=${device}`] 이식(드라이브별 현재 폴더)
+    """Windows 는 드라이브마다 현재 폴더를 숨은 환경변수 '=C:' 에 둔다. 파이썬 os.environ 은 '=' 로 시작하는 변수를 빼므로
+    실제 Windows 에서는 GetEnvironmentVariableW 로 직접 읽는다(Node 는 환경 블록 전체를 process.env 로 보므로 보인다)."""
+    name = f"={device}"                                      # 변수 이름(대소문자 무시 — Windows 환경변수 규칙)
+    if not sys.platform.startswith("win"):                   # 실제 Windows 가 아니면
+        return os.environ.get(name)                          # 시험용(보통 없음)
+    try:                                                     # ctypes 실패 대비
+        import ctypes                                        # Win32 API 호출
+        buf = ctypes.create_unicode_buffer(32768)            # 환경변수 최대 길이
+        n = ctypes.windll.kernel32.GetEnvironmentVariableW(name, buf, len(buf))   # 값 읽기(없으면 0)
+        return buf.value if 0 < n < len(buf) else None       # 있으면 값, 없으면 None
+    except Exception:                                        # ctypes 없음 등
+        return None                                          # 모름 → Node 의 || process.cwd() 로
+
+
 def _posix_resolve(*args: str) -> str:                      # Node path.posix.resolve 이식
     """Node path.posix.resolve — 오른쪽부터 절대경로가 나올 때까지 이어 붙이고 정리. 끝 슬래시 없음."""
     resolved_path = ""                                       # 결과 본문
     resolved_absolute = False                                # 절대경로가 됐나
     i = len(args) - 1                                        # 오른쪽부터
     while i >= -1 and not resolved_absolute:                 # -1 = 현재 폴더
-        path = args[i] if i >= 0 else os.getcwd()            # 인자 또는 cwd
+        path = args[i] if i >= 0 else _posix_cwd()           # 인자 또는 cwd(Node posixCwd — Windows 는 드라이브 뗀 '/' 경로)
         i -= 1                                              # 다음 인자로
         if len(path) == 0:                                   # 빈 인자는 건너뜀
             continue                                        # 건너뜀
@@ -333,7 +357,7 @@ def _win_resolve(*args: str) -> str:                        # Node path.win32.re
                 return path                                 # 빠른 길 결과 반환
         else:                                                # 드라이브별 현재 폴더
             i -= 1                                          # 다음 단계로
-            path = os.environ.get(f"={resolved_device}") or os.getcwd()  # 그 드라이브의 현재 폴더(환경변수 '=C:')
+            path = _win_drive_cwd(resolved_device) or os.getcwd()   # 그 드라이브의 현재 폴더(환경변수 '=C:')
             if path is None or (path[0:2].lower() != resolved_device.lower() and _char(path, 2) == "\\"):  # 다른 드라이브면
                 path = f"{resolved_device}\\"               # 드라이브 루트로 대체
         n = len(path)                                       # 글자 수

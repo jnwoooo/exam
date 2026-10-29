@@ -38,7 +38,7 @@ class Driver:                                               # 대화형 앱 + �
             (self.work / rel).write_bytes(text.encode("utf-8"))   # 그대로 씀
         self.server, self.rec = serve(steps)                 # 재생 서버
         self.cfg = self.cnhome / "config.yaml"               # 설정 파일
-        self.cfg.write_text(config_yaml(self.server.server_port), encoding="utf-8")   # 시험 설정
+        self.cfg.write_text(config_yaml(self.server.server_port), encoding="utf-8", newline="")   # 시험 설정
         for k in list(os.environ):                           # 환경 비우기
             monkeypatch.delenv(k, raising=False)             # 시험 뒤 되돌림
         for k, v in isolated_env(tmp).items():               # 격리 환경
@@ -399,7 +399,7 @@ def test_resume_flag_and_edit_diff(tmp_path, monkeypatch):   # Edit 승인 미�
     sid = d.app.core.sessions.get_current()["sessionId"]     # 세션 id
     server, rec = serve(steps[3:])                           # 둘째 실행용 서버
     d.server, d.rec = server, rec                            # 바꿔 끼움
-    d.cfg.write_text(config_yaml(server.server_port), encoding="utf-8")   # 새 주소
+    d.cfg.write_text(config_yaml(server.server_port), encoding="utf-8", newline="")   # 새 주소
     d.args = build_parser().parse_args(["--config", str(d.cfg), "--resume"])   # --resume 항목
     d.out = io.StringIO()                                    # 새 화면
 

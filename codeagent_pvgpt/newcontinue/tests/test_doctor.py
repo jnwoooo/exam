@@ -25,7 +25,7 @@ def write_config(gdir: Path, api_base: str, api_key: str = "${{ secrets.CODEAGEN
     p = gdir / "config.yaml"                                 # 설정 파일
     p.write_text("name: t\nversion: 0.0.1\nschema: v1\nmodels:\n  - name: fake\n    provider: openai\n"   # 모델 블록
                  f"    model: fake-model\n    apiBase: {api_base}\n    apiKey: {api_key}\n    roles: [chat]\n" + mcp,   # (이어짐) + MCP
-                 encoding="utf-8")                           # UTF-8
+                 encoding="utf-8", newline="")                           # UTF-8
     return p                                                 # 경로
 
 
@@ -72,10 +72,10 @@ def test_all_ok_with_fake_llm_and_mcp(tmp_path):             # 정상 경로(서
     srv, rec = fake_llm.serve([])                            # 가짜 LLM
     try:                                                     # 끝나면 서버 닫기
         g = tmp_path / "g"                                   # 전역 폴더
-        mcp = (f"mcpServers:\n  - name: fake\n    command: \"{sys.executable}\"\n"   # 가짜 MCP(stdio)
-               f"    args: [\"{PARITY_DIR / 'fake_mcp.py'}\"]\n")   # (이어짐)
+        mcp = (f"mcpServers:\n  - name: fake\n    command: {json.dumps(sys.executable)}\n"   # 가짜 MCP(stdio) — Windows 경로 '\\' 이스케이프
+               f"    args: [{json.dumps(str(PARITY_DIR / 'fake_mcp.py'))}]\n")   # (이어짐)
         write_config(g, f"http://127.0.0.1:{srv.server_port}/v1/", mcp=mcp)   # 설정
-        (g / ".env").write_text("CODEAGENT_TOKEN=ca-secret-token-123\n", encoding="utf-8")   # 토큰
+        (g / ".env").write_text("CODEAGENT_TOKEN=ca-secret-token-123\n", encoding="utf-8", newline="")   # 토큰
         checks = run(tmp_path, env_for(g, tmp_path / "h"))   # 실행
     finally:                                                 # 정리
         srv.shutdown()                                       # 서버 끄기
@@ -153,8 +153,8 @@ def test_mcp_fail(tmp_path):                                 # MCP 접속 실패
     srv, _ = fake_llm.serve([])                              # 서버는 정상
     try:                                                     # 끝나면 닫기
         g = tmp_path / "g"                                   # 전역 폴더
-        mcp = (f"mcpServers:\n  - name: broken\n    command: \"{sys.executable}\"\n"   # 실패하는 MCP
-               f"    args: [\"{PARITY_DIR / 'fake_mcp.py'}\", \"--fail\"]\n")   # (이어짐)
+        mcp = (f"mcpServers:\n  - name: broken\n    command: {json.dumps(sys.executable)}\n"   # 실패하는 MCP — Windows 경로 '\\' 이스케이프
+               f"    args: [{json.dumps(str(PARITY_DIR / 'fake_mcp.py'))}, \"--fail\"]\n")   # (이어짐)
         write_config(g, f"http://127.0.0.1:{srv.server_port}/v1/", api_key="ca-x", mcp=mcp)   # 설정
         checks = run(tmp_path, env_for(g, tmp_path / "h"))   # 실행
     finally:                                                 # 정리

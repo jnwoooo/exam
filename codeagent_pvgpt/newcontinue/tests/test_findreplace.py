@@ -169,8 +169,8 @@ console.log(JSON.stringify(out));
 @pytest.mark.skipif(not shutil.which("node") or not SR.exists(), reason="node 또는 .ref/continue 없음")  # node 또는 원본이 없으면 건너뜀
 def test_node_differential(tmp_path):                       # Node 차등 비교 시험
     """무작위 입력 1500개를 cn 원본(node)과 ncn 에 넣어 결과·오류 글이 같은지."""
-    (tmp_path / "package.json").write_text('{"type":"module"}')  # ESM 설정 파일
-    (tmp_path / "findSearchMatch.ts").write_text((SR / "findSearchMatch.ts").read_text())  # 원본 찾기 코드 복사
+    (tmp_path / "package.json").write_text('{"type":"module"}', newline="")  # ESM 설정 파일
+    (tmp_path / "findSearchMatch.ts").write_text((SR / "findSearchMatch.ts").read_text(), newline="")  # 원본 찾기 코드 복사
     src = (SR / "performReplace.ts").read_text()             # import 경로를 실행 가능하게 고침(enum 은 node 가 못 읽어 대체)
     src = src.replace('import { EditOperation } from "../../tools/definitions/multiEdit";', "")  # 타입 import 제거
     src = src.replace('import { ContinueError, ContinueErrorReason } from "../../util/errors";',  # 오류 클래스 import 를 대체
@@ -179,8 +179,8 @@ def test_node_differential(tmp_path):                       # Node 차등 비교
                       "FindAndReplaceMultipleOccurrences: 'find_and_replace_multiple_occurrences' };")  # 이유 값도 대체
     src = src.replace('import { SearchMatchResult, findSearchMatches } from "./findSearchMatch";',  # 찾기 import 경로 수정
                       'import { findSearchMatches } from "./findSearchMatch.ts";')   # 타입 이름은 실행 때 없음
-    (tmp_path / "performReplace.ts").write_text(src)        # 수정한 원본 저장
-    (tmp_path / "run.mjs").write_text(NODE_RUNNER)          # 실행 스크립트 저장
+    (tmp_path / "performReplace.ts").write_text(src, newline="")        # 수정한 원본 저장
+    (tmp_path / "run.mjs").write_text(NODE_RUNNER, newline="")          # 실행 스크립트 저장
     rnd = random.Random(7)                                   # 결정적 무작위
     atoms = ["a", "b", "A", " ", "  ", "\t", "\n", "\r\n", "x = 1", "    ", "\u00a0", "\x1c", "é", "İ"]  # 무작위 조각 후보
 

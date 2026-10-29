@@ -14,6 +14,8 @@ from acp.schema import (EnumOption, FileEditToolCallContent, ContentToolCallCont
                         PlanEntry, SessionConfigOptionSelect, SessionConfigSelectOption, SessionMode,  # 계획·설정 선택지·모드
                         SessionModeState, TextContentBlock, ToolCallLocation, Usage)   # 모드 상태·글·위치·사용량
 
+from ncn.tools.formatters import node_platform                # 실행 OS(Node process.platform 값 — 시험에서 바꿀 수 있음)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 도구 카드(tool_call): kind·title·locations
 # ─────────────────────────────────────────────────────────────────────────────
@@ -273,7 +275,9 @@ _FRAGMENT = re.compile(r"^L?(\d+)(?:[-:,]L?(\d+))?")         # URI 조각의 줄
 
 
 def uri_to_path(uri: str) -> Optional[str]:                 # file:// URI → 경로
-    """file:///C:/a/b.cs → C:/a/b.cs, file:///Users/x → /Users/x, file://server/share/x → //server/share/x. file 이 아니면 None."""
+    """file:///C:/a/b.cs → C:/a/b.cs, file:///Users/x → /Users/x, file://server/share/x → //server/share/x. file 이 아니면 None.
+    Windows(win32)에서는 구분자를 '\\' 로 바꾼 OS 경로(C:\\a\\b.cs, \\\\server\\share\\x) — IDE 버퍼 경로·도구 경로와 같은 모양이어야
+    fs/read_text_file 위임·@상대경로 계산·Read 기록이 맞는다."""
     p = urllib.parse.urlparse(uri)                           # URI 해석
     if p.scheme != "file":                                   # file 이 아니면
         return None                                         # 경로 아님
@@ -282,6 +286,8 @@ def uri_to_path(uri: str) -> Optional[str]:                 # file:// URI → �
         path = path[1:]                                      # 앞 / 제거
     if p.netloc and p.netloc != "localhost":                 # UNC(\\server\share) 항목
         path = f"//{p.netloc}{path}"                         # //server/share/… 항목
+    if node_platform() == "win32":                           # Windows 면
+        path = path.replace("/", "\\")                       # OS 구분자로(드라이브·UNC 모두)
     return path                                             # 경로
 
 

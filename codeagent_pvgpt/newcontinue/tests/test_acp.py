@@ -24,6 +24,7 @@ from acp.schema import (AcceptElicitationResponse, AllowedOutcome, ClientCapabil
 
 from ncn import fsio                                         # 파일 창구
 from ncn.acp import convert                                  # 변환 함수
+from ncn.tools import formatters                             # 플랫폼 흉내(PLATFORM_OVERRIDE)
 from parity.fake_llm import serve, sse_chunks, scripted_message   # 녹화형 가짜 LLM
 from parity.run import config_yaml, isolated_env             # 시험 설정·격리 환경
 
@@ -109,7 +110,7 @@ class Harness:                                              # ncn --stdio 자식
         else:                                                 # 주어진 서버(느린 LLM)
             self.server, self.rec = server                    # 그대로
         self.cfg = self.cnhome / "config.yaml"                # 설정 파일
-        self.cfg.write_text(config_yaml(self.server.server_port), encoding="utf-8")   # 시험 설정
+        self.cfg.write_text(config_yaml(self.server.server_port), encoding="utf-8", newline="")   # 시험 설정
         self.args = list(args)                                # 추가 옵션
         self.raw_lines: list[bytes] = []                      # stdout 원본 줄
         self.stderr = b""                                     # stderr 전체
@@ -442,10 +443,15 @@ def test_cancel_during_stream_and_permission(tmp_path):     # 취소(스트림 �
     h2 = Harness(tmp_path / "p", steps)                      # 준비
     ide2 = FakeIDE()                                         # IDE 항목
 
+    answered = asyncio.Event()                               # IDE 가 늦은 cancelled 응답을 다 보냈나(go2 의 루프에서 기다림)
+
     async def on_perm(session_id):                           # 승인 요청이 오면
-        await h2.conn.cancel(session_id=session_id)          # 취소를 보내고
-        await asyncio.sleep(0.2)                             # 잠시 뒤
-        return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))   # 규격대로 cancelled 응답
+        try:                                                 # 끝에 반드시 표시
+            await h2.conn.cancel(session_id=session_id)      # 취소를 보내고
+            await asyncio.sleep(0.2)                         # 잠시 뒤(ncn 은 이 응답을 기다리지 않고 cancelled 로 끝내야 함)
+            return RequestPermissionResponse(outcome=DeniedOutcome(outcome="cancelled"))   # 규격대로 cancelled 응답
+        finally:                                             # 처리기 끝
+            asyncio.get_running_loop().call_soon(answered.set)   # SDK 가 응답을 보내기 시작한 뒤 표시
 
     ide2.on_permission = on_perm                             # 훅 등록
 
@@ -454,6 +460,8 @@ def test_cancel_during_stream_and_permission(tmp_path):     # 취소(스트림 �
         s = await h2.new()                                   # 세션
         r = await h2.conn.prompt(session_id=s.session_id, prompt=[text_block("써")])   # 질문
         assert r.stop_reason == "cancelled"                  # 취소
+        await asyncio.wait_for(answered.wait(), TIMEOUT)     # 늦은 승인 응답까지 보낸 뒤에 끝냄 — 먼저 stdin 을 닫으면 ncn 이 끝나 응답 쓰기가
+        await asyncio.sleep(0.1)                             # "Connection lost" 로 깨진다(시험의 경쟁, 실제 IDE 는 연결을 유지). 보내기 큐가 비도록 잠깐
         await h2.stop()                                      # 종료
 
     run(go2())                                               # 실행
@@ -522,15 +530,15 @@ def test_resources_checklist_usage_and_load(tmp_path):      # 리소스 첨부·
              {"content": "계획 세움", "usage": {"prompt_tokens": 20, "completion_tokens": 5}},   # 답
              {"content": "이어서 답함"}]                       # 불러온 뒤 답
     h = Harness(tmp_path, steps, {"coupon.py": "r = 0.9\n", "a.py": "A\n"})   # 준비
-    buf = str(h.work / "coupon.py")                          # IDE 버퍼 경로
+    buf = str(h.work / "coupon.py")                          # IDE 버퍼 경로(OS 경로 — Windows 는 C:\\…)
     ide = FakeIDE(fs_files={buf: "r = 0.95  # 저장 안 함\n"})   # 저장 안 한 버퍼
 
     async def go():                                          # 시나리오
         caps = ClientCapabilities(fs=FileSystemCapabilities(read_text_file=True, write_text_file=True))   # fs 위임 능력
         await h.start(ide, caps)                             # 시작
         s = await h.new()                                    # 세션
-        blocks = [text_block("이 파일 "), resource_link_block(name="coupon.py", uri=f"file://{buf}"), text_block(" 봐줘"),   # @파일
-                  resource_block(embedded_text_resource(f"file://{h.work / 'a.py'}#L1-1", "A"))]   # 선택 영역
+        blocks = [text_block("이 파일 "), resource_link_block(name="coupon.py", uri=Path(buf).as_uri()), text_block(" 봐줘"),   # @파일(IDE 처럼 file:///C:/… 모양)
+                  resource_block(embedded_text_resource((h.work / "a.py").as_uri() + "#L1-1", "A"))]   # 선택 영역
         r = await h.conn.prompt(session_id=s.session_id, prompt=blocks)   # 질문
         assert r.usage.input_tokens == 30 and r.usage.output_tokens == 8 and r.usage.total_tokens == 38   # 턴 사용량 합
         await h.stop()                                       # 종료
@@ -546,7 +554,7 @@ def test_resources_checklist_usage_and_load(tmp_path):      # 리소스 첨부·
 
     ide2 = FakeIDE()                                         # 새 IDE(재시작)
     h.server, h.rec = serve(steps[2:])                       # 새 가짜 LLM
-    h.cfg.write_text(config_yaml(h.server.server_port), encoding="utf-8")   # 주소 갱신
+    h.cfg.write_text(config_yaml(h.server.server_port), encoding="utf-8", newline="")   # 주소 갱신
     h.raw_lines = []                                         # stdout 기록 초기화
 
     async def go2():                                         # session/load 항목
@@ -568,7 +576,8 @@ def test_resources_checklist_usage_and_load(tmp_path):      # 리소스 첨부·
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_convert_units():                                   # 변환 함수
+def test_convert_units(monkeypatch):                       # 변환 함수
+    monkeypatch.setattr(formatters, "PLATFORM_OVERRIDE", "darwin")   # posix 기준(실행 OS 와 무관하게)
     assert [convert.tool_kind(n) for n in ("Read", "Edit", "MultiEdit", "Write", "Bash", "Search", "Fetch", "List")] == \
         ["read", "edit", "edit", "edit", "execute", "search", "fetch", "other"]   # kind 매핑
     assert convert.tool_title("Bash", {"command": "ls\npwd"}) == "Bash(ls...)"   # 여러 줄은 첫 줄 + ...
@@ -576,6 +585,10 @@ def test_convert_units():                                   # 변환 함수
     assert convert.uri_to_path("file:///C:/a%20b/x.cs") == "C:/a b/x.cs"   # Windows 드라이브
     assert convert.uri_to_path("file://server/share/x") == "//server/share/x"   # UNC 확인
     assert convert.uri_to_path("untitled:1") is None           # file 아님
+    monkeypatch.setattr(formatters, "PLATFORM_OVERRIDE", "win32")   # Windows 흉내: OS 구분자 '\\'
+    assert convert.uri_to_path("file:///C:/a%20b/x.cs") == "C:\\a b\\x.cs"   # IDE 버퍼·도구 경로와 같은 모양
+    assert convert.uri_to_path("file://server/share/x") == "\\\\server\\share\\x"   # UNC
+    monkeypatch.setattr(formatters, "PLATFORM_OVERRIDE", "darwin")   # 아래는 다시 posix
     assert convert.get_last_n_path_parts("C:\\a\\b\\c.txt", 2) == "b/c.txt"   # 끝 두 조각
     assert convert.public_args({"a": 1, "_ncnRedo": 2}) == {"a": 1}   # 내부 키 제거
     assert convert.answer_from_elicitation({"choice": "A", "custom": "  직접 "}, None) == ("직접", True)   # 직접 입력 우선
@@ -583,7 +596,7 @@ def test_convert_units():                                   # 변환 함수
 
 def test_fsio_backends(tmp_path):                           # fsio: 기본 디스크, 위임, 실패 시 디스크
     f = tmp_path / "x.txt"                                    # 파일
-    f.write_text("disk", encoding="utf-8")                    # 디스크 내용
+    f.write_text("disk", encoding="utf-8", newline="")                    # 디스크 내용
 
     class Conn:                                              # 가짜 연결
         def __init__(self):                                  # 생성
@@ -605,7 +618,7 @@ def test_fsio_backends(tmp_path):                           # fsio: 기본 디�
         tok = fsio.set_backend(fsio.AcpFiles(conn, "s", can_read=True, can_write=True))   # 위임으로
         try:                                                # 위임 구간
             assert await fsio.read_text_file(str(f)) == "buffer"   # 버퍼 기준
-            (tmp_path / "y.txt").write_text("y", encoding="utf-8")   # 버퍼에 없는 파일
+            (tmp_path / "y.txt").write_text("y", encoding="utf-8", newline="")   # 버퍼에 없는 파일
             assert await fsio.read_text_file(str(tmp_path / "y.txt")) == "y"   # 거절 → 디스크
             await fsio.write_text_file(str(tmp_path / "w.txt"), "w")   # 위임 쓰기
             assert conn.writes == {str(tmp_path / "w.txt"): "w"} and not (tmp_path / "w.txt").exists()   # IDE 에만

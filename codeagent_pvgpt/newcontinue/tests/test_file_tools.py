@@ -85,7 +85,7 @@ def test_tool_names_and_schema_key_order():                 # 도구 이름과 �
 
 # ───────────── Read ─────────────
 def test_read_success_marks_realpath_and_strips_dot_slash(ws):  # Read 성공 시 실경로 기록과 './' 제거 시험
-    (ws / "a.txt").write_text("hi\nthere")                  # 파일 만들기
+    (ws / "a.txt").write_text("hi\nthere", newline="")                  # 파일 만들기
     pre = run(READ_TOOL.preprocess({"filepath": "./a.txt"}))  # preprocess 실행
     assert pre.preview[0].content == "Will read a.txt"      # 미리보기 글 확인
     out = run(READ_TOOL.run({"filepath": "./a.txt"}, ToolRunContext("t")))  # run 실행
@@ -108,7 +108,7 @@ def test_read_missing_and_security(ws):                     # Read 의 없는 �
 
 
 def test_read_too_large_message_and_parallel(ws, monkeypatch):  # 한도 초과 메시지와 병렬 한도 시험
-    (ws / "big.txt").write_text("x" * 1500 + "\n" + "y")    # 한도를 넘는 파일 만들기
+    (ws / "big.txt").write_text("x" * 1500 + "\n" + "y", newline="")    # 한도를 넘는 파일 만들기
     monkeypatch.setenv("CONTINUE_CLI_READ_FILE_MAX_OUTPUT_CHARS", "1000")  # 글자 한도를 1000 으로
     with pytest.raises(ContinueError) as e:                 # 한도 초과 오류 기대
         run(call(READ_TOOL, {"filepath": "big.txt"}))       # 실행
@@ -175,7 +175,7 @@ ORIGINAL = "Hello world\nThis is a test file\nGoodbye world"  # Edit 시험용 �
 @pytest.fixture                                             # 파일 픽스처
 def edit_file(ws):                                          # Edit 시험 파일 만들기
     p = ws / "test-edit-file.txt"                           # 파일 경로
-    p.write_text(ORIGINAL)                                  # 원본 내용 쓰기
+    p.write_text(ORIGINAL, newline="")                                  # 원본 내용 쓰기
     return p                                                # 경로 반환
 
 
@@ -222,7 +222,7 @@ def test_edit_success_relative_path_and_replace_all(edit_file, ws, cn_compat_env
 def test_edit_security_uses_realpath_parent_and_name(ws):   # 민감 판정은 실경로의 부모·이름 기준
     (ws / "secrets").mkdir()                                # secrets 폴더 만들기
     f = ws / "secrets" / "a.txt"                            # 그 안의 파일 경로
-    f.write_text("x")                                       # 파일 쓰기
+    f.write_text("x", newline="")                                       # 파일 쓰기
     mark_file_as_read(str(f))                               # 읽은 것으로 기록
     with pytest.raises(ContinueError) as e:                 # 오류 기대
         run(EDIT_TOOL.preprocess({"file_path": "secrets/a.txt", "old_string": "x", "new_string": "y"}))  # 민감 폴더 안 파일 preprocess
@@ -239,7 +239,7 @@ def test_edit_write_failure(ws):                            # Edit 쓰기 실패
 # ───────────── MultiEdit(cn multiEdit.test.ts) ─────────────
 def test_multi_edit_sequential_atomic(ws):                  # MultiEdit 순차 적용·전부 또는 전무 시험
     f = ws / "m.py"                                         # 파일 경로
-    f.write_text("a = 1\nb = 2\n")                          # 파일 쓰기
+    f.write_text("a = 1\nb = 2\n", newline="")                          # 파일 쓰기
     run(call(READ_TOOL, {"filepath": "m.py"}))              # 먼저 Read 해 기록
     pre = run(MULTI_EDIT_TOOL.preprocess({"file_path": "m.py", "edits": [{"old_string": "a = 1", "new_string": "a = 10"},  # 편집 두 개 preprocess
                                                                          {"old_string": "a = 10\nb", "new_string": "c"}]}))  # 두 번째 편집은 첫 결과에 적용
@@ -259,7 +259,7 @@ def test_multi_edit_validation_order(ws):                   # MultiEdit 검증 �
     with pytest.raises(ContinueError) as e:                  # 경로 검증이 먼저
         run(MULTI_EDIT_TOOL.preprocess({"edits": []}))      # 경로 없이 실행
     assert str(e.value) == "file_path is required"          # 오류 글 확인
-    (ws / "m.txt").write_text("x")                          # 파일 만들기
+    (ws / "m.txt").write_text("x", newline="")                          # 파일 만들기
     run(call(READ_TOOL, {"filepath": "m.txt"}))             # 먼저 Read 해 기록
     with pytest.raises(ContinueError) as e:                 # 오류 기대
         run(MULTI_EDIT_TOOL.preprocess({"file_path": "m.txt", "edits": []}))  # 빈 edits preprocess
@@ -268,12 +268,12 @@ def test_multi_edit_validation_order(ws):                   # MultiEdit 검증 �
 
 # ───────────── List ─────────────
 def test_list(ws):                                          # List 시험
-    (ws / "b.txt").write_text("12345")                      # 파일 만들기
+    (ws / "b.txt").write_text("12345", newline="")                      # 파일 만들기
     (ws / "a_dir").mkdir()                                  # 폴더 만들기
-    (ws / "C.txt").write_text("")                         # 대문자가 소문자보다 앞(바이트 순)
+    (ws / "C.txt").write_text("", newline="")                         # 대문자가 소문자보다 앞(바이트 순)
     pre = run(LIST_TOOL.preprocess({"dirpath": "."}))       # 현재 폴더 preprocess
     assert pre.args == {"dirpath": str(ws)}                 # 절대경로로 바뀐 인자 확인
-    assert pre.preview[0].content == f"Will list files in: {ws}"   # 같은 폴더면 상대경로가 빈 글 → 원래 값
+    assert pre.preview[0].content == f"Will list files in: {str(ws).replace(os.sep, '/')}"   # 같은 폴더면 상대경로가 빈 글 → 원래 값(cn: '\\'→'/')
     out = run(LIST_TOOL.run(pre.args, ToolRunContext("t")))  # run 실행
     assert out == f"Files in {ws}:\nC.txt (file, 0 bytes)\na_dir (directory)\nb.txt (file, 5 bytes)"   # 바이트 순
     with pytest.raises(ContinueError) as e:                 # 없는 폴더는 오류
@@ -351,7 +351,7 @@ def test_node_diff_library_parity(tmp_path):                # npm diff 라이브
     lib = REF / "core" / "node_modules" / "diff" / "libesm" / "index.js"  # diff 라이브러리 경로
     (tmp_path / "d.mjs").write_text(f'import {{ createTwoFilesPatch }} from {json.dumps(lib.as_uri())};\nimport fs from "fs";\n'  # node 스크립트 작성
                                     'const cs = JSON.parse(fs.readFileSync(0, "utf8"));\n'  # 입력 읽기
-                                    "console.log(JSON.stringify(cs.map(c => createTwoFilesPatch(c[0], c[0], c[1], c[2], undefined, undefined, { context: c[3] }))));\n")  # 패치 출력
+                                    "console.log(JSON.stringify(cs.map(c => createTwoFilesPatch(c[0], c[0], c[1], c[2], undefined, undefined, { context: c[3] }))));\n", newline="")  # 패치 출력
     rnd = random.Random(3)                                  # 무작위 생성기
 
     def gen():                                              # 무작위 글 만들기
@@ -370,7 +370,7 @@ def test_node_ignore_library_parity(tmp_path):              # npm ignore 라이�
                                     'const inp = JSON.parse(require("fs").readFileSync(0, "utf8"));\n'  # 입력 읽기
                                     "const ig = ignore().add(inp.pats); const out = {};\n"  # 판정기 만들기
                                     'for (const p of inp.paths) { try { out[p] = ig.ignores(p); } catch (e) { out[p] = "ERR:" + e.message; } }\n'  # 경로마다 판정
-                                    "console.log(JSON.stringify(out));\n")  # 결과 출력
+                                    "console.log(JSON.stringify(out));\n", newline="")  # 결과 출력
     names = ["a.env", ".envrc", "x.env.local", "Config.Yml", "a/b/settings.json", "foo.env/bar", "env", "env/", "a/env/b", "myenv/a",  # 시험할 경로 이름들
              "tmp/secrets/x", "a/tmp/secrets/x", "temp/secrets", "id_rsa", "id_rsa.pub", ".ssh/x", "x.DB", "a..b", ".tmp/x", "keys/",  # 경로 이름 계속
              "../x", "./x", "/abs", "..", ".", "...", "dir/", "a\\b.env", "docker-compose.override.yaml", "x.orig", "src/app.py"]  # 경로 이름 마지막
@@ -389,12 +389,12 @@ def test_node_ignore_library_parity(tmp_path):              # npm ignore 라이�
 
 @pytest.mark.skipif(not (shutil.which("node") and (CLI / "util" / "truncateOutput.ts").exists()), reason="node 또는 원본 없음")  # 원본이 없으면 건너뜀
 def test_node_truncate_parity(tmp_path):                    # truncateOutput.ts 원본과 차등 비교
-    (tmp_path / "package.json").write_text('{"type":"module"}')  # ESM 설정 파일
-    (tmp_path / "t.ts").write_text((CLI / "util" / "truncateOutput.ts").read_text())  # 원본 TS 복사
+    (tmp_path / "package.json").write_text('{"type":"module"}', newline="")  # ESM 설정 파일
+    (tmp_path / "t.ts").write_text((CLI / "util" / "truncateOutput.ts").read_text(), newline="")  # 원본 TS 복사
     (tmp_path / "r.mjs").write_text('import * as t from "./t.ts"; import fs from "fs";\n'  # node 스크립트 작성
                                     'const cs = JSON.parse(fs.readFileSync(0, "utf8"));\n'  # 입력 읽기
                                     "console.log(JSON.stringify(cs.map(([s, c, l]) => [t.truncateOutputFromStart(s, {maxChars: c, maxLines: l}).output,"  # 세 함수 결과 출력
-                                    " t.truncateOutputFromEnd(s, c, 'x').output, t.truncateByLinesAndChars(s, l, c).output])));\n")  # 출력 마무리
+                                    " t.truncateOutputFromEnd(s, c, 'x').output, t.truncateByLinesAndChars(s, l, c).output])));\n", newline="")  # 출력 마무리
     rnd = random.Random(5)                                  # 무작위 생성기
     cases = [["".join(rnd.choice(["a", "bb", "\n", "\n\n", "x" * 300]) for _ in range(rnd.randint(0, 30))),  # 800개 사례
               rnd.randint(1, 2500), rnd.randint(1, 8)] for _ in range(800)]  # 한도 값도 무작위
@@ -404,6 +404,20 @@ def test_node_truncate_parity(tmp_path):                    # truncateOutput.ts 
     got = [[truncate_output_from_start(s, {"maxChars": c, "maxLines": l}).output, truncate_output_from_end(s, c, "x").output,  # 파이썬 결과
             truncate_by_lines_and_chars(s, l, c).output] for s, c, l in cases]  # 세 번째 함수 결과
     assert got == exp                                       # node 와 같아야 함
+
+
+def test_windows_cwd_emulation(monkeypatch):               # 실제 Windows 의 cwd 처리 흉내(macOS 에서 확인)
+    """Node posixCwd(드라이브 떼고 '/')·드라이브별 현재 폴더('=C:')를 실제 Windows 인 척하고 확인."""
+    import types                                            # 가짜 sys 모듈
+    monkeypatch.setattr(formatters, "sys", types.SimpleNamespace(platform="win32"))   # 실제 OS 가 Windows 인 척
+    monkeypatch.setattr(formatters.os, "getcwd", lambda: "D:\\a\\work")   # Windows 현재 폴더
+    monkeypatch.setattr(formatters, "_win_drive_cwd", lambda d: "C:\\Users\\u\\proj" if d.upper() == "C:" else None)   # C: 드라이브의 현재 폴더
+    monkeypatch.setattr(formatters, "PLATFORM_OVERRIDE", "darwin")   # path.posix 쪽
+    assert formatters.path_resolve("x") == "/a/work/x"      # Node path.posix.resolve: 드라이브 뗀 cwd
+    monkeypatch.setattr(formatters, "PLATFORM_OVERRIDE", "win32")    # path.win32 쪽
+    assert formatters.path_resolve("x") == "D:\\a\\work\\x"   # 현재 드라이브 기준
+    assert formatters.path_resolve("C:x") == "C:\\Users\\u\\proj\\x"   # 드라이브 상대경로 → 그 드라이브의 현재 폴더
+    assert formatters.path_resolve("E:x") == "E:\\x"       # 현재 폴더를 모르는 드라이브 → 루트
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node 없음")  # node 가 없으면 건너뜀

@@ -125,7 +125,7 @@ def get_gitignore_patterns(cwd: str) -> list[str]:           # 가장 가까운 
     git_ignore_path = _find_up(".gitignore", cwd)            # 찾기(process.cwd() 기준)
     if not git_ignore_path:                                  # 없음
         return []                                            # .gitignore가 없으면 빈 목록
-    with open(git_ignore_path, encoding="utf-8", errors="replace") as f:   # utf-8
+    with open(git_ignore_path, encoding="utf-8", errors="replace", newline="") as f:   # utf-8(줄바꿈 변환 없음 — Node readFileSync 처럼)
         content = f.read()                                   # 파일 전체 읽기
     patterns = []                                            # 결과
     for line in js_trim(content).split("\n"):                # content.trim().split("\n")

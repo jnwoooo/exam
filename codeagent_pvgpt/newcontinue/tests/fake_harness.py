@@ -12,4 +12,5 @@ req = urllib.request.Request(base + "chat/completions", data=json.dumps(body).en
 answer = json.loads(urllib.request.urlopen(req).read())["choices"][0]["message"]["content"]   # 응답
 if "--touch" in sys.argv:                                    # 파일 결과 차이 시험용
     open("README.md", "a").write("x")                        # 작업 폴더 파일 변경
+sys.stdout.reconfigure(encoding="utf-8", newline="\n")     # Windows 파이프 stdout 은 ANSI 코드 페이지·\r\n → ncn·cn 처럼 UTF-8·\n
 print(answer)                                                # 최종 응답

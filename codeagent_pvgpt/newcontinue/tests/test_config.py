@@ -3,6 +3,7 @@
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 import json                                                  # 기대값 비교
+import os                                                    # 기대 경로(OS 규칙)
 import pathlib                                               # 경로
 
 import pytest                                                # 시험 도구
@@ -17,7 +18,7 @@ from ncn.config.schema import yaml_parse                     # YAML 1.2 — YAML
 def _w(p: pathlib.Path, text: str) -> pathlib.Path:         # 파일 쓰기 도우미 함수
     """파일 쓰기(상위 폴더 생성)."""
     p.parent.mkdir(parents=True, exist_ok=True)             # 상위 폴더 생성
-    p.write_text(text, encoding="utf-8")                    # 내용 쓰기
+    p.write_text(text, encoding="utf-8", newline="")                    # 내용 쓰기
     return p                                                # 쓴 경로 반환
 
 
@@ -32,9 +33,10 @@ MODEL_YAML = "name: t\nversion: 0.0.1\nmodels:\n  - name: m\n    provider: opena
 # ───────────────────────── paths ─────────────────────────
 def test_global_dir_rules(tmp_path):                        # 전역 폴더 규칙 시험
     """CONTINUE_GLOBAL_DIR: 절대경로 그대로, 상대경로는 cwd 기준, 빈 글은 무시(~/.continue)."""
-    assert P.global_dir({"CONTINUE_GLOBAL_DIR": "/abs/x", "HOME": "/h"}, cwd="/w") == pathlib.Path("/abs/x")  # 절대경로는 그대로
-    assert P.global_dir({"CONTINUE_GLOBAL_DIR": "rel/x", "HOME": "/h"}, cwd="/w") == pathlib.Path("/w/rel/x")  # 상대경로는 작업 폴더 기준
-    assert P.global_dir({"CONTINUE_GLOBAL_DIR": "", "HOME": "/h"}, cwd="/w") == pathlib.Path("/h/.continue")  # 빈 글은 무시하고 ~/.continue
+    home = {"HOME": "/h", "USERPROFILE": "/h"}              # 홈(posix 는 HOME, Windows 는 USERPROFILE — Node os.homedir)
+    assert P.global_dir({"CONTINUE_GLOBAL_DIR": "/abs/x", **home}, cwd="/w") == pathlib.Path("/abs/x")  # 절대경로는 그대로
+    assert P.global_dir({"CONTINUE_GLOBAL_DIR": "rel/x", **home}, cwd="/w") == pathlib.Path(os.path.abspath("/w/rel/x"))  # 상대경로는 작업 폴더 기준(Windows 는 현재 드라이브가 붙음 — D:\\w\\rel\\x)
+    assert P.global_dir({"CONTINUE_GLOBAL_DIR": "", **home}, cwd="/w") == pathlib.Path("/h/.continue")  # 빈 글은 무시하고 ~/.continue
     assert P.continue_home({"CONTINUE_GLOBAL_DIR": "rel/x"}) == "rel/x"   # env.ts 형태는 그대로
 
 

@@ -219,7 +219,8 @@ def _info(args: list, ctx: SlashContext) -> dict:            # /info 항목(info
     st, core = ctx.style, ctx.core                           # 줄임
     lines = [st.paint("CLI Information:", "white"), f"  Version: {st.paint(__version__, 'green')}",   # CLI 정보
              f"  Working Directory: {st.paint(os.getcwd(), 'blue')}", "", st.paint("Configuration:", "white")]   # 작업 폴더·설정 머리
-    lines.append(f"  {st.paint(f'Using {core.cfg.name or ""}', 'gray')}")   # 설정 이름
+    cfg_name = core.cfg.name or ""                           # 설정 이름(없으면 빈 글 — 3.10 은 f-string 안 같은 따옴표 중첩 불가)
+    lines.append(f"  {st.paint(f'Using {cfg_name}', 'gray')}")   # 설정 이름
     if core.cfg.config_path:                                 # 설정 경로
         lines.append(f"  Path: {st.paint(str(core.cfg.config_path), 'blue')}")   # 경로
     lines.append(f"  Model: {st.paint(core.model.name or core.model.model or '', 'cyan')}")   # 모델

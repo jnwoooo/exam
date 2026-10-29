@@ -121,7 +121,7 @@ def ensure_permissions_yaml_exists(path: Path) -> None:     # 기본 permissions
     """ensurePermissionsYamlExists — 폴더와 기본 파일을 만든다(이미 있으면 그대로)."""
     path.parent.mkdir(parents=True, exist_ok=True)           # 폴더
     if not path.exists():                                    # 파일 없음
-        path.write_text(DEFAULT_PERMISSIONS_YAML, encoding="utf-8")   # 기본 내용
+        path.write_text(DEFAULT_PERMISSIONS_YAML, encoding="utf-8", newline="")   # 기본 내용(줄바꿈 변환 없음 — Windows 에서도 \n)
         logger.info("Created default permissions.yaml: %s", path)  # 생성 로그
 
 
@@ -199,7 +199,7 @@ def add_policy_to_yaml(path: Path, policy_rule: str) -> None:  # allow 목록에
         else:                                               # 없으면
             config["allow"].append(policy_rule)              # 끝에 추가
             final = MANAGED_HEADER + _yaml_stringify(config)  # 머리말 + YAML
-            path.write_text(final, encoding="utf-8")         # 쓰기(폴더는 이미 있다고 가정 — 원문과 같음)
+            path.write_text(final, encoding="utf-8", newline="")   # 쓰기(줄바꿈 변환 없음, 폴더는 이미 있다고 가정 — 원문과 같음)
             logger.info("Added policy rule to permissions.yaml: %s", policy_rule)  # 추가 로그
     except Exception as error:                               # 실패 기록 후 다시 던짐(원문)
         logger.error("Failed to add policy to permissions.yaml: %s (%s)", error, policy_rule)  # 실패 로그

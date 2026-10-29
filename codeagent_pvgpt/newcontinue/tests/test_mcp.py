@@ -210,7 +210,10 @@ def test_interactive_does_not_wait_by_default_and_failure_is_state():   # cn TUI
 def test_request_timeout_option_seconds():                   # [ncn] requestOptions.timeout(초) → cn Node SDK 시간 초과 글
     async def go():                                          # 시나리오
         s = MCPService()                                     # 서비스
-        await s.initialize([stdio_cfg("slow", "--slow", "3", requestOptions={"timeout": 0.5})], headless=True)   # 호출마다 3초 지연, 제한 0.5초
+        await s.initialize([stdio_cfg("slow", "--slow", "3", requestOptions={"timeout": 30})], headless=True)   # 호출마다 3초 지연(접속은 넉넉한 제한으로)
+        # 제한은 initialize·tools/list 에도 걸린다(Node SDK 와 같음). 0.5초로 접속하면 느린 CI 에서 자식 파이썬이 뜨는 시간만으로
+        # 초과해 "MCP server(s) failed to load" 가 났다(불안정 원인) → 접속 뒤에 제한을 줄여 tools/call 만 시험한다.
+        s.connections["slow"].config["requestOptions"]["timeout"] = 0.5   # 요청마다 설정을 다시 읽으므로 다음 호출부터 0.5초
         t0 = time.monotonic()                                # 시작 시각
         with pytest.raises(McpClientError, match="^MCP error -32001: Request timed out$"):   # 시간 초과
             await s.run_tool("echo", {"text": "x"})          # 호출
@@ -301,7 +304,7 @@ def test_headless_cli_end_to_end(tmp_path):                  # ncn -p + 설정 m
         work = tmp_path / "w"                                # 작업 폴더
         work.mkdir()                                         # 생성
         cfg = tmp_path / "config.yaml"                       # 설정
-        cfg.write_text(config_yaml(server.server_port, {"config_append": 'mcpServers:\n  - name: fake\n    command: "{PYTHON}"\n    args: ["{PARITY_DIR}/fake_mcp.py"]\n'}), encoding="utf-8")   # 자리표시자 치환
+        cfg.write_text(config_yaml(server.server_port, {"config_append": 'mcpServers:\n  - name: fake\n    command: "{PYTHON}"\n    args: ["{PARITY_DIR}/fake_mcp.py"]\n'}), encoding="utf-8", newline="")   # 자리표시자 치환
         p = subprocess.run([PY, "-m", "ncn", "-p", "더해", "--config", str(cfg)], cwd=work, env=isolated_env(tmp_path),   # 실행
                            stdin=subprocess.DEVNULL, capture_output=True, timeout=TIMEOUT)   # (인자 이어짐)
     finally:                                                 # 정리
@@ -363,7 +366,7 @@ def test_m1_is_error_result_goes_through_loop_error_path(tmp_path):   # [ncn 부
 
 def test_m2_tools_list_follows_next_cursor(tmp_path, monkeypatch):   # [ncn 부록B M2] 모든 쪽 받기 + 상한
     script = tmp_path / "paged.py"                           # 서버 파일
-    script.write_text(PAGED_SERVER, encoding="utf-8")        # 쓰기
+    script.write_text(PAGED_SERVER, encoding="utf-8", newline="")        # 쓰기
 
     async def names(n: int) -> list:                         # N 쪽 서버의 도구 이름들
         s = MCPService()                                     # 서비스

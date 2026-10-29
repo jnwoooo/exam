@@ -88,7 +88,7 @@ def _read_ignore_rules(dir_path: str) -> list[tuple[bool, str]]:  # 폴더의 .i
     if not os.path.isfile(p):                               # .ignore 파일이 없으면
         return []                                           # 규칙 없음
     rules = []                                              # 규칙 모음
-    with open(p, encoding="utf-8", errors="replace") as f:   # utf8
+    with open(p, encoding="utf-8", errors="replace", newline="") as f:   # utf8(줄바꿈 변환 없음 — Node readFile 처럼 \r 유지)
         for line in re.split(r"\r?\n", f.read()):            # data.split(/\r?\n/)
             t = js_trim(line)                                # rule.trim()
             if t == "" or t.startswith("#"):                 # 빈 줄·주석
@@ -198,7 +198,7 @@ def load_markdown_skills(cwd: str, global_dir: str) -> tuple[list[Skill], list[d
         skill_file_paths = [p for d in skills_dirs for p in _get_skill_files_from_dir(d)]   # 평탄화
         for skill_file_path in skill_file_paths:             # cn은 동시에 읽어 끝난 순서로 넣음 → ncn은 찾은 순서(결정적)
             try:                                            # 파일 하나 실패가 전체를 막지 않도록 감쌈
-                with open(skill_file_path, encoding="utf-8", errors="replace") as f:   # readFile utf-8(BOM 은 남음 — Node와 같음)
+                with open(skill_file_path, encoding="utf-8", errors="replace", newline="") as f:   # readFile utf-8(BOM·CRLF 그대로 — Node와 같음)
                     content = f.read()                      # 본문 읽기
                 frontmatter, markdown = parse_markdown_rule(content)   # 머리말·본문
                 if not isinstance(frontmatter, dict):        # zod object 아님

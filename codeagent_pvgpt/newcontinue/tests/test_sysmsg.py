@@ -76,8 +76,8 @@ def test_commit_signature_env(tmp_path):                    # 커밋 서명 환�
 
 def test_agent_file_first_found(tmp_path):   # 에이전트 파일 우선순위 시험
     """AGENTS.md → AGENT.md → CLAUDE.md → CODEX.md 중 처음 것만."""
-    (tmp_path / "w" / "CLAUDE.md").write_text("claude rules", encoding="utf-8")  # CLAUDE.md 작성
-    (tmp_path / "w" / "AGENT.md").write_text("agent rules", encoding="utf-8")  # AGENT.md 작성
+    (tmp_path / "w" / "CLAUDE.md").write_text("claude rules", encoding="utf-8", newline="")  # CLAUDE.md 작성
+    (tmp_path / "w" / "AGENT.md").write_text("agent rules", encoding="utf-8", newline="")  # AGENT.md 작성
     r = _build(tmp_path)                                    # 조립
     assert r.endswith('\n\n<context name="userRules">\nagent rules\n</context>')  # AGENT.md(앞선 파일)만 쓰임
     assert "claude rules" not in r                          # CLAUDE.md 는 쓰이지 않음
@@ -87,7 +87,7 @@ def test_rules_and_agent_separator(tmp_path):               # 규칙·에이전�
     """agent 내용이 있으면 규칙 앞 구분은 빈 줄 둘, 없으면 줄바꿈 하나. 규칙끼리는 빈 줄로."""
     r = _build(tmp_path, rules=["rule one", "rule two"])    # 규칙만 있을 때
     assert r.endswith('<context name="userRules">\nrule one\n\nrule two\n</context>')  # 줄바꿈 하나로 시작, 규칙끼리 빈 줄
-    (tmp_path / "w" / "AGENTS.md").write_text("A", encoding="utf-8")  # AGENTS.md 작성
+    (tmp_path / "w" / "AGENTS.md").write_text("A", encoding="utf-8", newline="")  # AGENTS.md 작성
     r = _build(tmp_path, rules=["rule one"])                # 규칙 하나 추가
     assert r.endswith('<context name="userRules">\nA\n\nrule one\n</context>')  # 에이전트 내용과 규칙 사이 빈 줄
 
@@ -95,7 +95,7 @@ def test_rules_and_agent_separator(tmp_path):               # 규칙·에이전�
 def test_rule_duplication_like_cn(tmp_path):                # --rule 중복 시험
     """--rule 글은 processRule 결과 + config.rules(ConfigService 가 넣은 것)로 두 번 들어간다(cn 그대로)."""
     (tmp_path / "w" / "c.yaml").write_text("name: t\nversion: \"1\"\nmodels:\n  - name: m\n    provider: o\n    model: x\nrules:\n  - from config\n",  # 설정 파일 작성(규칙 하나 포함)
-                                           encoding="utf-8")  # (파일 인코딩)
+                                           encoding="utf-8", newline="")  # (파일 인코딩)
     cfg = load_config("./c.yaml", cwd=tmp_path / "w", global_dir=tmp_path / "gd", environ={"HOME": str(tmp_path)}, rules=["use tabs please"])  # 설정 읽기(--rule 포함)
     r = _build(tmp_path, config=cfg, rules=["use tabs please"])  # 조립
     assert r.endswith('<context name="userRules">\nuse tabs please\n\nuse tabs please\n\nfrom config\n</context>')  # --rule 글이 두 번 들어감
@@ -103,7 +103,7 @@ def test_rule_duplication_like_cn(tmp_path):                # --rule 중복 시�
 
 def test_rule_file_and_failure(tmp_path):                   # 규칙 파일 읽기와 실패 시험
     """경로 모양 --rule 은 파일 내용(앞머리 포함 그대로), 없으면 경고 후 건너뜀."""
-    (tmp_path / "w" / "r.md").write_text("---\nname: x\n---\nbody", encoding="utf-8")  # 규칙 파일 작성
+    (tmp_path / "w" / "r.md").write_text("---\nname: x\n---\nbody", encoding="utf-8", newline="")  # 규칙 파일 작성
     warnings: list[str] = []                                # 경고 모음
     r = M.build_system_message(mode="normal", headless=False, format_json=False, cwd=tmp_path / "w", global_dir=tmp_path / "gd",  # 파일 규칙과 없는 파일 규칙으로 조립
                                config=None, additional_rules=["./r.md", "./missing.md"], environ={}, snapshot=SNAP, warnings=warnings)  # (인자 이어짐)
@@ -115,8 +115,8 @@ def test_markdown_rules_dedup(tmp_path):                    # 마크다운 규�
     """.continue/rules 규칙은 이미 들어간 글과 같으면 빼고, 아니면 뒤에 붙는다."""
     d = tmp_path / "w" / ".continue" / "rules"              # 규칙 폴더 경로
     d.mkdir(parents=True)                                   # 폴더 생성
-    (d / "a.md").write_text("same", encoding="utf-8")       # --rule 과 같은 내용의 규칙 파일
-    (d / "b.md").write_text("other", encoding="utf-8")      # 다른 내용의 규칙 파일
+    (d / "a.md").write_text("same", encoding="utf-8", newline="")       # --rule 과 같은 내용의 규칙 파일
+    (d / "b.md").write_text("other", encoding="utf-8", newline="")      # 다른 내용의 규칙 파일
     r = _build(tmp_path, rules=["same"])                    # 조립
     body = r.split('<context name="userRules">\n', 1)[1]    # userRules 본문만 추출
     assert body.count("same") == 1 and "other" in body      # 같은 글은 한 번, 다른 글은 포함
@@ -149,6 +149,6 @@ def test_snapshot_git_repo(tmp_path):                       # git 저장소 스�
     subprocess.run(["git", "init", "-q"], cwd=w, check=True)  # git 저장소로 초기화
     s = M.refresh_snapshot(w)                               # 스냅숏 새로 계산
     assert s.is_git_repo is True and s.git_status == "Working tree clean"  # 저장소이며 깨끗함
-    (w / "x.txt").write_text("x", encoding="utf-8")         # 새 파일 만듦
+    (w / "x.txt").write_text("x", encoding="utf-8", newline="")         # 새 파일 만듦
     assert M.get_snapshot(w).git_status == "Working tree clean"   # 한 번 계산한 값은 그대로(cn 모듈 상수)
     assert M.refresh_snapshot(w).git_status == "?? x.txt"   # 새로 계산하면 변경 파일이 보임

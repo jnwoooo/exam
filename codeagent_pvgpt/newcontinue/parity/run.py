@@ -48,8 +48,11 @@ def config_yaml(port: int, scen: dict | None = None) -> str:
 
 
 def expand_placeholders(text: str) -> str:
-    """config_append 자리표시자: {PYTHON} = 이 실행기의 파이썬(mcp SDK 가 깔린 .venv), {PARITY_DIR} = parity 폴더 절대 경로."""
-    return text.replace("{PYTHON}", sys.executable).replace("{PARITY_DIR}", str(HERE.resolve()))   # 두 하네스가 같은 경로를 쓰게
+    """config_append 자리표시자: {PYTHON} = 이 실행기의 파이썬(mcp SDK 가 깔린 .venv), {PARITY_DIR} = parity 폴더 절대 경로.
+    자리표시자는 YAML 큰따옴표 글 안에 쓴다 → Windows 경로의 '\\' 는 YAML 이스케이프('\\\\')로 넣는다(안 하면 '\\a' 등이 해석 오류)."""
+    def q(p: str) -> str:                                    # YAML 큰따옴표 안에 넣을 모양
+        return p.replace("\\", "\\\\").replace('"', '\\"')   # 역슬래시·따옴표 이스케이프
+    return text.replace("{PYTHON}", q(sys.executable)).replace("{PARITY_DIR}", q(str(HERE.resolve())))   # 두 하네스가 같은 경로를 쓰게
 
 
 def isolated_env(tmp: Path) -> dict:
@@ -146,7 +149,7 @@ def run_one(scen: dict, cmd: list[str], timeout: int = 120) -> dict:
         server, rec = serve(scen["llm"])                     # 가짜 LLM(빈 포트)
         try:                                                 # 서버 종료를 보장하려 try
             cfg = cnhome / "config.yaml"                     # 설정 파일 경로
-            cfg.write_text(config_yaml(server.server_port, scen), encoding="utf-8")   # 설정(시나리오 덮어쓰기 반영)
+            cfg.write_text(config_yaml(server.server_port, scen), encoding="utf-8", newline="")   # 설정(시나리오 덮어쓰기 반영, 줄바꿈 변환 없음)
             argv = cmd + ["-p", scen["prompt"], "--config", str(cfg)] + scen.get("args", [])   # cn과 같은 옵션
             env = {**isolated_env(tmp), **{str(k): str(v) for k, v in (scen.get("env") or {}).items()}}   # 시나리오 env(두 하네스 모두 — 예: NCN_CN_COMPAT=1)
             proc = subprocess.run(argv, cwd=work, env=env, stdin=subprocess.DEVNULL,  # 하네스 실행(입력 없음)
@@ -154,6 +157,7 @@ def run_one(scen: dict, cmd: list[str], timeout: int = 120) -> dict:
         finally:                                             # 예외가 나도
             server.shutdown()                                # 가짜 LLM 종료
         repl = {str(work): "<CWD>", str(home): "<HOME>", str(cnhome): "<CNHOME>", str(tmp): "<TMP>"}   # 치환표
+        repl.update({k.replace("\\", "/"): v for k, v in list(repl.items())})   # Windows: formatToolArgument 등이 '/' 로 바꾼 모양도(posix 는 같은 키라 변화 없음)
         return {                                             # 결과 사전 반환
             "exit_code": proc.returncode,                    # 종료 코드(정상 0)
             "stdout": normalize_text(proc.stdout.decode("utf-8", "replace"), repl),   # 최종 응답

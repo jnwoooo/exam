@@ -190,13 +190,13 @@ def test_iso_string():                                      # ISO 문자열 형�
 def _make_tree(root: Path) -> None:                         # 검색용 파일 트리 만들기
     """검색용 파일들."""
     (root / "src").mkdir()                                  # src 폴더
-    (root / "src" / "a.py").write_text("def foo():\n    return 'bar'\n", encoding="utf-8")  # 파이썬 파일
-    (root / "src" / "b.ts").write_text("const foo = 1;\r\nlet x = foo;\n", encoding="utf-8")  # CRLF 가 낀 ts 파일
+    (root / "src" / "a.py").write_text("def foo():\n    return 'bar'\n", encoding="utf-8", newline="")  # 파이썬 파일
+    (root / "src" / "b.ts").write_text("const foo = 1;\r\nlet x = foo;\n", encoding="utf-8", newline="")  # CRLF 가 낀 ts 파일
     (root / "build").mkdir()                                # build 폴더(무시 대상)
-    (root / "build" / "out.py").write_text("foo = 'built'\n", encoding="utf-8")  # build 안 파일
-    (root / ".hidden").write_text("foo hidden\n", encoding="utf-8")  # 숨김 파일
+    (root / "build" / "out.py").write_text("foo = 'built'\n", encoding="utf-8", newline="")  # build 안 파일
+    (root / ".hidden").write_text("foo hidden\n", encoding="utf-8", newline="")  # 숨김 파일
     (root / "bin.dat").write_bytes(b"foo\x00bar")           # 이진 파일
-    (root / ".gitignore").write_text("# c\nbuild/\n!keep\n\n", encoding="utf-8")  # .gitignore 파일
+    (root / ".gitignore").write_text("# c\nbuild/\n!keep\n\n", encoding="utf-8", newline="")  # .gitignore 파일
 
 
 def test_search_metadata_and_preprocess():                  # Search 메타데이터·미리보기 시험
@@ -221,10 +221,11 @@ def test_builtin_search_rg_format(tmp_path, monkeypatch):   # 내장 검색의 r
     monkeypatch.setattr(search_mod, "check_if_ripgrep_is_installed", lambda cwd=None: _false())  # rg 없음으로 속임
     t = search_mod.make_search_tool(tmp_path)               # Search 도구 생성
     out = run(t.run({"pattern": "foo", "path": "."}))       # foo 검색
+    sep = os.sep                                            # rg 는 OS 구분자로 경로를 찍는다(Windows: .\\src\\a.py) — 내장 검색도 같게
     assert out == ('Search results for pattern "foo":\n\n'  # 결과 헤더와 내용 확인
-                   "./src/a.py:1:def foo():\n./src/b.ts:1:const foo = 1;\r\n./src/b.ts:2:let x = foo;\n")  # CRLF 의 \r 유지, 이름순
+                   f".{sep}src{sep}a.py:1:def foo():\n.{sep}src{sep}b.ts:1:const foo = 1;\r\n.{sep}src{sep}b.ts:2:let x = foo;\n")  # CRLF 의 \r 유지, 이름순
     out2 = run(t.run({"pattern": "foo", "path": "src", "file_pattern": "*.py"}))  # 파일 패턴 지정 검색
-    assert out2 == 'Search results for pattern "foo" in files matching "*.py":\n\nsrc/a.py:1:def foo():\n'  # 헤더에 파일 패턴이 들어감
+    assert out2 == f'Search results for pattern "foo" in files matching "*.py":\n\nsrc{sep}a.py:1:def foo():\n'  # 헤더에 파일 패턴이 들어감
     assert run(t.run({"pattern": "zzz"})) == 'No matches found for pattern "zzz".'  # 일치 없음 안내
     assert run(t.run({"pattern": "zzz", "file_pattern": "*.ts"})) == 'No matches found for pattern "zzz" in files matching "*.ts".'  # 파일 패턴 있는 일치 없음 안내
     with pytest.raises(ContinueError, match="Path does not exist: nope"):  # 없는 경로는 오류
@@ -239,7 +240,7 @@ async def _false():                                         # rg 없음을 알�
 def test_search_limits(tmp_path, monkeypatch):              # 검색 결과 한도 시험
     """100개 넘으면 잘림 안내, 1000자 넘는 줄은 버림(cn searchCode.test.ts)."""
     lines = [f"const foo = 'bar'; // {i}" for i in range(150)] + ["foo" + "a" * 1001]  # 151개 일치 줄 만들기
-    (tmp_path / "f.ts").write_text("\n".join(lines) + "\n", encoding="utf-8")  # 파일로 저장
+    (tmp_path / "f.ts").write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")  # 파일로 저장
     monkeypatch.setenv("NCN_BUILTIN_SEARCH", "1")           # 내장 검색 켬
     monkeypatch.setattr(search_mod, "check_if_ripgrep_is_installed", lambda cwd=None: _false())  # rg 없음으로 속임
     t = search_mod.make_search_tool(tmp_path)               # Search 도구 생성
@@ -259,7 +260,7 @@ def test_search_with_fake_rg_command(tmp_path, monkeypatch):  # 가짜 rg 로 �
     rg.write_text('#!/bin/sh\nif [ "$1" = "--version" ]; then echo "ripgrep 14"; exit 0; fi\n'  # 가짜 rg 스크립트 작성
                   'if [ "$5" = "nomatch" ]; then exit 1; fi\n'  # nomatch 면 종료 코드 1
                   'if [ "$5" = "boom" ]; then echo "bad regex" 1>&2; exit 2; fi\n'  # boom 이면 stderr 와 종료 코드 2
-                  'printf "%s|" "$@"; echo\n', encoding="utf-8")  # 그 밖엔 받은 인자를 출력
+                  'printf "%s|" "$@"; echo\n', encoding="utf-8", newline="")  # 그 밖엔 받은 인자를 출력
     rg.chmod(rg.stat().st_mode | stat.S_IEXEC)              # 실행 권한 부여
     monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")  # PATH 앞에 가짜 rg 폴더
     assert run(search_mod.check_if_ripgrep_is_installed(str(tmp_path))) is True  # rg 설치 확인이 True
@@ -453,15 +454,15 @@ def test_skills_tool(tmp_path):                             # Skills 도구 시�
     gdir = tmp_path / "global"                              # 전역 폴더
     s1 = cwd / ".continue" / "skills" / "one"               # 프로젝트 기술 폴더
     s1.mkdir(parents=True)                                  # 폴더 만들기
-    (s1 / "SKILL.md").write_text("---\nname: test-skill\ndescription: A test skill\n---\nSkill content here\n", encoding="utf-8")  # 기술 파일 작성
+    (s1 / "SKILL.md").write_text("---\nname: test-skill\ndescription: A test skill\n---\nSkill content here\n", encoding="utf-8", newline="")  # 기술 파일 작성
     s2 = gdir / "skills" / "two"                            # 전역 기술 폴더
     (s2 / "sub").mkdir(parents=True)                        # 하위 폴더 만들기
-    (s2 / "SKILL.md").write_text("---\nname: skill-with-files\ndescription: Skill with extra files\n---\nAnother skill", encoding="utf-8")  # 부속 파일 있는 기술
-    (s2 / "b.ts").write_text("x", encoding="utf-8")         # 부속 파일 1
-    (s2 / "sub" / "a.ts").write_text("x", encoding="utf-8")  # 부속 파일 2
+    (s2 / "SKILL.md").write_text("---\nname: skill-with-files\ndescription: Skill with extra files\n---\nAnother skill", encoding="utf-8", newline="")  # 부속 파일 있는 기술
+    (s2 / "b.ts").write_text("x", encoding="utf-8", newline="")         # 부속 파일 1
+    (s2 / "sub" / "a.ts").write_text("x", encoding="utf-8", newline="")  # 부속 파일 2
     bad = cwd / ".claude" / "skills" / "bad"                # 이름 없는 잘못된 기술
     bad.mkdir(parents=True)                                 # 폴더 만들기
-    (bad / "SKILL.md").write_text("no frontmatter", encoding="utf-8")   # 이름 없음 → 오류(목록에서 빠짐)
+    (bad / "SKILL.md").write_text("no frontmatter", encoding="utf-8", newline="")   # 이름 없음 → 오류(목록에서 빠짐)
     tool = make_skills_tool(str(cwd), str(gdir))            # Skills 도구 생성
     assert tool.description == ("Use this tool to read the content of a skill by its name. Skills contain detailed instructions for specific tasks. "  # 설명에 기술 목록이 들어감
                                 "The skill name should match one of the available skills listed below:\n"  # (이어서) 안내 글
@@ -485,8 +486,8 @@ def test_skill_files_relative_inside_cwd(tmp_path):         # cwd 안 부속 파
     """cwd 안의 부속 파일은 './' 없는 상대 경로(path.join 정규화)."""
     s = tmp_path / ".continue" / "skills" / "k"             # 기술 폴더
     s.mkdir(parents=True)                                   # 폴더 만들기
-    (s / "SKILL.md").write_text("---\nname: k\ndescription: d\n---\nc", encoding="utf-8")  # 기술 파일 작성
-    (s / "ref.md").write_text("r", encoding="utf-8")        # 부속 파일
+    (s / "SKILL.md").write_text("---\nname: k\ndescription: d\n---\nc", encoding="utf-8", newline="")  # 기술 파일 작성
+    (s / "ref.md").write_text("r", encoding="utf-8", newline="")        # 부속 파일
     out = run(make_skills_tool(str(tmp_path), str(tmp_path / "g")).run({"skill_name": "k"}))  # 도구 실행
     assert f"<skill_files>{os.path.join('.continue', 'skills', 'k', 'ref.md')}</skill_files>" in out  # ./ 없는 상대 경로 확인
 
