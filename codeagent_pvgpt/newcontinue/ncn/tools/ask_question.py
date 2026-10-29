@@ -25,6 +25,7 @@ class PendingQuestion:                                      # 대기 중 질문 
     default_answer: Optional[str] = None                     # 기본 답
     request_id: str = ""                                     # quiz-<밀리초>
     timestamp: int = 0                                       # 밀리초
+    source: Optional[str] = None                             # [ncn E5] 묻는 쪽(None = AskQuestion 도구, "loop_guard" = 반복 상한 질문)
 
 
 class QuizService:
@@ -36,11 +37,12 @@ class QuizService:
         self.on_question_requested: list[Callable[[PendingQuestion], None]] = []   # 화면이 등록
         self.on_question_answered: list[Callable[[str, str, bool], None]] = []     # (requestId, 답, 직접 입력?)
 
-    async def ask_question(self, question: str, options: Optional[list] = None, default_answer: Optional[str] = None) -> str:  # 질문을 걸고 답 올 때까지 기다리는 비동기 함수
+    async def ask_question(self, question: str, options: Optional[list] = None, default_answer: Optional[str] = None,  # 질문을 걸고 답 올 때까지 기다리는 비동기 함수
+                           source: Optional[str] = None) -> str:   # [ncn E5] 묻는 쪽 표시(화면이 카드를 고르게 — cn 에는 없음)
         """askQuestion — 답이 올 때까지 기다림(헤드리스에서는 아무도 답하지 않으면 끝없이 기다림 — cn과 같음)."""
         now = int(time.time() * 1000)                        # Date.now()
         request_id = f"quiz-{now}"                           # cn 형식
-        pq = PendingQuestion(question, options, default_answer, request_id, now)   # 대기 질문
+        pq = PendingQuestion(question, options, default_answer, request_id, now, source)   # 대기 질문
         fut = asyncio.get_running_loop().create_future()     # 답 자리
         self._pending[request_id] = (pq, fut)                # 등록
         self.pending_question = pq                           # 현재 상태

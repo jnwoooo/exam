@@ -277,6 +277,11 @@ class AuditLog:                                             # 세션 하나의 �
     def wrap_check(self, fn: Callable[[Any, Any], Any], perms: Any = None) -> Callable[[Any, Any], Any]:   # check_permission 포장
         """판정 결과(allow|ask|exclude)와 누가 정했는지(by)를 남긴다. 판정 자체는 그대로."""
         async def check(tool: Any, args: Any) -> Any:        # 포장된 판정(루프가 await)
+            if perms is not None and hasattr(perms, "last_decision_source"):   # 지난 판정 출처가 남아 있으면
+                try:                                        # 쓰기 실패 대비(읽기 전용 속성 등)
+                    perms.last_decision_source = None       # 비워 둠(이번 판정이 다시 채움 — 묵은 값 방지)
+                except Exception:                           # 실패
+                    pass                                    # 무시(기록은 대체 판정으로)
             decision = await _maybe_await(fn(tool, args))     # 원래 판정
             self.record("permission", tool=getattr(tool, "name", None), decision=decision,   # 도구·판정
                         by=decision_source(perms, tool, args, decision))   # 누가

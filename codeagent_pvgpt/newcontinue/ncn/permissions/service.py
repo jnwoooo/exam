@@ -78,6 +78,7 @@ class PermissionService:                                    # 권한 서비스 �
         self.policies: List[ToolPermissionPolicy] = []       # 현재 정책 목록(permissions.policies)
         self._mode_policy_count = 0                          # 모드 정책 수(modePolicyCount)
         self._original_policies: Optional[List[ToolPermissionPolicy]] = None   # normal을 처음 떠날 때 저장한 정책
+        self.last_decision_source: Optional[str] = None      # [ncn E6] 마지막 check() 판정 출처(E1|E2|user|mode|default|bash_security)
         ensure_permissions_yaml_exists(self.yaml_path)       # doInitialize: 기본 파일 만들기
         self._initialize()                                  # 정책 초기 구성 — initializeSync
 
@@ -169,7 +170,20 @@ class PermissionService:                                    # 권한 서비스 �
             evaluate = _builtin_bash_policy                 # 이름이 Bash면 내장 평가 사용
         a = args if args is not None else {}                 # 인자(없으면 {})
         permission, matched = check_tool_permission(tool.name, a, self.policies, evaluate)  # 정적 정책 + 동적 평가로 판정
-        return self.layer.apply(tool.name, a, permission, matched, self.mode)   # [ncn E1·E2] 관리자 정책·force_ask·위험 판정
+        final, src = self.layer.apply_with_source(tool.name, a, permission, matched, self.mode)   # [ncn E1·E2] 관리자 정책·force_ask·위험 판정
+        self.last_decision_source = src or self._cn_source(permission, matched)   # [ncn E6] 감사 기록용 판정 출처
+        return final                                        # 최종 판정
+
+    def _cn_source(self, permission: str, matched: Optional[ToolPermissionPolicy]) -> str:   # [ncn E6] cn 판정의 출처 이름
+        """bash_security(Bash 위험 판정이 exclude 로 바꿈) / mode(plan·auto 정책표) / default(기본표·일치 없음) /
+        user(permissions.yaml·CLI 플래그·'다시 묻지 않기')."""
+        if permission == "exclude" and (matched is None or matched.permission != "exclude"):   # 정적 정책은 금지가 아닌데 금지 → 동적 평가
+            return "bash_security"                          # Bash 위험 판정이 차단
+        if self.mode in (MODE_PLAN, MODE_AUTO):              # 모드 정책표(완전 대체)
+            return "mode"                                   # 모드
+        if matched is None or getattr(matched, "_ncn_default", False):   # 일치 없음(기본 ask) 또는 기본표
+            return "default"                                # 기본
+        return "user"                                       # 사용자 설정
 
     def add_always_allow(self, tool_name: str, args: Dict) -> None:  # '항상 허용' 규칙을 yaml에 저장
         """useChat.ts handleToolPermissionResponse(createPolicy) — 규칙 생성 → permissions.yaml allow에 추가 → 다시 읽기.

@@ -24,7 +24,7 @@ from dataclasses import dataclass                            # 고르기 상태
 from typing import Any, Optional                             # 타입
 
 from ncn import console_render as cr                         # 화면 글(ANSI)
-from ncn.slash_commands import SlashContext, all_slash_commands, handle_slash_commands   # 슬래시 명령
+from ncn.slash_commands import SlashContext, handle_slash_commands, slash_completions   # 슬래시 명령([ncn E4] Tab 후보)
 
 log = logging.getLogger("ncn.interactive")                   # 로거
 
@@ -253,11 +253,10 @@ class InteractiveApp:                                        # 콘솔 대화형 
         class SlashCompleter(Completer):                     # '/' 명령 완성(cn SlashCommandUI 대신 Tab 완성)
             def get_completions(self, document, complete_event):   # 완성 후보
                 t = document.text_before_cursor              # 커서 앞 글
-                if not t.startswith("/") or " " in t or app.slash is None:   # 명령 이름을 쓰는 중이 아니면
+                if app.slash is None:                        # 명령 처리기가 없으면
                     return                                   # 후보 없음
-                for name in all_slash_commands(app.slash):   # 명령마다
-                    if name.lower().startswith(t[1:].lower()):   # 앞부분이 맞으면
-                        yield Completion("/" + name, start_position=-len(t))   # 후보
+                for cand in slash_completions(app.slash, t):   # 후보마다([ncn E4] ncn 전용 명령 포함)
+                    yield Completion(cand, start_position=-len(t))   # 후보
 
         gdir = self.core.gdir if self.core is not None else cpaths.global_dir(self.environ, os.getcwd())   # env.continueHome 대응
         kw: dict = dict(message=lambda: ANSI(self._message()), multiline=True, key_bindings=self._key_bindings(),   # 머리글·여러 줄·키

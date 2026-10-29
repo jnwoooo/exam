@@ -25,6 +25,9 @@ REASON_MAX_ITERATIONS = "max_iterations"                     # 멈춘 이유: �
 REASON_REPEAT_FAILURE = "repeat_failure"                     # 멈춘 이유: 같은 호출 연속 실패
 REASON_POLICY = "policy_max_iterations"                      # 멈춘 이유: 관리자 정책 상한(묻지 않음)
 
+QUESTION_SOURCE = "loop_guard"                               # quiz_service 질문 출처 표시(ACP 가 AskQuestion 카드와 구분)
+LOOP_GUARD_CARD_TITLE = "ncn: 반복 상한 안내"                  # ACP 질문 카드 제목
+
 AskContinue = Callable[[str], Awaitable[bool]]               # (질문 글) → 계속하면 참
 
 
@@ -184,7 +187,7 @@ async def quiz_ask_continue(text: str) -> bool:              # 대화형·ACP �
     from ncn.tools.ask_question import quiz_service          # 질문 서비스(모듈 공용)
     if not quiz_service.on_question_requested:               # 답할 화면이 없으면
         return False                                        # 멈춤
-    answer = await quiz_service.ask_question(text, [CHOICE_CONTINUE, CHOICE_STOP], CHOICE_STOP)   # 묻고 기다림
+    answer = await quiz_service.ask_question(text, [CHOICE_CONTINUE, CHOICE_STOP], CHOICE_STOP, source=QUESTION_SOURCE)   # 묻고 기다림(ACP 는 자기 카드로)
     return answer == CHOICE_CONTINUE                         # "계속"일 때만 진행
 
 

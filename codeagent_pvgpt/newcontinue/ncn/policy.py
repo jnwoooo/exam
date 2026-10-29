@@ -219,6 +219,11 @@ class PermissionLayer:                                      # cn 판정 결과�
 
     def apply(self, tool_name: str, args: Optional[Dict[str, Any]], permission: str,   # 최종 판정
               matched: Optional[ToolPermissionPolicy], mode: str) -> str:   # (인자 이어짐)
+        """apply_with_source 의 판정만 돌려준다(기존 호출부용)."""
+        return self.apply_with_source(tool_name, args, permission, matched, mode)[0]   # 판정만
+
+    def apply_with_source(self, tool_name: str, args: Optional[Dict[str, Any]], permission: str,   # 최종 판정 + 출처
+                          matched: Optional[ToolPermissionPolicy], mode: str) -> Tuple[str, Optional[str]]:   # (판정, "E1"|"E2"|None)
         """cn 판정(permission, matched — 사용자 CLI·yaml·기본표·모드 정책의 첫 일치) 위에:
         ① E1 정책 규칙: exclude → exclude / ask → 사용자가 exclude 면 exclude, 아니면 ask /
            allow → 사용자 판정이 기본표의 ask 일 때만 allow(사용자가 직접 정한 ask·exclude·plan 금지는 그대로 — 더 엄격한 쪽)
@@ -228,28 +233,30 @@ class PermissionLayer:                                      # cn 판정 결과�
         perm = permission                                    # 시작은 cn 판정
         pol_perm, pol_rule = (self.admin.match(tool_name, a) if self.admin is not None else (None, None))   # ① 정책 규칙
         if pol_perm == EXCLUDE:                              # 정책 금지
-            return EXCLUDE                                   # 무엇으로도 못 바꿈
+            return EXCLUDE, "E1"                             # 무엇으로도 못 바꿈(출처: 관리자 정책)
+        src: Optional[str] = None                            # 출처(None = cn 판정 그대로)
         if pol_perm == ASK:                                  # 정책 묻기
-            perm = EXCLUDE if perm == EXCLUDE else ASK       # 사용자 금지는 유지, 나머지는 ask
+            if perm != EXCLUDE:                              # 사용자 금지가 아니면
+                perm, src = ASK, "E1"                        # 관리자 정책이 ask 로 정함
         elif pol_perm == ALLOW and perm == ASK and is_default_policy(matched):   # 정책 허용 + 기본표 ask
-            perm = ALLOW                                     # 관리자가 미리 승인
+            perm, src = ALLOW, "E1"                          # 관리자가 미리 승인
         if perm == EXCLUDE:                                  # 이미 금지
-            return EXCLUDE                                   # 더 볼 것 없음
+            return EXCLUDE, src                              # 더 볼 것 없음
         if self.admin is not None and self.admin.force_ask.match(tool_name, a):   # ② 모드 무관 ask
-            return ASK                                       # 묻기(헤드리스면 정책 거부)
+            return ASK, "E1"                                 # 묻기(헤드리스면 정책 거부)
         if perm != ALLOW:                                    # ask 는 그대로
-            return perm                                      # 반환
+            return perm, src                                 # 반환
         if not self.risk_enabled or mode == MODE_AUTO:       # ③ E2 꺼짐 또는 auto(사용자가 전부 허용)
-            return perm                                      # allow 그대로
+            return perm, src                                 # allow 그대로
         if _is_specific(matched) or (pol_perm == ALLOW and _is_specific(pol_rule)):   # 그 호출을 콕 집어 허용한 규칙
-            return perm                                      # allow 그대로(예: '다시 묻지 않기'로 저장한 Bash(git push origin main))
+            return perm, src                                 # allow 그대로(예: '다시 묻지 않기'로 저장한 Bash(git push origin main))
         reason = self.user_risk.match(tool_name, a)          # 사용자(기본 포함) 규칙
         if reason is None and self.admin is not None:        # 없으면 관리자 추가 규칙
             reason = self.admin.risk.match(tool_name, a)     # 관리자 risk
         if reason is not None:                               # 위험
             log.debug("Risky call raised to ask: %s %s", tool_name, reason)   # 로그
-            return ASK                                       # 묻기로 올림
-        return perm                                          # allow 그대로
+            return ASK, "E2"                                 # 묻기로 올림(출처: 위험 판정)
+        return perm, src                                     # allow 그대로
 
 
 def build_permission_layer(global_dir: Any, environ: Optional[Mapping[str, str]] = None) -> PermissionLayer:   # 층 만들기

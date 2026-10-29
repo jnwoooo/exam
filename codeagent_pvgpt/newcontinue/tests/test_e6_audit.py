@@ -113,8 +113,10 @@ def test_wrap_check_and_ask_record_decisions(tmp_path):      # 권한 판정(누
     check = a.wrap_check(lambda tool, args: "ask", perms)    # 동적 판정이 ask 로 바꿈
     assert asyncio.run(check(FakeTool("Bash"), {"command": "rm -rf /"})) == "ask"   # 판정 그대로
     assert asyncio.run(a.wrap_check(lambda t, x: "allow", perms)(FakeTool("Read"), {})) == "allow"   # 정책 그대로
-    perms.last_decision_source = "E2"                        # E1·E2 가 출처를 남기면
-    asyncio.run(a.wrap_check(lambda t, x: "ask", perms)(FakeTool("Write"), {}))   # 그 값을 씀
+    def e2_check(t, x):                                      # 판정하면서 출처를 남기는 판정(PermissionService.check 흉내)
+        perms.last_decision_source = "E2"                    # E1·E2 가 출처를 남기면
+        return "ask"                                        # 묻기
+    asyncio.run(a.wrap_check(e2_check, perms)(FakeTool("Write"), {}))   # 그 값을 씀
 
     async def asker(name, args, preview, tcid):              # 화면 승인
         return "reject"                                     # 거부
@@ -124,6 +126,36 @@ def test_wrap_check_and_ask_record_decisions(tmp_path):      # 권한 판정(누
     assert [(e["kind"], e.get("decision") or e.get("choice"), e["by"]) for e in evs] == [   # 판정·출처
         ("permission", "ask", "bash_security"), ("permission", "allow", "policy"), ("permission", "ask", "E2"),   # 판정
         ("approval", "reject", "user")]                       # 사용자 선택
+
+
+def test_real_permission_service_records_e1_e2_sources(tmp_path, monkeypatch):   # 실제 PermissionService 가 출처를 남김
+    from ncn import policy                                   # 정책 모듈(E1)
+    from ncn.permissions.service import PermissionService    # 권한 서비스
+    from ncn.tools.base import Tool                          # 공용 도구 형식
+    if policy.system_policy_path().is_file():                # 실제 시스템 정책이 있으면
+        pytest.skip("system policy present")                 # 환경변수 정책이 무시되므로 건너뜀
+    pf = tmp_path / "policy.yaml"                            # 관리자 정책 파일
+    pf.write_bytes(b"exclude: [Fetch]\nforce_ask: {commands: ['npm publish*']}\n")   # E1: Fetch 금지·npm publish 묻기
+    monkeypatch.setenv(policy.POLICY_ENV, str(pf))           # 정책 지정
+    monkeypatch.delenv("NCN_CN_COMPAT", raising=False)       # E2 켬
+
+    async def run(args, ctx):                                # 쓰지 않는 실행 함수
+        return ""                                           # 빈 결과
+    t = lambda n: Tool(name=n, display_name=n, description="", parameters={}, run=run)   # 이름만 있는 도구
+    perms = PermissionService(global_dir=tmp_path / "gdir", headless=True, allow=["Write"])   # 헤드리스(Bash 기본 allow)
+    a = au.AuditLog(tmp_path / "log", ui="headless", now=lambda: FIXED)   # 기록기
+    check = a.wrap_check(lambda tool, args: perms.check(tool, args), perms)   # 실제 판정 포장
+    cases = [(t("Fetch"), {"url": "http://x"}), (t("Bash"), {"command": "npm publish"}),   # E1 금지·E1 묻기
+             (t("Bash"), {"command": "git push origin main"}), (t("Write"), {"filepath": "a"}),   # E2 위험·CLI 허용
+             (t("Read"), {"filepath": "a"}), (t("Bash"), {"command": "sudo rm -rf /"})]   # 기본표·Bash 위험 차단
+    for tool_, args in cases:                                # 차례로 판정
+        asyncio.run(check(tool_, args))                      # 판정
+    perms.set_mode("plan")                                   # plan 모드
+    asyncio.run(check(t("Read"), {"filepath": "a"}))         # 모드 정책표
+    evs = lines(tmp_path / "log" / "ncn-audit" / "2026-10-30.jsonl")   # 사건들
+    assert [(e["tool"], e["decision"], e["by"]) for e in evs] == [   # 판정·출처
+        ("Fetch", "exclude", "E1"), ("Bash", "ask", "E1"), ("Bash", "ask", "E2"), ("Write", "allow", "user"),   # E1·E2·사용자
+        ("Read", "allow", "default"), ("Bash", "exclude", "bash_security"), ("Read", "allow", "mode")]   # 기본·위험 차단·모드
 
 
 def test_record_never_raises_on_disk_error(tmp_path):        # 디스크 오류는 대화를 막지 않음

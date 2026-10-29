@@ -5,12 +5,14 @@
 2. `README.md` — 서버 쪽(코드에이전트 서버 + RAG) 사용법
 3. `newcontinue/계획.md` — ncn(Continue 호환 CLI 하네스 + VS 2022 확장) 계획. **14장(4차 결정)이 앞 장보다 우선**
 4. `newcontinue/P0/*.md` — cn 소스 분석 결과(이식 명세)
+5. `newcontinue/현장_시험_목록.md` — 현장에서 확인할 것(P0~P6 완료, 2026-10-30) · `newcontinue/추가기능_가이드.md`(E1~E7) · `newcontinue/ACP_연동.md` · `newcontinue/배포_가이드.md` · `newcontinue/vs/README.md`
 
 ## 구성
 - `agent_server/` `rag_service/` `common/` `llm_server/` `tools/` — 서버 쪽(Python 3.13, uv). Continue/ncn이 붙는 `/v1`(LLM 프록시)·`/mcp`(도구)
 - `newcontinue/` — **ncn**: 별도 uv 프로젝트(Python ≥3.10, 개발 기준 3.14). 사용자 PC에 배포되는 클라이언트
   - `ncn/` 하네스 · `parity/` 차등 시험(녹화형 가짜 LLM·시나리오 JSON) · `tests/`
-  - VS 2022 확장(C#, P6)은 `newcontinue/vs/`에 둘 예정
+  - VS 2022 확장(C#, P6): `newcontinue/vs/` — 빌드·시험은 GitHub Actions(.github/workflows/ncn-vsix.yml)
+  - CI: `.github/workflows/ncn.yml`(3개 OS 시험·cn 차등·빌드) — 고친 뒤 Actions 결과를 `gh run list -R jnwoooo/exam`으로 확인
 
 ## 반드시 지킬 것
 - **모든 코드에 줄 단위 한국어 주석**(사용자 고정 요청). 기존 파일의 주석 밀도·말투를 따른다.

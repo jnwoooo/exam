@@ -30,6 +30,11 @@ SYSTEM_SLASH_COMMANDS = [                                    # commands.ts 원�
     ("export", "Export a session to JSON file"), ("import", "Import a session from JSON file"),   # export·import 명령
 ]                                                            # 표 끝
 
+NCN_SLASH_COMMANDS = [                                       # [ncn E4] ncn 전용 명령(이름, 설명) — 원문 표와 따로(/help 끝 구역·Tab 완성용)
+    ("undo", "Undo the last file change made in this session"),   # /undo — 마지막 파일 수정 되돌리기
+    ("undo list", "List file backups of this session"),      # /undo list — 이 세션의 백업 목록
+]                                                            # 표 끝
+
 UNSUPPORTED = {"update", "config", "model", "mcp"}            # ncn 이 막은 명령(위 머리 주석의 이유)
 UNSUPPORTED_MESSAGE = "ncn: /{name} 은(는) 콘솔 대화형에서 지원하지 않습니다(Hub·화면 전용 기능)."   # 안내 글(ncn 전용 — 기록에 넣지 않음)
 EXPORTED_SESSION_VERSION = 1                                 # slashCommands.ts 원문 값
@@ -107,6 +112,21 @@ def all_slash_commands(ctx: SlashContext) -> list[str]:      # getAllSlashComman
     return names                                             # 이름 목록
 
 
+def ncn_slash_commands() -> list:                            # [ncn E4] ncn 전용 명령 표(NCN_CN_COMPAT=1 이면 빈 목록)
+    """cn 원문 표(SYSTEM_SLASH_COMMANDS)와 따로 — /help 끝 "ncn 추가 명령" 구역과 Tab 완성에만 쓴다."""
+    from ncn.compat import cn_compat                         # cn 원래 동작 스위치
+    return [] if cn_compat() else list(NCN_SLASH_COMMANDS)   # 끄면 cn 처럼 없음
+
+
+def slash_completions(ctx: SlashContext, typed: str) -> list[str]:   # Tab 완성 후보('/이름' 글)
+    """'/' 로 시작하는 커서 앞 글 → 후보. cn 명령은 이름을 쓰는 중(공백 없음)일 때만, [ncn E4] ncn 전용('/undo list')은 공백 있어도."""
+    if not typed.startswith("/"):                            # 명령을 쓰는 중이 아니면
+        return []                                           # 후보 없음
+    names = [] if " " in typed else all_slash_commands(ctx)   # cn 명령(원문 표·프롬프트·규칙·기술)
+    names += [n for n, _ in ncn_slash_commands()]            # [ncn E4] ncn 전용 명령
+    return ["/" + n for n in names if n.lower().startswith(typed[1:].lower())]   # 앞부분이 맞는 것
+
+
 def handle_slash_commands(text: str, ctx: SlashContext) -> Optional[dict]:   # handleSlashCommands 항목
     """'/' 로 시작하면 명령 결과(dict), 아니면 None(일반 메시지). 모르는 명령이 어떤 이름에도 안 걸리면 None(일반 글로 보냄)."""
     if not text.startswith("/") or not text.strip().startswith("/"):   # 맨 앞이 '/' 가 아니면
@@ -140,7 +160,14 @@ def handle_slash_commands(text: str, ctx: SlashContext) -> Optional[dict]:   # h
 
 
 def _help(args: list, ctx: SlashContext) -> dict:            # /help 항목
-    return {"output": help_message(ctx.style)}               # 도움말 글
+    out = help_message(ctx.style)                            # 도움말 글(cn 원문)
+    extra = ncn_slash_commands()                             # [ncn E4] ncn 전용 명령
+    if extra:                                                # 있으면 끝에 따로 구역
+        c = lambda t: ctx.style.paint(t, "cyan")             # 명령 색(원문 도움말과 같은 cyan)
+        width = max(len(n) for n, _ in extra) + 3            # 설명 줄 맞춤(이름 + '/' + 공백 2)
+        rows = [f"  {c('/' + n)}{' ' * (width - len(n) - 1)}{d}" for n, d in extra]   # 한 줄씩
+        out += "\n\n" + ctx.style.paint("ncn 추가 명령:", "white") + "\n" + "\n".join(rows)   # 구역 덧붙임
+    return {"output": out}                                   # 도움말 글
 
 
 def _clear(args: list, ctx: SlashContext) -> dict:           # /clear 항목

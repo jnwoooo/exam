@@ -189,6 +189,21 @@ plan = 쓰기 도구(Edit·MultiEdit·Write) 목록에서 빠지고 호출돼도
 ### 3-9. session/cancel
 `{"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":"6f0c…"}}` — LLM 스트림·재시도를 멈추고, 기다리던 승인·질문을 풀고(규격상 IDE는 걸린 승인 요청에 `cancelled`로 답해야 함), 도구가 1초 안에 안 끝나면 턴 작업을 취소한다. 받은 데까지의 응답 글은 기록에 넣지 않는다(cn Esc와 같음). prompt 응답은 `cancelled`.
 
+### 3-10. 텍스트 명령(`/undo`·`/compact`)과 반복 상한 질문(ncn)
+슬래시 명령 UI가 없는 IDE도 prompt 글(text 블록) 그대로 보내면 된다. 앞 공백 없이 `/`로 시작해야 하고, 둘 다 **LLM 호출 없이** 처리되며 prompt 응답은 `end_turn`.
+
+| prompt 글 | 동작 | IDE가 받는 것 |
+|---|---|---|
+| `/undo` | 이 세션의 마지막 파일 수정 되돌리기(원본 바이트 그대로). fs 위임 중이면 `fs/write_text_file`로 되돌림(VS Ctrl+Z 가능), 새 파일 삭제는 디스크 | `agent_message_chunk` 결과 글(예: `되돌림: …`, 없으면 `되돌릴 파일 수정이 없습니다…`). 대화 기록에는 안 남음 |
+| `/undo list` | 이 세션의 백업 목록(최근 것부터) | `agent_message_chunk` 목록 글(`백업 N개 …`) |
+| `/undo <그 밖>` | 사용법 안내 | `agent_message_chunk` `사용법: /undo — …` |
+| `/compact` | 수동 대화 압축(cn 대화형 `/compact`) | `_ncn/system_message` + `agent_thought_chunk`(`Chat history compacted successfully.` 등, 5장 "대화 압축"). 취소는 `session/cancel` |
+
+- `NCN_CN_COMPAT=1`이면 `/undo`는 cn처럼 일반 글로 LLM에 간다(`/compact`는 cn 명령이라 그대로).
+- 버튼으로 만들 때: "되돌리기" = `/undo`, "백업 목록" = `/undo list`, "대화 압축" = `/compact`를 prompt로 보내면 된다.
+
+**반복 상한 질문(E5)**: 한 턴의 LLM 호출이 `ncn.yaml` `loop.max_iterations`(기본 50)에 닿거나 같은 도구가 같은 인자로 연달아 실패하면 "계속 / 멈춤"을 묻는다. AskQuestion(3-7)과 같은 경로(elicitation → `_ncn/ask` → 승인 형식)지만 **자기 카드**를 쓴다: 먼저 `tool_call`(id `loopguard-<요청 id>`, title `ncn: 반복 상한 안내`, kind `other`, status `pending`, content = 질문 글)을 보내고, 질문의 `toolCallId`가 그 id다. 답하면 그 카드가 `completed`(rawOutput = 고른 답)로 끝난다. "멈춤"(기본 답 — decline·cancel 포함)이면 턴이 끝나고 prompt는 `end_turn`, "계속"이면 이어 간다. AskQuestion 카드 id는 그 도구가 끝나면 비워지므로 뒤 질문이 끝난 카드에 붙지 않는다.
+
 ## 4. VS 확장 요구사항
 | # | 요구 | 이유 |
 |---|---|---|

@@ -151,6 +151,22 @@ def test_interactive_slash_undo(ws, monkeypatch):           # 대화형 /undo·/
     assert handle_slash_commands("/undo", ctx) is None       # cn: 모르는 명령 → 일반 글
 
 
+def test_help_and_tab_show_ncn_commands(monkeypatch):      # /help 끝 "ncn 추가 명령" 구역·Tab 완성
+    from ncn.slash_commands import SYSTEM_SLASH_COMMANDS, slash_completions   # 원문 표·완성
+    monkeypatch.delenv("NCN_CN_COMPAT", raising=False)       # ncn 기본
+    ctx = _slash_ctx(SID)                                    # 부품
+    out = handle_slash_commands("/help", ctx)["output"]      # 도움말
+    assert out.endswith("ncn 추가 명령:\n  /undo       Undo the last file change made in this session\n"   # 끝 구역
+                        "  /undo list  List file backups of this session")   # (이어짐)
+    assert "undo" not in [n for n, _ in SYSTEM_SLASH_COMMANDS]   # cn 원문 표는 그대로
+    assert slash_completions(ctx, "/un") == ["/undo", "/undo list"]   # Tab 후보
+    assert slash_completions(ctx, "/undo l") == ["/undo list"]   # 공백 뒤도
+    assert "/help" in slash_completions(ctx, "/he") and slash_completions(ctx, "x") == []   # cn 명령·비명령
+    monkeypatch.setenv("NCN_CN_COMPAT", "1")                 # cn 원래 동작
+    assert "ncn 추가 명령" not in handle_slash_commands("/help", ctx)["output"]   # 구역 없음
+    assert slash_completions(ctx, "/un") == []               # 후보 없음
+
+
 def test_undo_async_via_ide(ws):                            # IDE 위임 중 되돌림은 IDE 쓰기 요청
     p = ws / "i.txt"                                         # 파일
     p.write_bytes(b"disk\n")                                 # 디스크(백업 원본)

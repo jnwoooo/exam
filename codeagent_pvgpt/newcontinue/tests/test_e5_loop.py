@@ -232,3 +232,54 @@ def test_headless_compat_has_no_limit(tmp_path):             # NCN_CN_COMPAT=1 �
     assert proc.returncode == 0 and len(rec.requests) == 5   # 끝까지
     assert not (cnhome / "ncn-audit").exists()               # [E6] 감사 기록도 꺼짐
     assert proc.stdout.decode("utf-8").strip() == "끝"      # 최종 답
+
+
+# ── ACP 끝까지(실제 ncn --stdio 자식 프로세스 + 가짜 IDE) ──
+
+def _acp_loop_scenario(tmp_path, steps, ide, caps=None):     # ncn.yaml loop.max_iterations=2 로 ACP 한 턴
+    """tests/test_acp.py 의 Harness·FakeIDE 를 쓴다. 돌려주는 값: (Harness, prompt 응답)."""
+    from acp.helpers import text_block                       # 질문 블록
+    from tests.test_acp import Harness, run                  # ACP 시험 도구
+    h = Harness(tmp_path, steps, files={"a.txt": "A\n"})     # 작업 폴더에 a.txt
+    (h.cnhome / "ncn.yaml").write_bytes(b"loop:\n  max_iterations: 2\n  repeat_failure_limit: 0\n")   # 반복 상한 2
+
+    async def go():                                          # 시나리오
+        await h.start(ide, caps)                             # 시작
+        s = await h.new()                                    # 세션
+        r = await h.conn.prompt(session_id=s.session_id, prompt=[text_block("읽어줘")])   # 질문
+        await h.stop()                                       # 종료
+        return r                                            # 응답
+    return h, run(go())                                      # 실행
+
+
+def test_acp_loop_guard_stop_ends_turn(tmp_path):            # ACP: 상한 → 질문(승인 형식) → "멈춤"이면 턴 끝
+    from tests.test_acp import FakeIDE                       # 가짜 IDE
+    ide = FakeIDE(["answer_1"])                              # 두 번째 선택지 = 멈춤
+    h, r = _acp_loop_scenario(tmp_path, [call("a.txt")] * 3 + [{"content": "끝"}], ide)   # 계속 읽는 모델
+    assert r.stop_reason == "end_turn" and len(h.bodies()) == 2   # LLM 2번 뒤 멈춤
+    assert len(ide.permissions) == 1                         # 질문 하나(Read 는 허용이라 승인 없음)
+    tc = ide.permissions[0]["tool_call"]                     # 질문 카드
+    assert tc["toolCallId"].startswith("loopguard-") and tc["title"] == lg.LOOP_GUARD_CARD_TITLE   # 자기 카드·제목
+    assert [o["name"] for o in ide.permissions[0]["options"]][:2] == [lg.CHOICE_CONTINUE, lg.CHOICE_STOP]   # 선택지
+    starts = [u for u in ide.of("tool_call") if u["toolCallId"] == tc["toolCallId"]]   # 그 카드 시작 알림
+    assert len(starts) == 1 and starts[0]["title"] == lg.LOOP_GUARD_CARD_TITLE   # 새 카드
+    ends = [u for u in ide.of("tool_call_update") if u["toolCallId"] == tc["toolCallId"]]   # 그 카드 끝 알림
+    assert ends and ends[-1]["status"] == "completed" and ends[-1]["rawOutput"] == lg.CHOICE_STOP   # 고른 답
+    assert "끝" not in ide.text()                            # 마지막 답까지 가지 않음
+
+
+def test_acp_loop_guard_continue_after_ask_question(tmp_path):   # ACP: AskQuestion 뒤 상한 질문은 자기 카드(elicitation) → "계속"이면 이어짐
+    from acp.schema import ClientCapabilities, ElicitationCapabilities, ElicitationFormCapabilities   # 능력
+    from tests.test_acp import FakeIDE                       # 가짜 IDE
+    ask = {"tool_calls": [{"name": "AskQuestion", "arguments": {"question": "어느 쪽?", "options": [lg.CHOICE_CONTINUE, "X"]}}]}   # 질문 도구
+    steps = [ask, call("a.txt"), call("a.txt"), {"content": "끝"}]   # 질문 → 읽기 → (상한 질문) → 읽기 → 끝
+    ide = FakeIDE(elicit={"choice": lg.CHOICE_CONTINUE})     # 모든 질문에 "계속"
+    caps = ClientCapabilities(elicitation=ElicitationCapabilities(form=ElicitationFormCapabilities()))   # elicitation 능력
+    h, r = _acp_loop_scenario(tmp_path, steps, ide, caps)    # 실행
+    assert r.stop_reason == "end_turn" and len(h.bodies()) == 4 and ide.text().endswith("끝")   # 끝까지 이어짐
+    assert [e["message"] for e in ide.elicitations][0] == "어느 쪽?"   # 첫 질문 = AskQuestion
+    assert ide.elicitations[0]["mode"]["toolCallId"] == "call_0_0"   # AskQuestion 카드
+    loop_q = ide.elicitations[1]                             # 상한 질문
+    assert "반복 상한 2회" in loop_q["message"]               # 질문 글
+    assert loop_q["mode"]["toolCallId"].startswith("loopguard-")   # 이전 AskQuestion 카드에 붙지 않음
+    assert len(ide.elicitations) == 2                        # 질문 둘

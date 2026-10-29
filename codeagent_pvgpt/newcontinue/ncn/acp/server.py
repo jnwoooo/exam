@@ -433,6 +433,8 @@ class NcnAgent:                                             # acp Agent 구현
     def _on_tool_end(self, s: AcpSession, e: dict) -> None:  # 도구 카드 끝내기
         """tool_call_update: 성공 → completed(+diff, 결과 글), 거부(canceled)·오류 → failed(글). Checklist 성공이면 plan 도."""
         tcid = e.get("tool_call_id") or ""                   # 호출 id
+        if tcid and tcid == s.last_ask_id:                   # AskQuestion 카드가 끝났으면
+            s.last_ask_id = None                             # 비움(뒤 질문 — 예: [ncn E5] 반복 상한 — 이 끝난 카드에 붙지 않게)
         self._drop_subagent_progress(s, tcid)                # 남은 Subagent 진행 표시 버림(끝 결과가 마지막이 되게)
         card = s.cards.get(tcid)                             # 카드
         name = e.get("name") or (card.name if card else "")  # 도구 이름
@@ -552,12 +554,18 @@ class NcnAgent:                                             # acp Agent 구현
 
     async def _answer_question(self, s: AcpSession, pq: Any) -> None:   # 질문 하나 처리
         """elicitation(form) 능력 → elicitation/create, _meta.ncn.ask → _ncn/ask, 아니면 승인 요청 형식(선택지마다 allow_once + Skip)."""
-        await self.flush()                                   # 카드 먼저
+        from ncn.loopguard import LOOP_GUARD_CARD_TITLE, QUESTION_SOURCE   # [ncn E5] 반복 상한 질문 표시·카드 제목
         q, opts, default = pq.question, pq.options, pq.default_answer   # 질문·선택지·기본 답
+        own = getattr(pq, "source", None) == QUESTION_SOURCE  # [ncn E5] 반복 상한 질문 → 자기 카드
+        card_id = f"loopguard-{pq.request_id}" if own else s.last_ask_id   # 질문을 붙일 카드 id
+        if own:                                              # [ncn E5] 새 카드(제목 = 반복 상한 안내, 내용 = 질문)
+            self._update(s, start_tool_call(card_id, LOOP_GUARD_CARD_TITLE, kind="other", status="pending",   # tool_call 알림
+                                            content=[convert.text_content(q)], raw_input={"question": q, "options": opts}))   # 질문 글·선택지
+        await self.flush()                                   # 카드 먼저
         answer, custom = default or "", False                # 기본값(거절·취소 시)
         try:                                                # IDE 오류는 기본 답으로
             if self._can_elicit():                           # 1) elicitation 항목
-                mode = ElicitationFormSessionMode(session_id=s.id, tool_call_id=s.last_ask_id,   # 세션·카드
+                mode = ElicitationFormSessionMode(session_id=s.id, tool_call_id=card_id,   # 세션·카드
                                                   requested_schema=ElicitationSchema.model_validate(convert.question_schema(q, opts, default)))   # 폼 스키마
                 resp = await self._race(s, self.conn.create_elicitation(message=q, mode=mode))   # 묻기
                 if resp is None:                             # 중단
@@ -565,14 +573,14 @@ class NcnAgent:                                             # acp Agent 구현
                 if getattr(resp, "action", None) == "accept":   # 수락
                     answer, custom = convert.answer_from_elicitation(resp.content, default)   # 답
             elif self._can_ncn_ask():                        # 2) ncn 확장
-                r = await self._race(s, self.conn.ext_method("ncn/ask", {"sessionId": s.id, "toolCallId": s.last_ask_id,   # _ncn/ask 요청
+                r = await self._race(s, self.conn.ext_method("ncn/ask", {"sessionId": s.id, "toolCallId": card_id,   # _ncn/ask 요청
                                                                           "question": q, "options": opts, "defaultAnswer": default}))   # 질문 내용
                 if r is None:                                # 중단
                     return                                  # 끝
                 answer = str((r or {}).get("answer") or default or "")   # 답
                 custom = bool((r or {}).get("isCustom"))     # 직접 입력 여부
             else:                                            # 3) 승인 요청 형식
-                tc = ToolCallUpdate(tool_call_id=s.last_ask_id or f"ask-{pq.request_id}", title=q, kind="other",   # 질문 카드
+                tc = ToolCallUpdate(tool_call_id=card_id or f"ask-{pq.request_id}", title=LOOP_GUARD_CARD_TITLE if own else q, kind="other",   # 질문 카드
                                     status="pending", content=[convert.text_content(q)],   # 질문 글
                                     raw_input={"question": q, "options": opts, "defaultAnswer": default})   # 원래 인자
                 resp = await self._race(s, self.conn.request_permission(session_id=s.id, tool_call=tc,   # 묻기
@@ -583,6 +591,9 @@ class NcnAgent:                                             # acp Agent 구현
                 answer = convert.answer_from_option(oc.option_id, opts, default) if getattr(oc, "outcome", None) == "selected" else (default or "")   # 답
         except Exception as e:                               # IDE 오류
             log.warning("AskQuestion 묻기 실패 — 기본 답 사용: %s", e)   # 기록
+        if own:                                              # [ncn E5] 자기 카드 끝내기(답 글)
+            self._update(s, update_tool_call(card_id, status="completed", content=[convert.text_content(answer)], raw_output=answer))   # 고른 답
+            await self.flush()                               # 답 전달 전에 보냄
         self._quiz.answer_question(pq.request_id, answer, custom)   # 도구에 답 전달(User selected option … 글은 도구가 만듦)
 
 
