@@ -79,4 +79,5 @@ def test_main_errors_without_llm(tmp_path, capsys, monkeypatch):  # LLM 없이 m
     assert "Error: --format currently only supports 'json'" in capsys.readouterr().err  # 형식 오류 글이 stderr 에 나옴
     assert app.main(["-p", "x", "--bogus"]) == 1              # 알 수 없는 옵션: 헤드리스면 cn처럼 아무것도 안 찍음
     assert capsys.readouterr().err == ""                    # stderr 에 아무것도 안 나옴
-    assert app.main(["--stdio"]) == 2                         # P2 자리
+    assert app.main(["--stdio", "-p", "x"]) == 1              # --stdio 는 -p 와 함께 못 씀(stdout 확보 전에 끝남)
+    assert "--stdio cannot be used with -p" in capsys.readouterr().err   # 안내는 stderr

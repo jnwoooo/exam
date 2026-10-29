@@ -4,11 +4,13 @@
 # Write 는 Read 선행 검사·Read 기록이 없다(cn 그대로). 민감 파일 검사는 cn에 없지만 ncn은 한다([ncn 부록B S6], NCN_CN_COMPAT=1 이면 cn처럼 없음)
 from __future__ import annotations                           # 타입 주석 지연 평가
 
+
 import re                                                    # 줄 나누기
 from typing import Optional                                  # 타입
 
 from ncn.compat import cn_compat                             # [ncn 부록B S6] cn 원래 동작 스위치
 from ncn.security.ignore import is_security_concern, security_concern_error, throw_if_file_is_security_concern   # 민감 파일 판정([ncn 부록B S6])
+from ncn import fsio                                         # [ncn V3] 파일 창구(ACP 세션이면 IDE 위임, 아니면 디스크)
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
 from ncn.tools.findreplace import REASON_FILE_WRITE_ERROR, REASON_UNKNOWN   # 오류 이유
 from ncn.tools.formatters import exists_sync, mkdir_recursive, path_dirname, read_file_utf8, realpath_sync, write_file_utf8   # Node fs·path
@@ -258,7 +260,7 @@ async def _preprocess(args: dict) -> PreprocessResult:      # Write 의 preproce
         _throw_if_write_target_is_security_concern(filepath)   # 경로·실경로 중 하나라도 민감하면 Read·Edit 와 같은 글로 거부
     try:                                                    # 기존 파일 diff 를 시도
         if exists_sync(filepath):                            # 기존 파일
-            old_content = read_file_utf8(filepath)          # 옛 내용을 읽는다
+            old_content = await fsio.read_text_file(filepath)          # 옛 내용을 읽는다
             diff = create_two_files_patch(args["filepath"], args["filepath"], old_content, content, None, None, context=2)  # 문맥 2줄 diff 를 만든다
             return PreprocessResult(args=args, preview=[ToolCallPreview("text", "Preview of changes:"),  # diff 미리보기와 함께 반환
                                                         ToolCallPreview("diff", diff)])  # diff 항목
@@ -282,8 +284,8 @@ async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # 
             mkdir_recursive(dir_path)                       # 상위 폴더를 만든다
         old_content = ""                                     # 기존 내용
         if exists_sync(filepath):                           # 기존 파일이면
-            old_content = read_file_utf8(filepath)          # 옛 내용을 읽는다
-        write_file_utf8(filepath, content)                   # 쓰기(utf-8, 줄바꿈 그대로)
+            old_content = await fsio.read_text_file(filepath)          # 옛 내용을 읽는다
+        await fsio.write_text_file(filepath, content)                   # 쓰기(utf-8, 줄바꿈 그대로)
         if old_content:                                      # 기존 내용이 있었음(빈 파일이면 새 파일처럼 — cn 그대로)
             diff = generate_diff(old_content, content, filepath)  # 옛 내용과의 diff
             return f"Successfully wrote to file: {filepath}\nDiff:\n{diff}"  # diff 를 붙여 성공 메시지 반환

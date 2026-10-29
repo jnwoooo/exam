@@ -1,6 +1,7 @@
 # ncn/app.py — 명령줄 해석과 헤드리스(-p) 실행 조립. cn extensions/cli/src/index.ts(옵션·검증·stdin·프롬프트 확인)
 #   + shared-options.ts(공통 옵션) + flags/flagValidator.ts·flagProcessor.ts + commands/chat.ts(chat·runHeadlessMode·processMessage)
 #   + services/index.ts(초기화 순서) + util/cli.ts(hasSuppliedPrompt) + util/stdin.ts(readStdinSync) + util/promptProcessor.ts
+# --stdio(ACP, VS 2022 확장용)는 run_stdio_mode → ncn/acp/server.py(대화형 cn 과 같은 동작).
 # 헤드리스 조립 순서(cn과 같게): .env 적용 → 플래그 검증 → stdin → 프롬프트 확인 → 설정 읽기 → chat 모델 → LLMClient
 #   → 권한(PermissionService) → 도구 목록(registry) → 시스템 메시지 → 세션(--resume/--fork) → run_turn → 출력·종료 코드
 # stdout에는 최종 응답만(cn safeStdout), 오류는 stderr에 {"status":"error","message":…}(cn chat.ts:618-626).
@@ -80,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:              # 명령줄 파서�
     p.add_argument("--fork", help="Fork from an existing session ID")  # --fork: 기존 세션을 복제해 시작
     p.add_argument("--beta-subagent-tool", action="store_true", default=None, help="Enable beta Subagent tool for invoking subagents")  # --beta-subagent-tool: 베타 Subagent 도구
     # ── ncn 전용 ──
-    p.add_argument("--stdio", action="store_true", help="ACP stdio 모드(P2) — VS 2022 확장용")  # --stdio: ACP 모드(ncn 전용, 미구현)
+    p.add_argument("--stdio", action="store_true", help="ACP stdio 모드(P2) — VS 2022 확장용")  # --stdio: ACP 모드(ncn 전용, ncn/acp/server.py)
     p.add_argument("-v", "--version", action="version", version=f"ncn {__version__}", help="Display version number")  # -v/--version: 버전 출력
     return p                                                # 파서 반환
 
@@ -379,8 +380,25 @@ def _stdout_utf8() -> None:                                 # 출력 인코딩 �
             pass                                            # 무시
 
 
+def run_stdio_mode(a: argparse.Namespace) -> int:           # --stdio(ACP) 진입 함수
+    """ncn --stdio — ACP 에이전트(ncn/acp/server.py). -p 전용 옵션(--format·--silent)·미구현 옵션은 stderr 안내 후 종료.
+    stdout 확보는 server.run_stdio 가 가장 먼저 한다(그 전에는 stdout 에 아무것도 쓰지 않는다)."""
+    errs = [e for e in validate_flags(a) if "--format" not in e and "--silent" not in e]   # 모드·권한 플래그 검증(-p 전용 것은 아래에서)
+    if a.print or a.format or a.silent:                      # -p 계열과 함께 쓸 수 없음
+        errs.append("Error: --stdio cannot be used with -p/--print, --format or --silent")   # ncn 전용 오류 글
+    if errs:                                                # 오류가 있으면
+        sys.stderr.write(validation_error_text(errs))       # stderr 로 안내
+        return 1                                            # 종료 코드 1
+    pending = [name for name, v in (("--org", a.org), ("--agent", a.agent), ("--mcp", a.mcp)) if v]   # P3 이후(Hub·MCP)
+    if pending:                                             # 미지원 옵션이 있으면
+        sys.stderr.write(NOT_IMPLEMENTED.format(ver=__version__, what=", ".join(pending)) + "\n")  # 미구현 안내
+        return 2                                            # 종료 코드 2
+    from ncn.acp.server import run_stdio                    # ACP 서버(지연 import — 헤드리스 시작 시간 보호)
+    return run_stdio(a)                                     # 연결이 끝날 때까지 실행
+
+
 def main(argv: Optional[list[str]] = None) -> int:          # 프로그램 진입 함수
-    """명령줄을 해석해 모드를 고른다. 헤드리스(-p)는 실행, 나머지(대화형·--stdio·하위 명령·P2 옵션)는 미구현 안내 후 2."""
+    """명령줄을 해석해 모드를 고른다. 헤드리스(-p)·--stdio(ACP)는 실행, 나머지(대화형·하위 명령·P3 옵션)는 미구현 안내 후 2."""
     argv = list(sys.argv[1:] if argv is None else argv)      # process.argv.slice(2) — 인자 목록(없으면 실제 명령줄)
     _stdout_utf8()                                          # 출력 인코딩 설정
     cwd = pathlib.Path(os.getcwd())                          # process.cwd()
@@ -402,9 +420,8 @@ def main(argv: Optional[list[str]] = None) -> int:          # 프로그램 진�
             sys.stderr.write(str(e) + "\n")                 # 오류 글 출력
         return 1                                            # 종료 코드 1
 
-    if a.stdio:                                              # ACP(P2) — --stdio 면
-        sys.stderr.write(NOT_IMPLEMENTED.format(ver=__version__, what="--stdio(ACP) 모드") + "\n")  # 미구현 안내
-        return 2                                            # 종료 코드 2
+    if a.stdio:                                              # ACP(P2) — --stdio 면 대화형 cn 과 같은 동작을 ACP 로
+        return run_stdio_mode(a)                             # stdout 은 프로토콜 전용(V5)
     if not a.print:                                          # 대화형(TUI)은 아직
         sys.stderr.write(NOT_IMPLEMENTED.format(ver=__version__, what="대화형 모드(-p 없이 실행)") + "\n")  # 대화형 미구현 안내
         return 2                                            # 종료 코드 2

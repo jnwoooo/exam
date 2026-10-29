@@ -256,8 +256,9 @@ async def stream_chat_response(history: ChatHistory, deps: LoopDeps, *, headless
 
 
 async def run_turn(history: ChatHistory, user_message: str, deps: LoopDeps, *, headless: bool, model_name: str,  # 사용자 메시지 한 건을 처리하는 한 턴 함수
-                   signal: Optional[AbortSignal] = None) -> TurnResult:  # 중단 신호는 선택
-    """사용자 메시지 하나를 처리한다: (/compact면 수동 압축) → 넣기 전 압축 검사 → 사용자 메시지 추가 → 루프."""
+                   signal: Optional[AbortSignal] = None, context_items: Optional[list] = None) -> TurnResult:  # 중단 신호·첨부 맥락은 선택
+    """사용자 메시지 하나를 처리한다: (/compact면 수동 압축) → 넣기 전 압축 검사 → 사용자 메시지 추가 → 루프.
+    context_items: 대화형 @파일 첨부(useChat.helpers.ts formatMessageWithFiles의 contextItems) — ACP 리소스가 여기로 온다."""
     if user_message.strip() == "/compact":                   # 슬래시 명령(헤드리스)
         if deps.compaction_hook is None:                    # 압축 훅이 없으면
             return TurnResult(response="")                  # 아무 것도 하지 않고 빈 응답
@@ -269,6 +270,6 @@ async def run_turn(history: ChatHistory, user_message: str, deps: LoopDeps, *, h
                                                 {"is_headless": headless, "model_name": model_name, "deps": deps})  # 같은 정보 묶음을 넘긴다
         if was:                                             # 압축됐으면
             history.set_history(items)                      # 서비스 기록을 교체
-    history.add_user_message(user_message)                   # 사용자 메시지
+    history.add_user_message(user_message, context_items)    # 사용자 메시지(+첨부 맥락 — 없으면 [])
     # cn은 압축 위치가 있으면 getHistoryForLLM으로 시작하지만 루프 첫 반복에서 getHistory()로 다시 읽으므로 결과가 같다
     return await stream_chat_response(history, deps, headless=headless, model_name=model_name, signal=signal)  # 루프를 돌려 턴 결과를 돌려준다

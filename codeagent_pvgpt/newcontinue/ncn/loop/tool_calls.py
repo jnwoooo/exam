@@ -248,7 +248,8 @@ async def execute_streamed_tool_calls(calls: list[PreprocessedToolCall], history
 
     for index, call in enumerate(calls):                     # 권한 단계(차례대로)
         try:                                                # 권한 확인 실패도 한 호출에 가둔다
-            ev.safe_emit(on_event, ev.tool_start(call.name, call.arguments, call.id))   # 확인 전에 시작 알림
+            ev.safe_emit(on_event, ev.tool_start(call.name, call.arguments, call.id,   # 확인 전에 시작 알림
+                                                 call.preprocess_result.args if call.preprocess_result is not None else None))   # [ncn] 고쳐진 인자(ACP diff용)
             approved, reason = await check_tool_permission_approval(call, check_permission, ask_user, on_event, headless)  # 승인 여부와 거부 이유 판정
             if not approved:                                 # 거부
                 denied = POLICY_DENIED if (reason or "user") == "policy" else USER_DENIED  # 이유가 정책이면 정책 글, 아니면 사용자 거부 글

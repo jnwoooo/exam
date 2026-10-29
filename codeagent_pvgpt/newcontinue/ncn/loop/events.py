@@ -6,7 +6,8 @@
 # |---------------------|--------------------------|-------------------------------------------------------------|------------------------------------------
 # | content             | onContent                | text                                                        | 응답 글 조각을 받을 때마다
 # | content_complete    | onContentComplete        | content                                                     | 한 번의 LLM 응답 글이 끝났을 때(글이 있을 때만)
-# | tool_start          | onToolStart              | name, arguments, tool_call_id                               | 권한 확인 직전(사전 처리 실패 때도 한 번)
+# | tool_start          | onToolStart              | name, arguments, tool_call_id, [preprocessed_args]          | 권한 확인 직전(사전 처리 실패 때도 한 번)
+#   preprocessed_args: [ncn] 사전 처리로 고쳐진 인자(Edit의 oldContent·newContent 등) — 사전 처리가 끝난 호출에만 붙는다(ACP diff용)
 # | permission_request  | onToolPermissionRequest  | name, arguments, preview(list[ToolCallPreview]), tool_call_id | 승인 질문 직전(ask_user 호출 직전)
 # | tool_result         | onToolResult             | name, result, status("done"|"canceled"), tool_call_id       | 실행 성공 또는 거부
 # | tool_error          | onToolError              | name, error, tool_call_id                                   | 사전 처리 실패·실행 실패·권한 확인 실패
@@ -48,9 +49,12 @@ def content_complete(text: str) -> dict:                    # content_complete �
     return {"type": CONTENT_COMPLETE, "content": text}      # 한 응답의 전체 글 dict
 
 
-def tool_start(name: str, arguments: Any, tool_call_id: Optional[str]) -> dict:  # tool_start 이벤트 생성기(onToolStart)
-    """도구 시작."""
-    return {"type": TOOL_START, "name": name, "arguments": arguments, "tool_call_id": tool_call_id}  # 도구 이름·인자·호출 id를 담은 dict
+def tool_start(name: str, arguments: Any, tool_call_id: Optional[str], preprocessed_args: Any = None) -> dict:  # tool_start 이벤트 생성기(onToolStart)
+    """도구 시작. preprocessed_args(사전 처리 결과 인자)는 있을 때만 키를 넣는다."""
+    e = {"type": TOOL_START, "name": name, "arguments": arguments, "tool_call_id": tool_call_id}  # 도구 이름·인자·호출 id를 담은 dict
+    if preprocessed_args is not None:                        # [ncn] 사전 처리 결과가 있으면
+        e["preprocessed_args"] = preprocessed_args          # ACP diff 표시용으로 함께 싣는다
+    return e                                                # 이벤트 반환
 
 
 def permission_request(name: str, arguments: Any, preview: Any, tool_call_id: Optional[str]) -> dict:  # permission_request 이벤트 생성기(onToolPermissionRequest)

@@ -4,11 +4,13 @@
 # [ncn 부록B B6] ncn은 run 에서 파일을 다시 읽어 preprocess 때와 다르면 다시 찾아 바꾼다(실패면 cn 형식 오류). NCN_CN_COMPAT=1 이면 cn 동작
 from __future__ import annotations                           # 타입 주석 지연 평가
 
+
 import os                                                    # 현재 폴더
 from typing import Any, Optional                             # 타입
 
 from ncn.compat import cn_compat                             # [ncn 부록B B6] cn 원래 동작 스위치
 from ncn.security.ignore import throw_if_file_is_security_concern   # 민감 파일 차단
+from ncn import fsio                                         # [ncn V3] 파일 창구(ACP 세션이면 IDE 위임, 아니면 디스크)
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
 from ncn.tools.findreplace import (MISSING, REASON_EDIT_TOOL_FILE_NOT_READ, REASON_FILE_NOT_FOUND,   # 찾아 바꾸기·오류 이유
                                    REASON_FILE_WRITE_ERROR, REASON_FIND_AND_REPLACE_MISSING_FILEPATH, REASON_UNKNOWN,  # 이어서 가져오는 이름들(오류 이유 코드)
@@ -63,7 +65,7 @@ async def _preprocess(args: dict) -> PreprocessResult:      # Edit 의 preproces
     replace_all = args["replace_all"] if "replace_all" in args else MISSING   # 없음과 null 구분
     resolved_path = validate_and_resolve_file_path(args)["resolvedPath"]   # 경로 검증
     old_s, new_s, rep_all = validate_single_edit(old_string, new_string, replace_all)   # 인자 검증
-    old_content = read_file_utf8(resolved_path)              # 지금 내용
+    old_content = await fsio.read_text_file(resolved_path)              # 지금 내용
     new_content = execute_find_and_replace(old_content, old_s, new_s, rep_all if rep_all is not None else False, 0)  # 바꾼 새 내용 계산(replaceAll ?? false)
     diff = generate_diff(old_content, new_content, resolved_path)   # 미리보기 diff
     redo = {"old_string": old_s, "new_string": new_s, "replace_all": rep_all if rep_all is not None else False}   # [ncn 부록B B6] run 에서 다시 찾아 바꿀 재료
@@ -80,11 +82,11 @@ async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # 
         old_content, new_content = args["oldContent"], args["newContent"]   # preprocess 때 계산한 내용
         redo = args.get(REDO_KEY)                            # [ncn 부록B B6] 다시 찾아 바꿀 재료(없으면 cn처럼 그대로 씀)
         if redo is not None and not cn_compat():             # [ncn 부록B B6] 고친 동작(cn 원래 동작: 미리 계산한 내용을 그대로 씀)
-            current = read_file_utf8(args["resolvedPath"])   # 승인 뒤 실행 시점의 내용
+            current = await fsio.read_text_file(args["resolvedPath"])   # 승인 뒤 실행 시점의 내용
             if current != old_content:                       # 승인 대기 중 사용자·린터가 고쳤으면
                 new_content = execute_find_and_replace(current, redo["old_string"], redo["new_string"], redo["replace_all"], 0)  # 지금 내용에서 다시 찾아 바꿈(못 찾음·여러 곳이면 cn 글로 오류)
                 old_content = current                       # diff 기준도 지금 내용
-        write_file_utf8(args["resolvedPath"], new_content)   # 쓰기
+        await fsio.write_text_file(args["resolvedPath"], new_content)   # 쓰기
         diff = generate_diff(old_content, new_content, args["resolvedPath"])   # 결과용 diff
         return f"Successfully edited {args['resolvedPath']}\nDiff:\n{diff}"  # 성공 메시지 + diff
     except ContinueError:                                   # ContinueError 는 그대로 올린다
