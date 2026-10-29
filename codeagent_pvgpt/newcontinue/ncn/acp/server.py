@@ -1,5 +1,5 @@
 # ncn/acp/server.py — `ncn --stdio`: ACP(Agent Client Protocol) 에이전트. 계획 14장(V2~V8, 14-3 대응표)·P0_결과.md 2장
-# 동작 기준은 대화형 cn(헤드리스 아님): cn extensions/cli/src/ui/hooks/useChat.ts(processMessage·handleToolPermissionResponse·
+# 세션 조립은 ncn/chat_session.py(콘솔 대화형 ncn 과 공용). 동작 기준은 대화형 cn(헤드리스 아님): cn extensions/cli/src/ui/hooks/useChat.ts(processMessage·handleToolPermissionResponse·
 #   handleInterrupt) + useChat.helpers.ts(formatMessageWithFiles) + stream/streamChatResponse.ts(같은 루프, isHeadless=false)
 #   + services/ToolPermissionService.ts(모드 전환) + services/QuizService.ts(AskQuestion 답 받기)
 # 대화형이므로: ask 정책 도구도 LLM 목록에 들어가고(Exit 없음), 시스템 메시지에 headless 블록이 없고, 승인은 IDE 에 묻는다.
@@ -78,6 +78,7 @@ class AcpSession:                                           # ACP 세션 하나 
     progress_sent: dict = field(default_factory=dict)        # Subagent 진행 표시를 마지막으로 보낸 시각(호출 id → 초)
     progress_latest: dict = field(default_factory=dict)      # 아직 안 보낸 최근 진행 출력(호출 id → (이름, 글))
     progress_timers: dict = field(default_factory=dict)      # 예약된 진행 표시(호출 id → TimerHandle)
+    core: Any = None                                         # 공용 부품(ncn/chat_session.py ChatCore — 도구 목록이 core.mcp 를 읽음)
 
 
 class NcnAgent:                                             # acp Agent 구현
@@ -182,105 +183,48 @@ class NcnAgent:                                             # acp Agent 구현
         return bool((meta.get("ncn") or {}).get("ask")) if isinstance(meta, dict) else False   # ncn.ask 참이면
 
     # ───────── 세션 만들기 ─────────
-    def _open(self, cwd: str, mcp_servers: Any, load: Optional[dict] = None) -> AcpSession:   # 세션 하나 조립(run_headless 와 같은 순서, headless=False)
-        """권한 → 설정 → 모델 → LLMClient → 세션 저장 관리자 → 기록 → 루프 의존성. 실패하면 RequestError(cn 오류 글)."""
-        from ncn.app import make_validate_context            # 컨텍스트 검사(헤드리스와 같은 것)
-        from ncn.config import paths as cpaths               # 전역 폴더
-        from ncn.config.loader import ConfigError, load_config   # 설정
-        from ncn.llm.client import LLMClient                 # LLM 클라이언트
-        from ncn.loop.agent import LoopDeps                  # 루프 의존성
-        from ncn.loop.history import ChatHistory             # 기록
-        from ncn.permissions.service import PermissionService   # 권한
-        from ncn.session import SessionManager               # 세션 저장
-        from ncn.sysmsg import build_system_message          # 시스템 메시지
-        from ncn.tools import registry                       # 도구 목록
-
-        a = self.args                                        # 명령줄 결과
+    def _open(self, cwd: str, mcp_servers: Any, load: Optional[dict] = None) -> AcpSession:   # 세션 하나 조립(ncn/chat_session.py 공용 조립, headless=False)
+        """작업 폴더 이동 → 공용 조립(권한·설정·모델·LLMClient·세션 저장·기록·루프 의존성). 실패하면 RequestError(cn 오류 글)."""
+        from ncn.chat_session import SessionOpenError, open_chat_core   # 대화형 세션 공용 조립(콘솔 대화형과 같은 코드)
         cwd_s = os.path.abspath(cwd or os.getcwd())          # 절대 경로(규격상 절대 경로가 온다)
         try:                                                # 작업 폴더로 이동(도구의 상대 경로 기준 = process.cwd)
             os.chdir(cwd_s)                                  # cn 은 실행 폴더가 작업 폴더 — 같게 맞춤
         except OSError as e:                                 # 없는 폴더
             raise RequestError.invalid_params({"message": f"cwd not found: {cwd_s} ({e})"}) from e   # 잘못된 인자
-        cwd_p = pathlib.Path(cwd_s)                          # 경로 객체
-        gdir = cpaths.global_dir(self.environ, cwd_p)        # 전역 폴더
-        if a.beta_subagent_tool:                             # 베타 Subagent
-            registry.set_beta_subagent_tool_enabled(True)   # 켜기
-        mode = "plan" if a.readonly else "auto" if a.auto else "normal"   # --readonly → plan, --auto → auto 항목
-        perms = PermissionService(mode=mode, allow=a.allow, ask=a.ask, exclude=a.exclude,   # 권한(대화형 기본표)
-                                  headless=False, global_dir=gdir)   # 헤드리스 아님
-        try:                                                # 설정 읽기
-            cfg = load_config(a.config, cwd=cwd_p, global_dir=gdir, environ=self.environ, headless=False,   # 대화형 설정 읽기
-                              rules=a.rule, mcp=a.mcp, models=a.model, prompts=a.prompts)   # (인자 이어짐)
-        except ConfigError as e:                             # 설정 오류(cn 원문 글)
-            raise RequestError.internal_error({"message": e.message}) from e   # 오류 응답
-        if cfg.chat_model is None:                           # chat 모델 없음
-            raise RequestError.internal_error({"message": cfg.chat_model_error or "No models were found."})   # 오류 응답
-        model = cfg.chat_model                               # 채팅 모델
-        llm = LLMClient(api_base=model.api_base, api_key=model.api_key, model=model.model,   # LLM 클라이언트
-                        default_completion_options=model.raw.get("defaultCompletionOptions"),   # 기본 완료 옵션
-                        request_options=model.request_options)   # 요청 옵션
-        sm = SessionManager(self.environ, cwd_s)             # 세션 저장 관리자
-        if load is not None:                                 # session/load 항목
-            sm.set_session(load)                             # 이후 저장도 이 세션 파일로
-            sid = load["sessionId"]                          # 불러온 id
-            items = load.get("history") or []                # 기록
-        else:                                                # session/new 항목
+
+        def select(sm):                                      # 세션 고르기(SessionManager → id·기록)
+            if load is not None:                             # session/load 항목
+                sm.set_session(load)                         # 이후 저장도 이 세션 파일로
+                return load["sessionId"], load.get("history") or []   # 불러온 id·기록
             cur = sm.get_current()                           # 새 세션(시험용 id 환경변수가 있으면 그 id)
             if cur["sessionId"] in self.sessions:            # 같은 id 가 이미 열려 있으면(시험용 id 고정 때)
                 cur = sm.start_new([])                       # 새 uuid 로
-            sid = cur["sessionId"]                           # 새 id
-            items = []                                       # 빈 기록
-        history = ChatHistory(items, session_id=sid)          # 대화 기록(대화형은 세션 id 가 있다)
-        s = AcpSession(id=sid, cwd=cwd_s, gdir=gdir, cfg=cfg, model=model, llm=llm, perms=perms,   # 세션 상태
-                       history=history, sessions=sm, first_prompt=load is None)   # 불러온 세션은 --prompt 를 붙이지 않음
+            return cur["sessionId"], []                      # 새 id·빈 기록
+
+        s: Optional[AcpSession] = None                       # 아래 콜백들이 늦게 읽는다(조립 뒤 채움)
+        try:                                                # 공용 조립
+            core = open_chat_core(self.args, self.environ, cwd_s, select_session=select,   # 대화형 조립
+                                  on_event=lambda e: self._on_event(s, e),   # 루프 이벤트 → session/update
+                                  ask_user=self._ask_user,   # 승인 질문 → session/request_permission
+                                  get_signal=lambda: s.signal,   # 지금 턴 중단 신호(session/cancel → 하위도 중단)
+                                  check_permission=lambda tool, args: self._check(s, tool, args),   # 실행 시점 판정 — 카드 먼저 보낸 뒤
+                                  on_subagent_progress=lambda tcid, name, out: self._on_subagent_progress(s, tcid, name, out))   # 카드 안 진행 표시
+        except SessionOpenError as e:                        # 설정 오류·모델 없음
+            raise RequestError.internal_error({"message": e.message}) from e   # 오류 응답(cn 원문 글)
+        s = AcpSession(id=core.id, cwd=cwd_s, gdir=core.gdir, cfg=core.cfg, model=core.model, llm=core.llm, perms=core.perms,   # 세션 상태
+                       history=core.history, sessions=core.sessions, deps=core.deps,   # 기록·저장·루프 의존성
+                       first_prompt=load is None, core=core)   # 불러온 세션은 --prompt 를 붙이지 않음
         can_read, can_write = self._fs_caps()                # fs 능력
-        s.files = fsio.AcpFiles(self.conn, sid, can_read=can_read, can_write=can_write) if (can_read or can_write) else None   # IDE 위임(능력 있을 때만)
-        overrides = (model.chat_options or {}).get("toolOverrides")   # 모델별 도구 덮어쓰기
-
-        def all_tools():                                     # getAllAvailableTools(false) — 매 반복 다시
-            kw = dict(model_name=model.name or "", model=model.model, headless=False,   # 대화형 도구 목록(Exit 없음) 인자
-                      mode=perms.mode, cwd=cwd_p, global_dir=gdir,   # (인자 이어짐)
-                      subagent_models=cfg.models, subagent_host=subagent_host)   # Subagent(베타): 설정 models + 하위 대화 호스트
-            if s.mcp is None:                                # MCP 연결이 없으면
-                return registry.get_builtin_tools(**kw)      # 내장 도구만
-            builtin = frozenset(t.name for t in registry.get_builtin_tools(**kw))   # [ncn 부록B M3] 이 세션에 실제로 있는 내장 도구 이름
-            return registry.get_builtin_tools(**kw, extra_tools=s.mcp.get_tools(builtin_names=builtin))   # MCP 도구(Skills 뒤, 내장과 겹치면 내장 우선)
-
-        def system_message():                                # getSystemMessage(currentMode) — 대화형(headless 블록 없음)
-            return build_system_message(mode=perms.mode, headless=False, format_json=False, cwd=cwd_p,   # 현재 모드 기준
-                                        global_dir=gdir, config=cfg, additional_rules=a.rule, environ=self.environ)   # (인자 이어짐)
-
-        from ncn.subagent import SubagentHost, load_ncn_settings   # 하위 에이전트 호스트·ncn.yaml
-        subagent_host = SubagentHost(models=cfg.models, headless=False, tools=all_tools, system_message=system_message,   # [ncn 부록B B16] 세션마다 독립
-                                     parent_history=history, get_signal=lambda: s.signal,   # 부모 기록·지금 턴 중단 신호(session/cancel → 하위도 중단)
-                                     on_event=lambda e: self._on_event(s, e),   # 하위 사용량을 이 턴 사용량에
-                                     on_progress=lambda tcid, name, out: self._on_subagent_progress(s, tcid, name, out),   # 카드 안 진행 표시
-                                     settings=load_ncn_settings(gdir))   # ~/.continue/ncn.yaml(추가 E)
-        s.deps = LoopDeps(                                   # 루프 의존성
-            llm=llm, tools=all_tools,                        # LLM·도구 목록 함수
-            check_permission=lambda tool, args: self._check(s, tool, args),   # 실행 시점 판정(Bash 위험 판정 포함) — 카드 먼저 보낸 뒤
-            list_permission=lambda tool, args: perms.base_permission(tool.name, {}),   # 목록용(ask 도 대화형이면 포함)
-            ask_user=self._ask_user,                         # 승인 질문 → session/request_permission
-            system_message=system_message, on_event=lambda e: self._on_event(s, e),   # 시스템 메시지·이벤트
-            validate_context=make_validate_context(model.raw),   # 컨텍스트 검사
-            apply_tool_overrides=(lambda defs: registry.apply_chat_completion_tool_overrides(defs, overrides)),   # 도구 덮어쓰기
-        )                                                    # 끝
-        from ncn.compaction import make_compaction_hook      # 대화 압축(P3a)
-        s.deps.compaction_hook = make_compaction_hook(history, model.raw, on_compacted=sm.update_history)   # 압축 훅(압축 뒤 세션 저장)
-        self.sessions[sid] = s                               # 등록
+        s.files = fsio.AcpFiles(self.conn, s.id, can_read=can_read, can_write=can_write) if (can_read or can_write) else None   # IDE 위임(능력 있을 때만)
+        self.sessions[s.id] = s                              # 등록
         return s                                            # 세션 반환
 
     async def _connect_mcp(self, s: AcpSession, mcp_servers: Any) -> None:   # 세션의 MCP 접속
-        """설정 mcpServers 뒤에 ACP mcpServers(cn 설정 모양으로 바꿈)를 이어 같은 연결 코드로 붙인다.
-        대화형 cn 과 같이 실패해도 던지지 않는다(상태·stderr 로그). cn TUI 는 기다리지 않지만 ncn 은 기다린다(첫 질문부터 도구 보이게)."""
+        """설정 mcpServers 뒤에 ACP mcpServers(cn 설정 모양으로 바꿈)를 이어 같은 연결 코드로 붙인다(ncn/chat_session.py connect_mcp)."""
+        from ncn.chat_session import connect_mcp             # 공용 접속(실패해도 던지지 않음)
         from ncn.mcp.acp_servers import acp_servers_to_configs   # ACP → cn 설정 모양
-        from ncn.mcp.service import MCPService               # 연결 관리
-        servers = list(s.cfg.mcp_servers or []) + acp_servers_to_configs(mcp_servers)   # 설정 먼저, 그다음 IDE 가 준 것
-        s.mcp = MCPService(self.environ)                     # 세션마다 하나
-        await s.mcp.initialize(servers, headless=False, wait=True)   # 병렬 접속(실패는 상태로)
-        for c in s.mcp.connections.values():                 # 연결마다
-            if c.status == "error":                          # 실패면
-                log.warning("mcpServers: %s 접속 실패 — %s", c.name, c.error)   # stderr 로그(stdout 금지)
+        await connect_mcp(s.core, self.environ, acp_servers_to_configs(mcp_servers))   # 설정 먼저, 그다음 IDE 가 준 것
+        s.mcp = s.core.mcp                                   # 정리(aclose)용으로도 보관
 
     def _session(self, session_id: str) -> AcpSession:      # id 로 세션 찾기
         """없으면 resource_not_found 오류."""

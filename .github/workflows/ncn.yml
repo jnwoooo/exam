@@ -161,7 +161,7 @@ jobs:                                                          # 작업들
         run: uv run python packaging/smoke.py --exe "${{ steps.out.outputs.exe }}" --report dist/smoke.json   # 실패하면 빨간색
       - name: 설치·제거 시험(Windows)                              # install.cmd /q → 확인 → 재설치(중복 없음) → uninstall.cmd /q → 확인(현장 PC 대신 러너에서)
         if: runner.os == 'Windows'                             # Windows 만
-        shell: powershell                                      # Windows PowerShell 5.1(레지스트리 확인이 쉬움)
+        shell: pwsh                                            # PowerShell 7 — 이 확인 단계 본문에 한글이 있어서(GitHub 가 BOM 없는 임시 .ps1 로 써 5.1 은 ANSI 로 잘못 읽음). install.cmd 가 부르는 install.ps1 자체는 BOM 있는 파일이라 5.1 로 검증됨
         env:                                                   # 묻지 않는 설치 값
           NCN_SERVER: http://127.0.0.1:9                       # 없는 서버(점검은 실패해도 설치는 성공해야 함)
           NCN_TOKEN: ca-ci-dummy-token                         # 가짜 토큰

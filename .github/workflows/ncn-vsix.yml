@@ -15,6 +15,9 @@ on:                                                              # 언제 도는
 permissions:                                                     # 토큰 권한
   contents: read                                                 # 읽기만
 
+env:                                                             # 모든 단계 공통 환경변수
+  PYTHONUTF8: "1"                                                # 러너 파이썬 출력 UTF-8(cp1252 콘솔에서 →·한글 출력 시 UnicodeEncodeError 방지 — 2026-10-30 CI)
+
 concurrency:                                                     # 같은 가지 중복 실행 정리
   group: ncn-vsix-${{ github.ref }}                              # 가지·태그별
   cancel-in-progress: true                                       # 앞 실행 취소

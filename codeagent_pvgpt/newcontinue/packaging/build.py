@@ -136,6 +136,11 @@ def dir_size(p: Path) -> int:                                # 폴더 크기(바
 
 
 def main(argv: list[str] | None = None) -> int:              # 진입
+    for stream in (sys.stdout, sys.stderr):                  # Windows 콘솔·CI 로그가 cp1252/cp949 여도 →·한글 출력에서 죽지 않게
+        try:                                                 # 재설정이 안 되는 스트림은 그대로
+            stream.reconfigure(encoding="utf-8", errors="replace")   # type: ignore[attr-defined] — UTF-8 로 출력
+        except Exception:                                    # 재설정 불가
+            pass                                             # 무시
     """빌드 → 묶음 → zip → sha256 → (선택) 스모크 시험."""
     ap = argparse.ArgumentParser(description="ncn 배포 묶음 빌드")   # 명령줄
     ap.add_argument("--out", default=str(ROOT / "dist"), help="출력 폴더(기본 newcontinue/dist)")   # 출력 폴더

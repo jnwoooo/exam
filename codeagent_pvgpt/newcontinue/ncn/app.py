@@ -1,7 +1,8 @@
 # ncn/app.py — 명령줄 해석과 헤드리스(-p) 실행 조립. cn extensions/cli/src/index.ts(옵션·검증·stdin·프롬프트 확인)
 #   + shared-options.ts(공통 옵션) + flags/flagValidator.ts·flagProcessor.ts + commands/chat.ts(chat·runHeadlessMode·processMessage)
 #   + services/index.ts(초기화 순서) + util/cli.ts(hasSuppliedPrompt) + util/stdin.ts(readStdinSync) + util/promptProcessor.ts
-# --stdio(ACP, VS 2022 확장용)는 run_stdio_mode → ncn/acp/server.py(대화형 cn 과 같은 동작).
+# --stdio(ACP, VS 2022 확장용)는 run_stdio_mode → ncn/acp/server.py, 대화형(-p 없음)은 run_interactive_mode → ncn/interactive.py
+#   (둘 다 대화형 cn 과 같은 동작 — 세션 조립은 ncn/chat_session.py 공용).
 # 헤드리스 조립 순서(cn과 같게): .env 적용 → 플래그 검증 → stdin → 프롬프트 확인 → 설정 읽기 → chat 모델 → LLMClient
 #   → 권한(PermissionService) → 도구 목록(registry) → 시스템 메시지 → 세션(--resume/--fork) → run_turn → 출력·종료 코드
 # stdout에는 최종 응답만(cn safeStdout), 오류는 stderr에 {"status":"error","message":…}(cn chat.ts:618-626).
@@ -423,8 +424,23 @@ def run_stdio_mode(a: argparse.Namespace) -> int:           # --stdio(ACP) 진�
     return run_stdio(a)                                     # 연결이 끝날 때까지 실행
 
 
+def run_interactive_mode(a: argparse.Namespace) -> int:     # 대화형(인자 없이 `ncn`, `ncn "첫 메시지"`) 진입 함수
+    """cn index.ts action(대화형 경로) — 플래그 검증 → 미구현 옵션 안내 → ncn/interactive.py(세션 조립은 ACP 와 공용)."""
+    _configure_logging(bool(a.verbose))                      # 로그(--verbose 면 stderr, 아니면 끔 — 입력 줄을 어지럽히지 않게)
+    errs = validate_flags(a)                                 # validateFlags(대화형에서도 같은 검사 — --format·--silent 는 -p 전용 오류)
+    if errs:                                                # 오류가 있으면
+        sys.stderr.write(validation_error_text(errs))       # 오류 글 출력
+        return 1                                            # 종료 코드 1
+    pending = [name for name, v in (("--org", a.org), ("--agent", a.agent)) if v]   # Hub 옵션(미구현)
+    if pending:                                             # 미지원 옵션이 있으면
+        sys.stderr.write(NOT_IMPLEMENTED.format(ver=__version__, what=", ".join(pending)) + "\n")  # 미구현 안내
+        return 2                                            # 종료 코드 2
+    from ncn.interactive import run_interactive             # 대화형(지연 import — 헤드리스 시작 시간 보호)
+    return run_interactive(a, a.prompt)                     # 종료 코드
+
+
 def main(argv: Optional[list[str]] = None) -> int:          # 프로그램 진입 함수
-    """명령줄을 해석해 모드를 고른다. 헤드리스(-p)·--stdio(ACP)는 실행, 나머지(대화형·하위 명령·P3 옵션)는 미구현 안내 후 2."""
+    """명령줄을 해석해 모드를 고른다. 헤드리스(-p)·--stdio(ACP)·대화형(P2b) 실행, 하위 명령·Hub 옵션은 미구현 안내 후 2."""
     argv = list(sys.argv[1:] if argv is None else argv)      # process.argv.slice(2) — 인자 목록(없으면 실제 명령줄)
     _stdout_utf8()                                          # 출력 인코딩 설정
     cwd = pathlib.Path(os.getcwd())                          # process.cwd()
@@ -451,9 +467,8 @@ def main(argv: Optional[list[str]] = None) -> int:          # 프로그램 진�
 
     if a.stdio:                                              # ACP(P2) — --stdio 면 대화형 cn 과 같은 동작을 ACP 로
         return run_stdio_mode(a)                             # stdout 은 프로토콜 전용(V5)
-    if not a.print:                                          # 대화형(TUI)은 아직
-        sys.stderr.write(NOT_IMPLEMENTED.format(ver=__version__, what="대화형 모드(-p 없이 실행)") + "\n")  # 대화형 미구현 안내
-        return 2                                            # 종료 코드 2
+    if not a.print:                                          # 대화형(P2b) — 콘솔 입력 줄(ncn/interactive.py)
+        return run_interactive_mode(a)                       # 종료할 때까지 대화
 
     _configure_logging(bool(a.verbose))                      # configureConsoleForHeadless — 로깅 설정
     errs = validate_flags(a)                                 # validateFlags — 플래그 검증

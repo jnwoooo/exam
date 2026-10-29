@@ -9,6 +9,7 @@ dependencies = [                               # 실행 의존성(P2에서 mcp·
     "httpx>=0.28.1",
     "mcp>=2.3,<3",
     "pathspec>=1.1.1",
+    "prompt-toolkit>=3.0.53",
     "pyyaml>=6.0.3",
     "tiktoken>=0.14.0",
 ]                                              # httpx=LLM 호출, pyyaml=설정, tiktoken=토큰 세기, pathspec=gitignore식 판정
