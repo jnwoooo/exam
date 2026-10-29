@@ -193,7 +193,7 @@ def test_answer_only_and_interactive_request_rules(tmp_path):   # 답만 + 대�
     async def go():                                          # 시나리오
         init = await h.start(ide)                            # 시작
         assert init.protocol_version == 1 and init.agent_capabilities.load_session   # 능력
-        s = await h.new(mcp_servers=[{"name": "x", "command": "echo", "args": [], "env": []}])   # 존재하지 않는 명령(echo는 MCP 서버 아님) — 접속 실패를 stderr 로그로 남기고 세션은 계속
+        s = await h.new(mcp_servers=[{"name": "x", "command": "echo", "args": [], "env": []}])   # echo는 MCP 서버가 아님 → 접속 실패를 stderr 로그로 남기고 세션은 계속
         assert s.modes.current_mode_id == "normal" and [m.id for m in s.modes.available_modes] == ["normal", "plan", "auto"]   # 모드
         assert s.config_options[0].root.id == "mode" if hasattr(s.config_options[0], "root") else s.config_options[0].id == "mode"   # 설정 선택지
         r = await h.conn.prompt(session_id=s.session_id, prompt=[text_block("안녕")])   # 질문
