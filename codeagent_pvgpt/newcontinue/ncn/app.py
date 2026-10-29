@@ -307,6 +307,8 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
 
     # ── 대화 기록·세션(--resume / --fork) ──
     sessions = SessionManager(environ, os.fspath(cwd))       # SessionManager 싱글턴 자리
+    from ncn import backup                                   # [ncn E4] 헤드리스는 백업만(--resume 한 대화형·ACP 에서 /undo)
+    backup.set_session_resolver(lambda: sessions.get_current()["sessionId"])   # [ncn E4] 세션 파일과 같은 id 폴더
     initial_items: list = []                                 # initializeChatHistory — 초기 기록 목록
     if a.fork:                                               # --fork: 그 기록으로 새 세션(못 찾아도 빈 기록 — cn 그대로)
         forked = history_manager_load(a.fork, environ)      # --fork: 그 id 의 세션 기록 불러오기
@@ -351,15 +353,27 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
     from ncn.llm.client import AbortSignal                   # 턴 중단 신호(하위 대화와 공유)
     from ncn.subagent import SubagentHost, load_ncn_settings  # 하위 에이전트 호스트·ncn.yaml
     turn_signal = AbortSignal()                              # 이 턴의 중단 신호(run_turn 에 넘김 — 없을 때 루프가 만드는 것과 같음)
+    from ncn.audit import fan_out, make_audit                # [ncn E6] 감사 기록
+    from ncn.loopguard import make_loop_guard                # [ncn E5] 반복 감시(헤드리스는 묻지 않고 멈춤)
+    ncn_settings = load_ncn_settings(gdir)                   # ~/.continue/ncn.yaml(한 번 읽어 같이 씀)
+    audit = make_audit(gdir, environ, ncn_settings, ui="headless",   # [ncn E6] 기록기(꺼짐이면 None)
+                       session_id=lambda: sessions.get_current()["sessionId"], mode=lambda: perms.mode)   # [ncn E6] 세션 id(저장 파일 이름과 같음)·모드
+    guard = make_loop_guard(ncn_settings, global_dir=gdir, environ=environ,   # [ncn E5] 감시기(꺼짐이면 None)
+                            on_decision=audit.loop_decision if audit else None)   # [ncn E5] 결정은 감사 기록에
+    on_event = fan_out(on_event, guard.observe if guard else None, audit.on_event if audit else None)   # [ncn E5·E6] 세션 사용량 + 감시 + 감사
+    check = (lambda tool, args: perms.check(tool, args))     # 실행 시점(동적 평가 포함)
+    if audit is not None:                                    # [ncn E6] 판정 기록
+        check = audit.wrap_check(check, perms)               # [ncn E6] 판정은 그대로, 기록만
     subagent_host = SubagentHost(models=cfg.models, headless=True, tools=all_tools, system_message=system_message,  # [ncn 부록B B16] 하위 대화를 독립 객체로
                                  parent_history=history, get_signal=lambda: turn_signal, on_event=on_event,  # 부모 기록(세션 id "")·중단·사용량
-                                 settings=load_ncn_settings(gdir))   # ~/.continue/ncn.yaml(추가 E)
+                                 settings=ncn_settings)      # ~/.continue/ncn.yaml(추가 E)
 
     deps = LoopDeps(                                        # 루프 의존성 묶음 생성
         llm=llm, tools=all_tools,                           # LLM·도구 목록 함수
-        check_permission=lambda tool, args: perms.check(tool, args),          # 실행 시점(동적 평가 포함)
+        check_permission=check,                              # 실행 시점(동적 평가 포함 — 감사 기록 포장)
         list_permission=lambda tool, args: perms.base_permission(tool.name, {}),   # 목록용(정적 정책, 인자 {})
         ask_user=None,                                       # 헤드리스는 묻지 않음
+        loop_guard=guard,                                    # [ncn E5] 반복 상한·연속 실패 → 턴 끝
         system_message=system_message, on_event=on_event,   # 시스템 메시지·이벤트 콜백
         validate_context=make_validate_context(model.raw),  # 컨텍스트 검증기
         apply_tool_overrides=(lambda defs: registry.apply_chat_completion_tool_overrides(defs, overrides)),  # 모델별 도구 설정 덮어쓰기 적용
@@ -380,6 +394,12 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
     finally:                                                # (finally)
         await llm.aclose()                                  # LLM 클라이언트 닫기
         await mcp.shutdown()                                # MCP 연결 정리(cn cleanup — stdio 자식 종료)
+        if audit is not None:                               # [ncn E6] 감사 기록이 있으면
+            await asyncio.to_thread(audit.close)            # [ncn E6] 마지막 전송(최대 3초 — 못 보내면 outbox 에 남음)
+    if result.stopped_by_loop_guard:                         # [ncn E5] 반복 감시로 멈춤
+        from ncn.loopguard import EXIT_LOOP_GUARD, stop_message   # [ncn E5] 종료 코드·안내 글
+        sys.stderr.write(stop_message(result.stopped_by_loop_guard) + "\n")   # [ncn E5] stderr 안내(stdout 은 응답만)
+        return EXIT_LOOP_GUARD                               # [ncn E5] 종료 코드 3
     return hl.EXIT_OK                                        # gracefulExit(0)
 
 

@@ -43,6 +43,18 @@ class NcnSettings:                                          # ncn.yaml 전체
     """ncn.yaml 의 하위 에이전트 관련 설정(모르는 키는 무시)."""
     subagents: dict[str, SubagentLimits] = field(default_factory=dict)   # 이름 → 제한
     subagent_max_parallel: int = DEFAULT_MAX_PARALLEL       # 동시에 도는 하위 에이전트 수(최상위 호출 기준)
+    raw: dict = field(default_factory=dict)                  # [ncn E2·E7] 파일 전체 원래 값(risk·secrets 등 다른 기능이 읽음)
+    encoding_preserve: bool = True                           # [ncn E3] encoding.preserve — 인코딩·BOM·줄바꿈 보존(해석: ncn/encoding.py)
+    encoding_fallback: str = "cp949"                         # [ncn E3] encoding.fallback — UTF-8 이 아닐 때 시도할 레거시 인코딩
+    backup_enabled: bool = True                              # [ncn E4] backup.enabled — 쓰기 전 백업(해석: ncn/encoding.py)
+    backup_max_per_session: int = 50                         # [ncn E4] backup.max_per_session — 세션당 남길 백업 수
+    backup_keep_days: int = 30                               # [ncn E4] backup.keep_days — 이보다 오래된 세션 백업 폴더는 지움
+    loop_max_iterations: int = 50                            # [ncn E5] loop.max_iterations — 한 턴 LLM 호출 상한(0 = 끔, 해석: ncn/loopguard.py)
+    loop_repeat_failure_limit: int = 3                       # [ncn E5] loop.repeat_failure_limit — 같은 도구·인자 연속 실패 상한(0 = 끔)
+    audit_enabled: bool = True                               # [ncn E6] audit.enabled — 로컬 감사 기록(해석: ncn/audit.py)
+    audit_server: Optional[str] = None                       # [ncn E6] audit.server — 코드에이전트 서버 주소(없으면 전송 안 함)
+    audit_token_env: str = "CODEAGENT_TOKEN"                 # [ncn E6] audit.token_env — 개인 토큰이 든 환경변수 이름
+    audit_batch: int = 20                                    # [ncn E6] audit.batch — 몇 건씩 묶어 보낼지
 
 
 def _is_pos_int(v: Any) -> bool:                            # 양의 정수인지(참거짓 제외)
@@ -58,12 +70,19 @@ def parse_ncn_settings(data: Any) -> NcnSettings:           # YAML 값 → 설�
     if not isinstance(data, dict):                           # 최상위가 사전이 아니면
         log.warning("ncn.yaml: top level must be a mapping — ignored")   # 경고
         return out                                          # 기본값
+    out.raw = dict(data)                                     # [ncn E2·E7] 원래 값 보관
     mp = data.get("subagent_max_parallel")                   # 동시 실행 수
     if mp is not None:                                       # 적혀 있으면
         if _is_pos_int(mp):                                  # 양의 정수면
             out.subagent_max_parallel = mp                   # 반영
         else:                                                # 아니면
             log.warning("ncn.yaml: subagent_max_parallel must be a positive integer — ignored")   # 경고
+    from ncn.encoding import parse_file_settings             # [ncn E3·E4] encoding·backup 절 해석(지연 import)
+    parse_file_settings(data, out)                           # [ncn E3·E4] 잘못된 값은 경고 후 기본값
+    from ncn.loopguard import parse_loop_settings            # [ncn E5] loop 절 해석(지연 import)
+    parse_loop_settings(data, out)                           # [ncn E5] 잘못된 값은 경고 후 기본값
+    from ncn.audit import parse_audit_settings               # [ncn E6] audit 절 해석(지연 import)
+    parse_audit_settings(data, out)                          # [ncn E6] 잘못된 값은 경고 후 기본값
     subs = data.get("subagents")                             # 하위 에이전트별 설정
     if subs is None:                                         # 없으면
         return out                                          # 끝
@@ -123,9 +142,9 @@ class SubagentPermissions:                                  # 하위 대화 하�
         """정적 판정. 'Bash(npm test*)' 같은 인자 패턴만 있는 도구도 목록에는 넣는다(실행 때 인자로 다시 판정)."""
         from ncn.permissions.matcher import find_matching_policy   # 첫 일치 정책
         if self.allowed is not None and any(p.startswith(tool_name + "(") for p in self.allowed):   # 인자 패턴 허용이 있으면
-            return "allow"                                  # 목록에는 보인다
-        permission, _ = find_matching_policy(tool_name, args if args is not None else {}, self.policies)   # 정적 정책 판정
-        return permission                                   # 판정 결과(allow | exclude)
+            return _ncn_layer_apply(tool_name, args, "allow", None)   # 목록에는 보인다([ncn E1] 관리자 금지는 반영)
+        permission, matched = find_matching_policy(tool_name, args if args is not None else {}, self.policies)   # 정적 정책 판정
+        return _ncn_layer_apply(tool_name, args, permission, matched)   # [ncn E1·E2] 관리자 정책·위험 판정
 
     def check(self, tool: Any, args: dict) -> str:          # 실행 직전 판정
         """PermissionService.check 와 같은 규칙(이름이 Bash 면 위험 명령 평가)."""
@@ -134,8 +153,19 @@ class SubagentPermissions:                                  # 하위 대화 하�
         evaluate = getattr(tool, "evaluate_tool_call_policy", None)   # 도구의 동적 평가
         if evaluate is None and getattr(tool, "name", None) == "Bash":   # 이름만 Bash 인 도구
             evaluate = _builtin_bash_policy                 # 내장 Bash 평가
-        permission, _ = check_tool_permission(tool.name, args if args is not None else {}, self.policies, evaluate)   # 판정
-        return permission                                   # 판정 결과(allow | ask | exclude)
+        permission, matched = check_tool_permission(tool.name, args if args is not None else {}, self.policies, evaluate)   # 판정
+        return _ncn_layer_apply(tool.name, args, permission, matched)   # [ncn E1·E2] 관리자 정책·위험 판정(ask 는 하위 대화에서 거부)
+
+
+def _ncn_layer_apply(tool_name: str, args: Any, permission: str, matched: Any) -> str:   # [ncn E1·E2] 하위 대화에도 같은 층
+    """부모와 같은 관리자 정책·위험 판정(normal 모드 기준). 정책 파일이 깨졌으면 exclude(부모는 이미 실행 거부됐어야 함)."""
+    from ncn.config import paths as cpaths                   # 전역 폴더
+    from ncn.policy import PolicyError, build_permission_layer   # 판정 층
+    try:                                                    # 층 만들기(정책·ncn.yaml 읽기)
+        layer = build_permission_layer(cpaths.global_dir())  # 판정 층
+    except PolicyError:                                     # 깨진 정책
+        return "exclude"                                    # 안전하게 금지
+    return layer.apply(tool_name, args if isinstance(args, dict) else {}, permission, matched, "normal")   # 최종 판정
 
 
 # ─────────────────────────────────────────────────────────────────────────────

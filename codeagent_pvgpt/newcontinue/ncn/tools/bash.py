@@ -14,6 +14,7 @@ import os                                                    # 환경변수
 from typing import Any, Callable, Optional                   # 타입
 
 from ncn.compat import cn_compat                             # [ncn 부록B B4] cn 원래 동작 스위치
+from ncn.security.secrets import bash_child_env            # [ncn E7] 비밀 환경변수를 뺀 자식 환경(뺄 것이 없거나 꺼져 있으면 None)
 from ncn.tools.background_jobs import (                      # 백그라운드 작업(Ctrl+B)
     ChildHandle, background_job_service, background_signal_manager, spawn_child, spawn_error_message,  # 손잡이·작업 서비스·Ctrl+B 신호·프로세스 띄우기·오류 메시지
 )                                                            # import 목록 끝
@@ -28,7 +29,7 @@ _TIMEOUT_MAX_MS = 2 ** 31 - 1                                # Node setTimeout �
 # ── 루프·화면이 끼워 넣는 연결점(cn의 전역 서비스 대응) ──
 TOOL_OUTPUT_LISTENER: Optional[Callable[[str, str, str], None]] = None   # services.chatHistory.addToolResult(id, 출력, "calling") 대응 — 실행 중 출력 보여주기
 BASH_EVENTS_LISTENER: Optional[Callable[[str], None]] = None   # emitBashToolStarted/Ended("started"/"ended") 대응(대화형 화면용)
-ENV_PROVIDER: Optional[Callable[[], dict]] = None            # [추가 자리 E7] 자식 프로세스 환경변수(비밀 제거 등). None 이면 cn처럼 그대로 물려받음
+ENV_PROVIDER: Optional[Callable[[], Optional[dict]]] = bash_child_env   # [ncn E7] 자식 프로세스 환경변수(비밀 제거). None 으로 바꾸면 cn처럼 그대로 물려받음
 
 
 class BashCommandError(Exception):                           # Bash 실패를 알리는 예외(루프가 'Error executing tool Bash'로 감쌈)

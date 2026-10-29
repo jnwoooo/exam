@@ -1,12 +1,13 @@
 # ncn/tools/multi_edit.py — MultiEdit 도구(한 파일에 여러 찾아 바꾸기를 차례로, 전부 되거나 전부 안 되게). cn extensions/cli/src/tools/multiEdit.ts
 # 경로 검증은 Edit 와 같은 validate_and_resolve_file_path(Read 선행·민감 파일). preprocess 에서 전부 계산하고 run 은 쓰기만(cn)
 # [ncn 부록B B6] ncn은 run 에서 다시 읽어 바뀌었으면 edits 를 다시 차례로 적용(실패면 cn 형식 오류, 아무것도 안 씀). NCN_CN_COMPAT=1 이면 cn 동작
+# [ncn E3] CRLF 파일은 LF 로 비교·치환 후 원래 줄바꿈으로(Edit 와 같음). [ncn E4] 쓰기 직전 원본 백업 — /undo
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 
 from typing import Optional                                  # 타입
 
-from ncn import fsio                                         # [ncn V3] 파일 창구(ACP 세션이면 IDE 위임, 아니면 디스크)
+from ncn import backup, encoding, fsio                       # [ncn V3] 파일 창구 + [ncn E3] 줄바꿈 맞춤 + [ncn E4] 백업
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
 from ncn.compat import cn_compat                             # [ncn 부록B B6] cn 원래 동작 스위치
 from ncn.tools.edit import EDIT_TOOL, REDO_KEY, validate_and_resolve_file_path   # Edit 와 같은 경로 검증·B6 재료 키
@@ -21,12 +22,21 @@ def _plural(n: int) -> str:                                 # 개수에 따른 �
     return "" if n == 1 else "s"                            # 1개면 빈 글, 아니면 s
 
 
+def multi_find_and_replace_e3(content: str, edits: list) -> str:   # [ncn E3] 줄바꿈을 무시한 여러 찾아 바꾸기
+    """CRLF 가 있는 파일(E3 켜짐)이면 내용·각 old/new 를 LF 로 맞춰 차례로 적용하고 원래 다수 줄바꿈으로. 아니면 cn 그대로."""
+    if not encoding.lf_matching(content):                    # LF 전용·E3 꺼짐
+        return execute_multi_find_and_replace(content, edits)   # cn 그대로
+    lf_edits = [{**e, "old_string": encoding.to_lf(e["old_string"]), "new_string": encoding.to_lf(e["new_string"])} for e in edits]   # LF 로 맞춘 사본(검증 끝난 edits)
+    out = execute_multi_find_and_replace(encoding.to_lf(content), lf_edits)   # LF 로 차례로 적용
+    return encoding.conform_newlines(content, out)           # 원래 줄바꿈으로
+
+
 async def _preprocess(args: dict) -> PreprocessResult:      # MultiEdit 의 preprocess(전부 계산해 둔다)
     """preprocess — 경로·edits 검증 → 차례로 적용한 새 내용 + diff 미리보기."""
     resolved_path = validate_and_resolve_file_path(args)["resolvedPath"]   # 경로 검증(먼저 — cn 순서)
     edits = validate_multi_edit(args)                        # edits 검증
     current_content = await fsio.read_text_file(resolved_path)          # 지금 내용
-    new_content = execute_multi_find_and_replace(current_content, edits)   # 차례로 적용(실패하면 오류 — 아무것도 안 씀)
+    new_content = multi_find_and_replace_e3(current_content, edits)   # 차례로 적용(실패하면 오류 — 아무것도 안 씀) — [ncn E3] CRLF 파일은 LF 로 비교
     diff = generate_diff(current_content, new_content, resolved_path)   # 미리보기 diff
     return PreprocessResult(                                # run 인자와 미리보기를 묶어 반환
         args={"file_path": resolved_path, "newContent": new_content, "originalContent": current_content, "editCount": len(edits),  # run 에 넘길 인자(경로·새 내용·옛 내용·편집 수)
@@ -44,9 +54,11 @@ async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # 
         if edits is not None and not cn_compat():            # [ncn 부록B B6] 고친 동작(cn 원래 동작: 미리 계산한 내용을 그대로 씀)
             current = await fsio.read_text_file(args["file_path"])      # 승인 뒤 실행 시점의 내용
             if current != original:                          # 승인 대기 중 바뀌었으면
-                new_content = execute_multi_find_and_replace(current, edits)   # 지금 내용에 차례로 다시 적용(하나라도 실패하면 cn 글로 오류)
+                new_content = multi_find_and_replace_e3(current, edits)   # 지금 내용에 차례로 다시 적용(하나라도 실패하면 cn 글로 오류)
                 original = current                          # diff 기준도 지금 내용
-        await fsio.write_text_file(args["file_path"], new_content)      # 쓰기
+        snap = await backup.capture(args["file_path"], "MultiEdit")   # [ncn E4] 쓰기 직전 원본(꺼져 있으면 None)
+        await fsio.write_text_file(args["file_path"], new_content)      # 쓰기([ncn E3] 디스크면 원래 인코딩·BOM·줄바꿈으로)
+        backup.commit(snap)                                  # [ncn E4] 쓰기 성공 → 백업으로 남김
         diff = generate_diff(original, new_content, args["file_path"])   # 결과용 diff
         n = args["editCount"]                                # 편집 수
         return f"Successfully edited {args['file_path']} with {n} edit{_plural(n)}\nDiff:\n{diff}"  # 성공 메시지 + diff

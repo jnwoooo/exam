@@ -2,6 +2,8 @@
 # diff 는 cn이 쓰는 npm "diff" 8.0.4 의 createTwoFilesPatch 와 글자 하나까지 같게: 줄 단위 Myers 알고리즘(diff/base.js)과
 # 패치 형식(patch/create.js)을 그대로 옮겼다. difflib 은 같은 변경도 줄 맞춤이 달라질 수 있어 쓰지 않음
 # Write 는 Read 선행 검사·Read 기록이 없다(cn 그대로). 민감 파일 검사는 cn에 없지만 ncn은 한다([ncn 부록B S6], NCN_CN_COMPAT=1 이면 cn처럼 없음)
+# [ncn E3] 기존 파일에 CRLF 가 있으면 새 내용을 그 파일의 다수 줄바꿈으로 맞춰 쓴다(인코딩·BOM 은 fsio 디스크 쓰기가 복원). 새 파일은 cn 그대로
+# [ncn E4] 쓰기 직전 원본 백업(새 파일은 "없었음") — /undo
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 
@@ -10,7 +12,7 @@ from typing import Optional                                  # 타입
 
 from ncn.compat import cn_compat                             # [ncn 부록B S6] cn 원래 동작 스위치
 from ncn.security.ignore import is_security_concern, security_concern_error, throw_if_file_is_security_concern   # 민감 파일 판정([ncn 부록B S6])
-from ncn import fsio                                         # [ncn V3] 파일 창구(ACP 세션이면 IDE 위임, 아니면 디스크)
+from ncn import backup, encoding, fsio                       # [ncn V3] 파일 창구 + [ncn E3] 줄바꿈 맞춤 + [ncn E4] 백업
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
 from ncn.tools.findreplace import REASON_FILE_WRITE_ERROR, REASON_UNKNOWN   # 오류 이유
 from ncn.tools.formatters import exists_sync, mkdir_recursive, path_dirname, read_file_utf8, realpath_sync, write_file_utf8   # Node fs·path
@@ -261,6 +263,8 @@ async def _preprocess(args: dict) -> PreprocessResult:      # Write 의 preproce
     try:                                                    # 기존 파일 diff 를 시도
         if exists_sync(filepath):                            # 기존 파일
             old_content = await fsio.read_text_file(filepath)          # 옛 내용을 읽는다
+            if encoding.enabled():                           # [ncn E3] 실제로 저장될 줄바꿈으로 미리보기(LF 전용 파일이면 그대로)
+                content = encoding.conform_newlines(old_content, content)   # 원래 다수 줄바꿈으로
             diff = create_two_files_patch(args["filepath"], args["filepath"], old_content, content, None, None, context=2)  # 문맥 2줄 diff 를 만든다
             return PreprocessResult(args=args, preview=[ToolCallPreview("text", "Preview of changes:"),  # diff 미리보기와 함께 반환
                                                         ToolCallPreview("diff", diff)])  # diff 항목
@@ -285,7 +289,11 @@ async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # 
         old_content = ""                                     # 기존 내용
         if exists_sync(filepath):                           # 기존 파일이면
             old_content = await fsio.read_text_file(filepath)          # 옛 내용을 읽는다
-        await fsio.write_text_file(filepath, content)                   # 쓰기(utf-8, 줄바꿈 그대로)
+            if encoding.enabled():                           # [ncn E3] 원래 다수 줄바꿈으로(LF 전용·빈 파일이면 그대로 — cn과 같음)
+                content = encoding.conform_newlines(old_content, content)   # 줄바꿈 맞춤
+        snap = await backup.capture(filepath, "Write")       # [ncn E4] 쓰기 직전 원본(새 파일은 "없었음")
+        await fsio.write_text_file(filepath, content)                   # 쓰기(utf-8, 줄바꿈 그대로 — [ncn E3] 디스크면 원래 인코딩·BOM)
+        backup.commit(snap)                                  # [ncn E4] 쓰기 성공 → 백업으로 남김
         if old_content:                                      # 기존 내용이 있었음(빈 파일이면 새 파일처럼 — cn 그대로)
             diff = generate_diff(old_content, content, filepath)  # 옛 내용과의 diff
             return f"Successfully wrote to file: {filepath}\nDiff:\n{diff}"  # diff 를 붙여 성공 메시지 반환

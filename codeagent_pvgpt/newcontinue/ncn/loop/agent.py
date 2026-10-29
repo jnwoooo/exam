@@ -27,6 +27,9 @@ from ncn.tools.base import Tool                              # 공용 도구 형
 
 log = logging.getLogger("ncn.loop.agent")                    # 로거
 
+TURN_START = "turn_start"                                    # [ncn E6] run_turn 시작 이벤트(감사 기록용 — ncn/audit.py)
+TURN_END = "turn_end"                                        # [ncn E6] run_turn 끝 이벤트(aborted·stopped_by_*·error)
+
 # 압축 훅(P3): await hook(stage, items, ctx) → (새 기록, 압축했나)
 #   stage: "pre_user_message"(chat.ts, 사용자 메시지 넣기 전) | "pre_api"(호출 전) | "post_tool"(도구 결과로 한도 초과 시 강제)
 #          | "normal"(도구를 쓴 뒤 일반) | "manual"(/compact)
@@ -54,6 +57,7 @@ class LoopDeps:                                             # 루프 의존성 �
     backoff: BackoffOptions = field(default_factory=BackoffOptions)   # 재시도 옵션(cn 기본값)
     discard_partial_on_retry: bool = True                    # [ncn 부록 B] 재시도 시 그 호출의 조각을 버림(False면 cn처럼 중복)
     list_permission: Optional[CheckPermission] = None        # 도구 목록용 판정(cn getRequestTools: 동적 평가 없이 정적 정책만). 없으면 check_permission
+    loop_guard: Any = None                                   # [ncn E5] ncn.loopguard.LoopGuard — 반복 상한·연속 실패 감시(None 이면 cn 처럼 상한 없음)
 
 
 @dataclass                                                  # TurnResult를 자료 구조로 정의
@@ -63,6 +67,7 @@ class TurnResult:                                           # 한 턴 결과 클
     aborted: bool = False                                    # 중단으로 끝났나
     stopped_by_rejection: bool = False                       # 헤드리스 권한 거부로 일찍 끝났나(종료 코드는 0)
     manual_compaction: Any = None                            # /compact 결과(훅이 돌려준 값)
+    stopped_by_loop_guard: Optional[str] = None              # [ncn E5] 반복 감시로 멈춘 이유(ncn.loopguard.REASON_*), 아니면 None
 
 
 @dataclass                                                  # StreamResult를 자료 구조로 정의
@@ -191,8 +196,13 @@ async def stream_chat_response(history: ChatHistory, deps: LoopDeps, *, headless
     full_response = ""                                       # 전체 글
     final_response = ""                                      # 마지막 반복 글
     compaction_occurred = False                              # 이번 턴에 압축이 있었나
+    guard = deps.loop_guard if not is_compacting else None   # [ncn E5] 압축 요약 호출은 감시하지 않음
+    if guard is not None:                                    # [ncn E5] 감시기가 있으면
+        guard.begin_turn()                                   # [ncn E5] 턴마다 새로 센다
 
     while True:                                             # 한 반복이 한 번의 LLM 호출 + 도구 처리
+        if guard is not None and not await guard.before_iteration(headless=headless):   # [ncn E5] 상한·연속 실패 → 묻고 멈춤이면
+            return TurnResult(response=final_response or full_response, stopped_by_loop_guard=guard.triggered)   # [ncn E5] 턴 끝(기록은 그대로)
         if not is_compacting:                                # 1 기록 새로 읽기(압축 중이면 받은 것 그대로)
             chat_items = history.get_history()              # 압축 중이 아니면 최신 기록을 다시 읽는다
         system_message = await _maybe_await(deps.system_message())   # 2 시스템 메시지(모드 반영)
@@ -277,4 +287,12 @@ async def run_turn(history: ChatHistory, user_message: str, deps: LoopDeps, *, h
             history.set_history(items)                      # 서비스 기록을 교체
     history.add_user_message(user_message, context_items)    # 사용자 메시지(+첨부 맥락 — 없으면 [])
     # cn은 압축 위치가 있으면 getHistoryForLLM으로 시작하지만 루프 첫 반복에서 getHistory()로 다시 읽으므로 결과가 같다
-    return await stream_chat_response(history, deps, headless=headless, model_name=model_name, signal=signal)  # 루프를 돌려 턴 결과를 돌려준다
+    ev.safe_emit(deps.on_event, {"type": TURN_START})        # [ncn E6] 감사 기록용 턴 시작(화면은 모르는 종류라 무시)
+    try:                                                    # [ncn E6] 오류도 턴 끝으로 남긴다
+        result = await stream_chat_response(history, deps, headless=headless, model_name=model_name, signal=signal)  # 루프를 돌려 턴 결과를 얻는다
+    except BaseException as e:                               # [ncn E6] 턴 오류·취소
+        ev.safe_emit(deps.on_event, {"type": TURN_END, "error": f"{type(e).__name__}: {e}"})   # [ncn E6] 오류 요약(감사 기록이 첫 줄만 남김)
+        raise                                               # 그대로 올린다
+    ev.safe_emit(deps.on_event, {"type": TURN_END, "aborted": result.aborted,   # [ncn E6] 턴 끝(멈춘 이유)
+                                 "stopped_by_rejection": result.stopped_by_rejection, "stopped_by_loop_guard": result.stopped_by_loop_guard})   # (이어짐)
+    return result                                           # 턴 결과

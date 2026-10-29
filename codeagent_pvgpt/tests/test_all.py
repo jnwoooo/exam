@@ -63,7 +63,7 @@ def stack():
         pytest.skip(f"Postgres/Redis 없음 — 통합 테스트 건너뜀({type(e).__name__})")
     ensure_database(DB); apply_schema(DB)                    # 테스트 DB 준비
     with psycopg.connect(DB, autocommit=True) as con:        # 이전 실행 흔적 지우고 데이터 넣기
-        con.execute("TRUNCATE users, api_tokens, teams, team_members, scopes, team_scopes, llm_usage, tool_calls, index_runs CASCADE")
+        con.execute("TRUNCATE users, api_tokens, teams, team_members, scopes, team_scopes, llm_usage, tool_calls, index_runs, ncn_audit CASCADE")
         con.execute("""
           INSERT INTO users(user_id, is_admin) VALUES ('kim', false), ('lee', false), ('boss', true), ('heavy', false);
           INSERT INTO teams VALUES ('A','팀A'),('B','팀B');
@@ -256,11 +256,39 @@ def test_mcp_request_fix_with_refs_and_retry(stack, indexed):
     assert n == 3                                                                      # 안쪽 LLM 호출 1 + 2
 
 
+# ── ncn 감사 기록(/audit/events) ─────────────────────────────
+
+def test_ncn_audit_events(stack):
+    url = stack["agent"] + "/audit/events"
+    kim = {"Authorization": f"Bearer {TOK['kim']}"}
+    now = dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")   # ncn과 같은 시각 형식
+    ev = lambda i, **kw: {"id": f"ev-{i}", "ts": now, "session": "s1", "ui": "headless", "mode": "normal", **kw}
+    events = [ev(1, kind="turn_start"),
+              ev(2, kind="tool_call", tool="Bash", args={"command": "git push origin main", "keys": ["command"]}),
+              ev(3, kind="permission", tool="Bash", decision="exclude", by="E1"),                 # 정책 금지
+              ev(4, kind="approval", tool="Write", choice="reject", by="user"),                   # 사용자 거부
+              ev(5, kind="usage", total_tokens=12), {"kind": "no-id"}]                            # id 없는 사건은 버림
+    assert httpx.post(url, json={"events": events}).status_code == 401                            # 토큰 없음
+    assert httpx.post(url, json={"x": 1}, headers=kim).status_code == 400                         # 형식 오류
+    assert httpx.post(url, json={"events": events}, headers=kim).json() == {"received": 6, "stored": 5}
+    assert httpx.post(url, json={"events": events[:3]}, headers=kim).status_code == 200            # 재전송(ncn 실패 후 다시)
+    with psycopg.connect(DB) as con:
+        n, user = con.execute("SELECT count(*), max(user_id) FROM ncn_audit WHERE session_id='s1'").fetchone()
+    assert (n, user) == (5, "kim")                                                                 # 중복 없이, 신원은 토큰 기준
+    d = httpx.get(stack["agent"] + "/admin/api/summary", headers={"Authorization": f"Bearer {TOK['boss']}"}).json()
+    row = next(r for r in d["ncn"]["by_user"] if r["user_id"] == "kim")
+    assert (row["turns"], row["tool_calls"], row["denied"], row["tokens"]) == (1, 1, 2, 12)       # 거부 = exclude + reject
+    bash = next(r for r in d["ncn"]["by_tool"] if r["tool"] == "Bash")
+    assert (bash["calls"], bash["denied"]) == (1, 1)
+    assert any(r["summary"] == "git push origin main" for r in d["ncn"]["recent"])                 # 명령 첫 줄 요약
+
+
 # ── 감시 ──────────────────────────────────────────────────
 
 def test_admin_summary(stack, indexed):
     url = stack["agent"] + "/admin/api/summary"
     assert httpx.get(url, headers={"Authorization": f"Bearer {TOK['kim']}"}).status_code == 403   # 일반 사용자 거부
     d = httpx.get(url, headers={"Authorization": f"Bearer {TOK['boss']}"}).json()
-    assert {"by_user", "by_day", "by_tool", "recent_tools", "index_runs"} <= set(d)
+    assert {"by_user", "by_day", "by_tool", "recent_tools", "index_runs", "ncn"} <= set(d)
+    assert {"by_user", "by_tool", "recent"} <= set(d["ncn"])                                       # ncn 감사 요약
     assert "<title>코드에이전트 감시</title>" in httpx.get(stack["agent"] + "/admin").text

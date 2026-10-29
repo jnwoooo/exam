@@ -721,6 +721,11 @@ def exists_sync(path: str) -> bool:                         # Node existsSync �
 
 def read_file_utf8(path: str) -> str:                       # Node readFileSync(utf-8) 이식
     """Node fs.readFileSync(path, "utf-8") — BOM 유지, 잘못된 바이트는 U+FFFD, 줄바꿈 변환 없음."""
+    return read_file_bytes(path).decode("utf-8", errors="replace")   # Node utf-8 해석(BOM 그대로)
+
+
+def read_file_bytes(path: str) -> bytes:                    # Node readFileSync(인코딩 없음) 이식 — [ncn E3]·[ncn E4] 가 바이트로 씀
+    """Node fs.readFileSync(path) — 바이트 그대로. 오류 글은 read_file_utf8 과 같은 Node 형식."""
     try:                                                    # 읽기 시도
         with open(path, "rb") as f:                          # 바이트로 읽기(줄바꿈 변환 방지)
             data = f.read()                                 # 전부 읽음
@@ -733,14 +738,19 @@ def read_file_utf8(path: str) -> str:                       # Node readFileSync(
     except OSError as e:                                     # 그 밖 → open 오류 글
         msg = node_fs_error_message(e, "open", path)        # Node 형식 오류 글
         raise NodeFsError(msg, msg.split(":", 1)[0]) from e  # Node 오류로 바꿔 올림
-    return data.decode("utf-8", errors="replace")            # Node utf-8 해석(BOM 그대로)
+    return data                                             # 읽은 바이트 그대로
 
 
 def write_file_utf8(path: str, content: str) -> None:       # Node writeFileSync(utf-8) 이식
     """Node fs.writeFileSync(path, content, "utf-8") — 줄바꿈 변환 없이 그대로 씀."""
+    write_file_bytes(path, content.encode("utf-8", errors="surrogatepass"))   # 외톨이 서로게이트도 Node처럼 기록 시도
+
+
+def write_file_bytes(path: str, data: bytes) -> None:       # Node writeFileSync(Buffer) 이식 — [ncn E3]·[ncn E4] 가 바이트로 씀
+    """Node fs.writeFileSync(path, buffer) — 바이트 그대로. 오류 글은 write_file_utf8 과 같은 Node 형식."""
     try:                                                    # 쓰기 시도
         with open(path, "wb") as f:                          # 바이트로 쓰기(Windows \n→\r\n 변환 방지)
-            f.write(content.encode("utf-8", errors="surrogatepass"))   # 외톨이 서로게이트도 Node처럼 기록 시도
+            f.write(data)                                   # 받은 바이트 그대로 기록
     except OSError as e:                                     # Node 글로
         code_msg = node_fs_error_message(IsADirectoryError(_errno.EISDIR, "dir") if os.path.isdir(path) else e, "open", path)  # 폴더였다면 EISDIR 로 보정한 오류 글
         raise NodeFsError(code_msg, code_msg.split(":", 1)[0]) from e  # Node 오류로 바꿔 올림

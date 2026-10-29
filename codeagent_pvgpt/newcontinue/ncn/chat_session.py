@@ -38,6 +38,7 @@ class ChatCore:                                             # 대화형 세션 �
     deps: Any = None                                         # LoopDeps(조립 끝에 채움)
     mcp: Any = None                                          # MCPService(connect_mcp 뒤 채움)
     subagent_host: Any = None                                # SubagentHost(베타 Subagent 도구용)
+    audit: Any = None                                        # [ncn E6] AuditLog(감사 기록 — 꺼져 있으면 None)
 
     @property   # 읽기 전용 속성
     def model_name(self) -> str:                             # 루프에 넘길 모델명(model.model — cn 그대로)
@@ -55,6 +56,9 @@ class ChatCore:                                             # 대화형 세션 �
                 await self.mcp.shutdown()                    # MCP 연결 정리
             except Exception:                                # 이미 닫힘 등
                 pass                                        # 무시
+        if self.audit is not None:                           # [ncn E6] 감사 기록이 있으면
+            import asyncio                                   # [ncn E6] 스레드에서 닫기
+            await asyncio.to_thread(self.audit.close)        # [ncn E6] 마지막 전송(최대 3초, 대화 루프를 막지 않게)
 
 
 def initial_mode(args: argparse.Namespace) -> str:           # 시작 모드 계산 함수
@@ -89,8 +93,12 @@ def open_chat_core(args: argparse.Namespace, environ: Any, cwd: str, *,   # 대�
     gdir = cpaths.global_dir(environ, cwd_p)                 # 전역 폴더
     if a.beta_subagent_tool:                                 # 베타 Subagent
         registry.set_beta_subagent_tool_enabled(True)       # 켜기
-    perms = PermissionService(mode=initial_mode(a), allow=a.allow, ask=a.ask, exclude=a.exclude,   # 권한(대화형 기본표)
-                              headless=False, global_dir=gdir)   # 헤드리스 아님
+    from ncn.policy import PolicyError                       # [ncn E1] 관리자 정책 오류(깨진 파일·금지 모드)
+    try:                                                    # [ncn E1] 정책 오류면 세션을 열지 않음(실행 거부)
+        perms = PermissionService(mode=initial_mode(a), allow=a.allow, ask=a.ask, exclude=a.exclude,   # 권한(대화형 기본표)
+                                  headless=False, global_dir=gdir)   # 헤드리스 아님
+    except PolicyError as e:                                 # [ncn E1] 깨진 정책 파일·금지된 시작 모드
+        raise SessionOpenError(e.message) from e             # 화면·ACP 가 오류로 보여 줌
     try:                                                    # 설정 읽기
         cfg = load_config(a.config, cwd=cwd_p, global_dir=gdir, environ=environ, headless=False,   # 대화형 설정 읽기
                           rules=a.rule, mcp=a.mcp, models=a.model, prompts=a.prompts)   # (인자 이어짐)
@@ -104,6 +112,8 @@ def open_chat_core(args: argparse.Namespace, environ: Any, cwd: str, *,   # 대�
                     request_options=model.request_options)   # 요청 옵션
     sm = SessionManager(environ, cwd)                        # 세션 저장 관리자
     sid, items = select_session(sm)                          # 새 세션·불러온 세션·--resume·--fork 는 화면이 고른다
+    from ncn import backup                                   # [ncn E4] 쓰기 전 백업은 현재 세션 id 폴더로(/undo)
+    backup.set_session_resolver(lambda: sm.get_current()["sessionId"])   # [ncn E4] 쓸 때마다 현재 세션 id
     history = ChatHistory(items, session_id=sid)             # 대화 기록(대화형은 세션 id 가 있다)
     core = ChatCore(id=sid, cwd=cwd, gdir=gdir, cfg=cfg, model=model, llm=llm, perms=perms,   # 부품 묶음
                     history=history, sessions=sm)            # (인자 이어짐)
@@ -122,11 +132,24 @@ def open_chat_core(args: argparse.Namespace, environ: Any, cwd: str, *,   # 대�
         return build_system_message(mode=perms.mode, headless=False, format_json=False, cwd=cwd_p,   # 현재 모드 기준
                                     global_dir=gdir, config=cfg, additional_rules=a.rule, environ=environ)   # (인자 이어짐)
 
+    from ncn.audit import fan_out, make_audit                # [ncn E6] 감사 기록
+    from ncn.loopguard import make_loop_guard, quiz_ask_continue   # [ncn E5] 반복 감시·묻기(AskQuestion 창구)
+    ncn_settings = load_ncn_settings(gdir)                   # ~/.continue/ncn.yaml(한 번 읽어 같이 씀)
+    core.audit = make_audit(gdir, environ, ncn_settings, ui="acp" if getattr(a, "stdio", False) else "interactive",   # [ncn E6] 기록기(꺼짐이면 None)
+                            session_id=lambda: history.session_id or sid, mode=lambda: perms.mode)   # [ncn E6] 세션 id·모드는 매번 읽음
+    guard = make_loop_guard(ncn_settings, global_dir=gdir, environ=environ, ask_continue=quiz_ask_continue,   # [ncn E5] 감시기(꺼짐이면 None)
+                            on_decision=core.audit.loop_decision if core.audit else None)   # [ncn E5] 결정은 감사 기록에
+    on_event = fan_out(on_event, guard.observe if guard else None, core.audit.on_event if core.audit else None)   # [ncn E5·E6] 화면 + 감시 + 감사
+    if guard is not None:                                    # [ncn E5] 감시기가 있으면
+        guard.on_event = on_event                            # [ncn E5] 멈춤 안내도 화면·감사로
+    if core.audit is not None:                               # [ncn E6] 권한 판정·승인 선택 기록
+        check_permission = core.audit.wrap_check(check_permission or (lambda tool, targs: perms.check(tool, targs)), perms)   # [ncn E6] 판정은 그대로, 기록만
+        ask_user = core.audit.wrap_ask(ask_user)             # [ncn E6] 사용자 선택 기록
     core.subagent_host = SubagentHost(models=cfg.models, headless=False, tools=all_tools, system_message=system_message,   # [ncn 부록B B16] 세션마다 독립
                                       parent_history=history, get_signal=get_signal,   # 부모 기록·지금 턴 중단 신호(중단 → 하위도 중단)
                                       on_event=on_event,     # 하위 사용량을 이 턴 사용량에
                                       on_progress=on_subagent_progress,   # 진행 표시(화면마다)
-                                      settings=load_ncn_settings(gdir))   # ~/.continue/ncn.yaml(추가 E)
+                                      settings=ncn_settings)   # ~/.continue/ncn.yaml(추가 E)
     core.deps = LoopDeps(                                    # 루프 의존성
         llm=llm, tools=all_tools,                            # LLM·도구 목록 함수
         check_permission=check_permission or (lambda tool, targs: perms.check(tool, targs)),   # 실행 시점 판정(Bash 위험 판정 포함)
@@ -135,6 +158,7 @@ def open_chat_core(args: argparse.Namespace, environ: Any, cwd: str, *,   # 대�
         system_message=system_message, on_event=on_event,    # 시스템 메시지·이벤트
         validate_context=make_validate_context(model.raw),   # 컨텍스트 검사
         apply_tool_overrides=(lambda defs: registry.apply_chat_completion_tool_overrides(defs, overrides)),   # 도구 덮어쓰기
+        loop_guard=guard,                                    # [ncn E5] 반복 상한·연속 실패 감시
     )                                                        # 끝
     core.deps.compaction_hook = make_compaction_hook(history, model.raw, on_compacted=sm.update_history)   # 압축 훅(압축 뒤 세션 저장)
     return core                                              # 부품 반환

@@ -65,6 +65,7 @@ uv run python -m rag_service.indexer shop       # 하나만
 ## 6. 감시
 브라우저에서 `http://localhost:8200/admin` → 관리자 토큰 입력 → 사용자별 토큰·일별 사용량·도구 호출·LLM 오류·색인 기록.
 한도: `LIMIT_RPM`(분당 요청), `LIMIT_DAILY_TOKENS`(하루 토큰) — 넘으면 Continue에 429 메시지가 뜬다.
+ncn 감사 기록: `POST /audit/events`(Bearer 개인 토큰, 본문 `{"events":[...]}`) — ncn이 `~/.continue/ncn.yaml`의 `audit: {server: "http://<서버>:8200"}`로 보내면 `ncn_audit` 테이블에 쌓이고 `/admin` 아래쪽에 사용자별·도구별·거부 수·최근 사건이 보인다(`newcontinue/추가기능_가이드.md` E6).
 
 ## 7. 외부 LLM 연결 확인 · 참고 구현(llm_server)
 ```bash
@@ -80,16 +81,16 @@ uv run python -m llm_server.app                                  # :8000 → 코
 
 ## 8. 테스트
 ```bash
-uv run pytest -q        # 13개. 가짜 임베딩·가짜 LLM·가짜 Ollama + docker Postgres(codeagent_test DB)·Redis(15번)
+uv run pytest -q        # 14개. 가짜 임베딩·가짜 LLM·가짜 Ollama + docker Postgres(codeagent_test DB)·Redis(15번)
 ```
 
 ## 구조
 ```
 codeagent_pvgpt/
 ├── common/            settings.py(환경변수·.env) · db.py(DB 생성·스키마·토큰 해시)
-├── db/schema.sql      사용자·토큰·팀·항목·사용량·도구 호출·색인 기록
+├── db/schema.sql      사용자·토큰·팀·항목·사용량·도구 호출·색인 기록·ncn 감사
 ├── rag_service/       embedder(KoE5) · chunking · store(Qdrant) · permissions(Postgres+Redis) · app(/index·/search) · indexer(git)
-├── agent_server/      app(조립) · proxy(/v1) · mcp_tools(/mcp) · fixer(request_fix 검증) · auth · usage · admin · manage(CLI)
+├── agent_server/      app(조립) · proxy(/v1) · mcp_tools(/mcp) · fixer(request_fix 검증) · auth · usage · admin · audit(/audit/events) · manage(CLI)
 ├── llm_server/        (참고 구현) 외부 LLM 앞의 FastAPI: app(OpenAI /v1 → Ollama) · convert(형식 변환) · check_compat(①②③ 확인)
 ├── tools/             fake_llm.py(가짜 OpenAI 호환 LLM) · fake_ollama.py(가짜 Ollama)
 ├── continue/config.yaml

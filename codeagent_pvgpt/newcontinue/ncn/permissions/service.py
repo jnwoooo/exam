@@ -5,6 +5,8 @@
 #   - 실행 직전: check(tool, args) — 첫 일치 정책 → 그 도구의 evaluate_tool_call_policy(Bash 위험 판정)가 "disabled"면 exclude
 #     allow → 바로 실행 / ask → 헤드리스면 정책 거부, 대화형이면 사용자에게 묻기 / exclude → 정책 거부("Command blocked by security policy")
 #   - 승인 "계속 + 다시 묻지 않기": add_always_allow(name, args) — permissions.yaml allow에 규칙 추가 후 다시 읽기
+# [ncn E1·E2] cn 판정 결과 위에 ncn/policy.py PermissionLayer 를 얹는다: 관리자 정책(우선순위 맨 위, 모든 모드) → force_ask → 위험 판정(allow→ask).
+#   정책 파일이 없고 위험 규칙에 안 걸리면 cn과 같은 결과. 정책 파일이 깨졌으면 생성자에서 PolicyError(실행 거부).
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 import logging                                               # 로그(stdout 금지 — ACP)
@@ -18,6 +20,7 @@ from ncn.permissions.policies import (AUTO_MODE_POLICIES, MODE_AUTO, MODE_NORMAL
 from ncn.permissions.yaml_loader import (add_policy_to_yaml, ensure_permissions_yaml_exists, generate_policy_rule,  # yaml 읽기·쓰기 함수 가져오기
                                          load_permissions_yaml, permissions_yaml_path, yaml_config_to_policies)   # 파일
 from ncn.security.terminal_security import evaluate_terminal_command_security   # Bash 위험 판정
+from ncn.policy import PermissionLayer, PolicyError, PolicyModeError, build_permission_layer   # [ncn E1·E2] 관리자 정책·위험 판정 층
 
 if TYPE_CHECKING:                                            # 타입 검사 때만(순환 import 방지)
     from ncn.tools.base import Tool                         # 도구 타입(순환 import 피하려 지연)
@@ -43,7 +46,10 @@ def resolve_permission_precedence(*, global_dir: pathlib.Path, allow: Optional[S
         if yaml_config:                                     # yaml이 유효할 때만
             policies.extend(yaml_config_to_policies(yaml_config))   # 패턴 오류면 예외(원문처럼 잡지 않음)
     if use_defaults:                                         # 3) 기본 정책(가장 낮음)
-        policies.extend(get_default_tool_policies(is_headless))  # 기본 정책을 맨 뒤에 붙임
+        defaults = get_default_tool_policies(is_headless)    # 기본 정책표
+        for p in defaults:                                   # [ncn E1] 기본표 출신 표시(관리자 allow 가 기본 ask 만 바꾸게 — policy.is_default_policy)
+            p._ncn_default = True                            # 표시(비교·출력에는 안 쓰이는 속성)
+        policies.extend(defaults)                            # 기본 정책을 맨 뒤에 붙임
     return policies                                         # 합쳐진 정책 목록 반환
 
 
@@ -52,11 +58,16 @@ class PermissionService:                                    # 권한 서비스 �
 
     def __init__(self, *, mode: str = MODE_NORMAL, allow: Sequence[str] = (), ask: Sequence[str] = (),  # 생성자: 모드와 CLI 플래그
                  exclude: Sequence[str] = (), headless: bool, global_dir: pathlib.Path,  # exclude·헤드리스·전역 폴더
-                 readonly: bool = False, auto: bool = False):  # 구형 --readonly/--auto 플래그
+                 readonly: bool = False, auto: bool = False,  # 구형 --readonly/--auto 플래그
+                 layer: Optional[PermissionLayer] = None):   # [ncn E1·E2] 판정 층(None 이면 정책 파일·ncn.yaml 에서 만듦)
         legacy = convert_legacy_mode_flags(readonly, auto)   # --readonly → plan, --auto → auto(둘 다면 ValueError)
         mode = legacy or mode or MODE_NORMAL                 # 플래그가 있으면 그 모드
         if mode not in PERMISSION_MODES:                     # 잘못된 모드
             raise ValueError(f"Unknown permission mode: {mode}")  # 알 수 없는 모드 오류
+        self.layer: PermissionLayer = layer if layer is not None else build_permission_layer(global_dir)   # [ncn E1·E2] 깨진 정책 파일이면 PolicyError(실행 거부)
+        if not self.layer.mode_allowed(mode):                # [ncn E1] deny_modes(예: --auto 금지)
+            raise PolicyModeError(f"Permission mode '{mode}' is disabled by the administrator policy "   # 실행 거부 글
+                                  f"({self.layer.admin.path if self.layer.admin else ''}).")   # (글 이어짐)
         self.mode: str = mode                                # 현재 모드(currentMode)
         self.headless: bool = headless                       # 헤드리스 여부(isHeadless)
         self.global_dir = pathlib.Path(global_dir)          # 전역 설정 폴더 경로 — ~/.continue (CONTINUE_GLOBAL_DIR)
@@ -95,6 +106,8 @@ class PermissionService:                                    # 권한 서비스 �
         """switchMode — normal을 처음 떠날 때 정책을 저장하고, normal로 돌아오면 그대로 복원한다."""
         if mode not in PERMISSION_MODES:                     # 잘못된 모드
             raise ValueError(f"Unknown permission mode: {mode}")  # 알 수 없는 모드 오류
+        if not self.layer.mode_allowed(mode):                # [ncn E1] 관리자 정책이 금지한 모드
+            raise PolicyModeError(f"Permission mode '{mode}' is disabled by the administrator policy.")   # 바꾸지 않음
         current = self.mode                                  # 이전 모드
         logger.debug("Switching from mode '%s' to '%s'", current, mode)  # 전환 로그
         if current == MODE_NORMAL and mode != MODE_NORMAL and self._original_policies is None:   # 처음 떠날 때만 저장
@@ -115,6 +128,8 @@ class PermissionService:                                    # 권한 서비스 �
         """UserInput.tsx cycleModes — normal → plan → auto → normal (Shift+Tab)."""
         idx = PERMISSION_MODES.index(self.mode) if self.mode in PERMISSION_MODES else -1   # 현재 위치
         nxt = PERMISSION_MODES[(idx + 1) % len(PERMISSION_MODES)]   # 다음 모드
+        while not self.layer.mode_allowed(nxt):              # [ncn E1] 금지 모드는 건너뜀(normal 은 금지 불가라 반드시 멈춤)
+            nxt = PERMISSION_MODES[(PERMISSION_MODES.index(nxt) + 1) % len(PERMISSION_MODES)]   # 그다음 모드
         self.set_mode(nxt)                                  # 다음 모드로 전환
         return nxt                                          # 새 모드 이름 반환
 
@@ -136,8 +151,9 @@ class PermissionService:                                    # 권한 서비스 �
     def base_permission(self, tool_name: str, args: Optional[Dict] = None) -> str:  # 도구의 정적 권한 조회
         """정적 정책의 첫 일치 권한(없으면 "ask"). 도구 목록 필터용(cn getRequestTools는 인자 {}로 판정).
         인자 {}면 Bash 동적 평가는 base를 그대로 돌려주므로 결과가 checkToolPermission과 같다."""
-        permission, _ = find_matching_policy(tool_name, args if args is not None else {}, self.policies)  # 정책표에서 첫 일치를 찾음
-        return permission                                   # 권한 문자열 반환
+        a = args if args is not None else {}                 # 인자(없으면 {})
+        permission, matched = find_matching_policy(tool_name, a, self.policies)  # 정책표에서 첫 일치를 찾음
+        return self.layer.apply(tool_name, a, permission, matched, self.mode)   # [ncn E1·E2] 관리자 정책 등 반영(인자 {}면 위험 판정 없음)
 
     def is_tool_offered(self, tool_name: str) -> bool:      # 모델에 도구를 보여줄지 판정
         """getRequestTools 조건 — allow 이거나 (ask 이고 헤드리스가 아님)이면 LLM에 보낸다."""
@@ -151,8 +167,9 @@ class PermissionService:                                    # 권한 서비스 �
         evaluate = tool.evaluate_tool_call_policy            # 도구가 가진 동적 평가(내장 Bash)
         if evaluate is None and tool.name == "Bash":         # 이름만 Bash인 도구 → 내장 Bash 평가(runTerminalCommand.ts 연결과 같게)
             evaluate = _builtin_bash_policy                 # 이름이 Bash면 내장 평가 사용
-        permission, _ = check_tool_permission(tool.name, args if args is not None else {}, self.policies, evaluate)  # 정적 정책 + 동적 평가로 판정
-        return permission                                   # allow|ask|exclude 반환
+        a = args if args is not None else {}                 # 인자(없으면 {})
+        permission, matched = check_tool_permission(tool.name, a, self.policies, evaluate)  # 정적 정책 + 동적 평가로 판정
+        return self.layer.apply(tool.name, a, permission, matched, self.mode)   # [ncn E1·E2] 관리자 정책·force_ask·위험 판정
 
     def add_always_allow(self, tool_name: str, args: Dict) -> None:  # '항상 허용' 규칙을 yaml에 저장
         """useChat.ts handleToolPermissionResponse(createPolicy) — 규칙 생성 → permissions.yaml allow에 추가 → 다시 읽기.

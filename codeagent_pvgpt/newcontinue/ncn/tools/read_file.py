@@ -1,6 +1,7 @@
 # ncn/tools/read_file.py — Read 도구 + "읽은 파일" 기록. cn extensions/cli/src/tools/readFile.ts
 # 기록(read_files_set)은 모듈 전역 집합 — 프로세스가 끝날 때까지 유지(압축·/clear·재개에도 안 지움, P0 4장). Write 는 기록 안 함
 # 한도를 넘으면 잘라 주지 않고 오류(cn 그대로). 상대경로는 프로세스 cwd 기준
+# [ncn E3] 디스크 읽기는 ncn/encoding.py 판별(CP949·UTF-16 도 제대로 읽음). 결과 글 형식("Content of …")은 cn과 같다
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 
@@ -68,7 +69,7 @@ async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # 
         if not exists_sync(filepath):                        # 없음
             raise ContinueError(REASON_UNSPECIFIED, f"File does not exist: {filepath}")  # 파일이 없으면 오류
         real_path = realpath_sync(filepath)                  # 실경로
-        content = await fsio.read_text_file(real_path)                  # utf-8 로 읽기
+        content = await fsio.read_text_file(real_path)                  # utf-8 로 읽기([ncn E3] 디스크면 UTF-8·UTF-16 BOM·CP949 판별, BOM·줄바꿈은 cn처럼 글에 그대로)
 
         parallel_count = context.parallel_tool_call_count if context is not None and context.parallel_tool_call_count is not None else 1  # 동시에 실행 중인 도구 수(없으면 1) — 출력 한도를 나누는 데 쓴다
         base_max_lines = get_read_file_max_lines()           # 한 도구 기준 한도

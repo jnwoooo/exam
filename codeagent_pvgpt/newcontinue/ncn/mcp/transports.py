@@ -1,7 +1,7 @@
 # ncn/mcp/transports.py — MCP 전송 만들기. cn extensions/cli/src/services/mcpTransports.ts(constructStdioTransport·
 #   constructSseTransport·constructHttpTransport) 를 공식 mcp 파이썬 SDK 2.x 전송(stdio_client·sse_client·streamable_http_client)으로
 # 같게 맞춘 것: 헤더 = requestOptions.headers + (apiKey 면 Authorization: Bearer), verifySsl:false 면 인증서 검사 끔,
-#   stdio 환경변수 = 설정 env + (설정에 없는 키만) 현재 환경변수 중 빈 값이 아닌 것, stderr 는 경고로 모은다(data.toString().trim()).
+#   stdio 환경변수 = 설정 env + (설정에 없는 키만) 현재 환경변수 중 빈 값이 아닌 것([ncn E7] 비밀 이름은 뺌 — ncn/security/secrets.py), stderr 는 경고로 모은다(data.toString().trim()).
 # cn 은 프록시 환경변수를 쓰지 않는다(Node fetch) → httpx2 도 trust_env=False.
 # HTTP 오류 응답(4xx·5xx)은 본문을 기록해 두었다가 cn 원문 오류 글("Streamable HTTP error: Error POSTing to endpoint: …")을 만드는 데 쓴다.
 from __future__ import annotations                           # 타입 주석 지연 평가
@@ -75,8 +75,9 @@ async def open_sse(config: Mapping[str, Any], api_key: Optional[str]) -> AsyncIt
 
 def stdio_env(config: Mapping[str, Any], environ: Mapping[str, str]) -> dict[str, str]:   # stdio 서버 환경변수
     """env = serverConfig.env || {}; process.env 중 env 에 없고 값이 참(빈 글 아님)인 것만 더함."""
-    env = dict(config.get("env") or {})                      # 설정 env(복사)
-    for k, v in environ.items():                             # 현재 환경변수
+    env = dict(config.get("env") or {})                      # 설정 env(복사) — 사용자가 직접 적은 값이라 비밀이어도 그대로
+    from ncn.security.secrets import mcp_inherited_env       # [ncn E7] 물려받는 환경에서 비밀 이름 빼기
+    for k, v in mcp_inherited_env(environ).items():          # 현재 환경변수(비밀 제외 — 꺼져 있으면 cn처럼 전부)
         if k not in env and v:                               # 없고 빈 글이 아니면
             env[k] = v                                       # 더함
     return env                                               # 결과

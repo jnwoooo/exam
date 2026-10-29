@@ -1,4 +1,5 @@
 # ncn/security/ignore.py — 민감 파일 판정(Read·Edit·MultiEdit 차단). cn core/indexing/ignore.ts + npm "ignore" 7.0.5 판정기
+# [ncn E7] cn 목록 다음에 키 파일 패턴(ncn/security/secrets.py EXTRA_BLOCK_FILES + 설정 block_files)도 확인한다 — 오류 글은 cn과 같다.
 # cn은 gitignore 문법 판정기(npm ignore, 대소문자 무시)를 쓴다. 같은 결과를 내려고 그 패키지의 패턴→정규식 변환과
 # 부모 디렉터리 확인 규칙을 그대로 옮겼다(pathspec 은 대소문자·오류 글이 달라 쓰지 않음)
 from __future__ import annotations                           # 타입 주석 지연 평가
@@ -416,7 +417,21 @@ def is_security_concern(file_path_or_uri: str) -> bool:     # 민감 파일 여�
         return True                                         # 민감(cn 두 조각 판정보다 넓게)
     if not filepath:                                        # 비면
         return False                                        # 민감하지 않음
-    return default_file_and_folder_security_ignores.ignores(filepath)  # 판정기로 검사해 반환
+    if default_file_and_folder_security_ignores.ignores(filepath):   # cn 목록에 걸리면
+        return True                                         # 민감
+    extra = _ncn_extra_block_ignore()                       # [ncn E7] 추가 키 파일 패턴(id_rsa*·.netrc 등 + ncn.yaml·정책의 block_files)
+    if extra is None:                                       # 꺼짐(NCN_CN_COMPAT=1·secrets.enabled:false)
+        return False                                        # cn과 같은 결과
+    return bool(extra.ignores(filepath) or (full_pieces and extra.ignores(full_pieces)))   # 두 조각·조각 전체 중 하나라도 걸리면 민감
+
+
+def _ncn_extra_block_ignore():                              # [ncn E7] 추가 판정기 얻기
+    """ncn/security/secrets.py extra_block_ignore — 읽기 실패는 기본 패턴 판정기로(안전 쪽)."""
+    from ncn.security import secrets                        # 지연 import(순환 방지)
+    try:                                                    # 설정 읽기
+        return secrets.extra_block_ignore()                 # 판정기 또는 None
+    except Exception:                                       # 실패
+        return Ignore().add(secrets.EXTRA_BLOCK_FILES)      # 기본 패턴
 
 
 def security_concern_error(filepath: str) -> ContinueError:  # 민감 파일 오류 객체를 만드는 함수

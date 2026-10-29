@@ -84,3 +84,20 @@ CREATE TABLE IF NOT EXISTS index_runs (                 -- 색인 작업 한 번
     full_index BOOLEAN NOT NULL DEFAULT FALSE,          -- 전체 색인이었는지
     status     TEXT NOT NULL DEFAULT 'ok'               -- 'ok' 또는 오류 요약
 );
+
+CREATE TABLE IF NOT EXISTS ncn_audit (                  -- ncn(Continue 호환 CLI) 감사 사건 한 건 = 한 줄(POST /audit/events)
+    id         BIGSERIAL PRIMARY KEY,                   -- 일련번호
+    event_id   TEXT NOT NULL UNIQUE,                    -- ncn이 붙인 사건 id(재전송돼도 한 번만 저장)
+    ts         TIMESTAMPTZ NOT NULL,                    -- 사건 시각(ncn PC 기준 UTC)
+    received   TIMESTAMPTZ NOT NULL DEFAULT now(),      -- 서버가 받은 시각
+    user_id    TEXT NOT NULL,                           -- 누가(개인 토큰으로 확인)
+    session_id TEXT NOT NULL DEFAULT '',                -- ncn 세션 id
+    ui         TEXT NOT NULL DEFAULT '',                -- headless / interactive / acp(VS 확장 등)
+    mode       TEXT NOT NULL DEFAULT '',                -- 권한 모드 normal / plan / auto
+    kind       TEXT NOT NULL,                           -- turn_start·turn_end·tool_call·tool_result·tool_error·permission·approval·usage·loop_guard 등
+    tool       TEXT NOT NULL DEFAULT '',                -- 도구 이름(해당할 때)
+    decision   TEXT NOT NULL DEFAULT '',                -- 권한 판정(allow/ask/exclude)·사용자 선택(allow/reject)·결과 상태(done/canceled)
+    detail     JSONB NOT NULL DEFAULT '{}'              -- 나머지(인자 요약: 경로·명령 첫 줄·인자 이름, 토큰 수, 판정 출처 등 — 코드 원문 없음)
+);
+CREATE INDEX IF NOT EXISTS ncn_audit_ts ON ncn_audit (ts);              -- 최근 사건·기간 집계
+CREATE INDEX IF NOT EXISTS ncn_audit_user_ts ON ncn_audit (user_id, ts);   -- 사용자별 집계

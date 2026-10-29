@@ -269,6 +269,9 @@ class NcnAgent:                                             # acp Agent 구현
         from ncn.permissions.policies import PERMISSION_MODES   # 모드 목록
         if mode_id not in PERMISSION_MODES:                  # 모르는 모드
             raise RequestError.invalid_params({"message": f"Unknown mode: {mode_id}"})   # 오류 응답
+        layer = getattr(s.perms, "layer", None)              # [ncn E1] 판정 층(관리자 정책)
+        if layer is not None and not layer.mode_allowed(mode_id):   # [ncn E1] 관리자 정책이 금지한 모드(deny_modes)
+            raise RequestError.invalid_params({"message": f"Mode '{mode_id}' is disabled by the administrator policy"})   # 오류 응답(모드 그대로)
         s.perms.set_mode(mode_id)                            # 정책 교체(다음 반복부터 도구 목록·시스템 메시지 반영)
         self._update(s, update_current_mode(mode_id))        # current_mode_update 알림 보냄
         self._update(s, ConfigOptionUpdate(session_update="config_option_update", config_options=convert.config_options(mode_id)))   # config_option_update 알림 보냄
@@ -326,6 +329,12 @@ class NcnAgent:                                             # acp Agent 구현
         async def body():                                    # 턴 본문(이 작업의 컨텍스트에만 세션·파일 창구를 건다)
             _CURRENT.set(s)                                  # 질문 처리기·승인이 세션을 찾게
             fsio.set_backend(s.files)                        # 이 턴의 파일 창구(IDE 위임 또는 디스크)
+            from ncn import backup                           # [ncn E4] 백업·되돌리기
+            from ncn.compat import cn_compat                 # [ncn E4] cn 원래 동작이면 /undo 도 일반 글
+            backup.set_session_id(s.id)                      # [ncn E4] 이 턴의 백업은 이 세션 id 폴더로
+            if not cn_compat() and backup.is_undo_command(text):   # [ncn E4] "/undo"·"/undo list"(cn 에 없음) → LLM 턴 없이 처리
+                self._update(s, update_agent_message_text(await backup.undo_command_async(text, s.id)))   # 결과 글(기록에는 안 남김)
+                return None                                  # 끝
             if is_interactive_compact_command(text):         # 대화형 /compact(slashCommands.ts) → 수동 압축, LLM 턴 없음
                 return await s.deps.compaction_hook("manual", s.history.get_history(),   # useChat.compaction.ts handleCompactCommand
                                                     {"is_headless": False, "model_name": s.model.model or "",   # 대화형·모델명

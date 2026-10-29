@@ -1,4 +1,4 @@
-# agent_server/admin.py — 감시 화면(/admin)과 집계 API(/admin/api/summary). 관리자(is_admin) 개인 토큰으로만
+# agent_server/admin.py — 감시 화면(/admin)과 집계 API(/admin/api/summary, ncn 감사 요약 포함). 관리자(is_admin) 개인 토큰으로만
 from fastapi import APIRouter, Request                       # 라우터
 from fastapi.responses import HTMLResponse, JSONResponse     # 응답
 
@@ -51,8 +51,36 @@ def make_router(get_state) -> APIRouter:
                                    "WHERE status >= 400 ORDER BY ts DESC LIMIT 20")   # 최근 LLM 오류
         index_runs = await rows("SELECT ts, repo, commit_sha, sent_files, deleted, full_index, status "
                                 "FROM index_runs ORDER BY ts DESC LIMIT 10")   # 최근 색인 작업
+        ncn = {   # ncn 감사 기록(POST /audit/events) — 거부 = 정책 금지(exclude) + 사용자 거부(reject)
+            "by_user": await rows("""
+                SELECT user_id, count(DISTINCT session_id) AS sessions,
+                       sum(CASE WHEN kind = 'turn_start' THEN 1 ELSE 0 END) AS turns,
+                       sum(CASE WHEN kind = 'tool_call' THEN 1 ELSE 0 END) AS tool_calls,
+                       sum(CASE WHEN (kind = 'permission' AND decision = 'exclude')
+                                  OR (kind = 'approval' AND decision = 'reject') THEN 1 ELSE 0 END) AS denied,
+                       sum(CASE WHEN kind = 'tool_error' THEN 1 ELSE 0 END) AS tool_errors,
+                       sum(CASE WHEN kind = 'loop_guard' AND decision = 'stop' THEN 1 ELSE 0 END) AS loop_stops,
+                       sum(CASE WHEN kind = 'usage' THEN coalesce((detail->>'total_tokens')::bigint, 0) ELSE 0 END) AS tokens,
+                       max(ts) AS last_seen
+                FROM ncn_audit WHERE ts >= now() - %s::interval
+                GROUP BY user_id ORDER BY tool_calls DESC""", since),          # 사용자별 턴·도구·거부·오류·반복 멈춤·토큰
+            "by_tool": await rows("""
+                SELECT tool, sum(CASE WHEN kind = 'tool_call' THEN 1 ELSE 0 END) AS calls,
+                       sum(CASE WHEN kind = 'permission' AND decision = 'ask' THEN 1 ELSE 0 END) AS asked,
+                       sum(CASE WHEN (kind = 'permission' AND decision = 'exclude')
+                                  OR (kind = 'approval' AND decision = 'reject') THEN 1 ELSE 0 END) AS denied,
+                       sum(CASE WHEN kind = 'tool_error' THEN 1 ELSE 0 END) AS errors
+                FROM ncn_audit WHERE ts >= now() - %s::interval AND tool <> ''
+                GROUP BY tool ORDER BY calls DESC""", since),                 # 도구별 호출·승인 요청·거부·오류
+            "recent": await rows("""
+                SELECT ts, user_id, ui, mode, kind, tool, decision,
+                       coalesce(detail->'args'->>'command', detail->'args'->>'filepath', detail->'args'->>'file_path',
+                                detail->'args'->>'path', detail->>'by', detail->>'reason', detail->>'error', '') AS summary
+                FROM ncn_audit WHERE kind NOT IN ('usage', 'turn_start')
+                ORDER BY ts DESC, id DESC LIMIT 30"""),                       # 최근 사건(요약: 명령 첫 줄·경로·판정 출처 등)
+        }
         return {"days": days, "limits": limit, "by_user": by_user, "by_day": by_day, "by_tool": by_tool,
-                "recent_tools": recent_tools, "recent_errors": recent_errors, "index_runs": index_runs}
+                "recent_tools": recent_tools, "recent_errors": recent_errors, "index_runs": index_runs, "ncn": ncn}
 
     @router.get("/admin", response_class=HTMLResponse)
     async def page():
@@ -104,6 +132,7 @@ async function load(){
   if(!r.ok){$('#msg').textContent=d.error||r.status;$('#out').innerHTML='';return}
   $('#msg').textContent=`최근 ${d.days}일 · 한도: 분당 ${d.limits.rpm}회, 하루 ${d.limits.daily_tokens.toLocaleString()} 토큰`;
   $('#out').innerHTML=table('사용자별 토큰',d.by_user)+table('일별(chat=Continue 채팅, request_fix=도구 안쪽)',d.by_day)+
-    table('도구별 호출',d.by_tool)+table('최근 도구 호출',d.recent_tools)+table('최근 LLM 오류',d.recent_errors)+table('최근 색인 작업',d.index_runs);
+    table('도구별 호출',d.by_tool)+table('최근 도구 호출',d.recent_tools)+table('최근 LLM 오류',d.recent_errors)+table('최근 색인 작업',d.index_runs)+
+    table('ncn 감사 — 사용자별(denied=정책 금지+사용자 거부)',d.ncn.by_user)+table('ncn 감사 — 도구별',d.ncn.by_tool)+table('ncn 감사 — 최근 사건',d.ncn.recent);
 }
 </script></body></html>"""

@@ -2,6 +2,9 @@
 # 전제: 이번 프로세스에서 Read 한 파일(실경로 기준)만. 민감 파일 판정은 실경로("부모 폴더/파일 이름")로
 # preprocess 에서 새 내용까지 계산하고, run 은 그 결과를 쓴다. cn은 승인 사이에 파일이 바뀌어도 다시 안 읽음(사용자 수정을 덮어씀)
 # [ncn 부록B B6] ncn은 run 에서 파일을 다시 읽어 preprocess 때와 다르면 다시 찾아 바꾼다(실패면 cn 형식 오류). NCN_CN_COMPAT=1 이면 cn 동작
+# [ncn E3] CRLF 가 있는 파일은 LF 로 바꿔 비교·치환한 뒤 원래(다수) 줄바꿈으로 되돌린다 — 모델이 LF 로 준 old_string 도 맞는다.
+#   cn: Read 결과의 \r\n 을 모델이 그대로 돌려주지 않으면 "string not found". LF 전용 파일은 cn과 완전히 같다
+# [ncn E4] 쓰기 직전 원본을 백업(ncn/backup.py), 성공하면 백업으로 남김 — /undo 로 되돌림
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 
@@ -10,7 +13,7 @@ from typing import Any, Optional                             # 타입
 
 from ncn.compat import cn_compat                             # [ncn 부록B B6] cn 원래 동작 스위치
 from ncn.security.ignore import throw_if_file_is_security_concern   # 민감 파일 차단
-from ncn import fsio                                         # [ncn V3] 파일 창구(ACP 세션이면 IDE 위임, 아니면 디스크)
+from ncn import backup, encoding, fsio                       # [ncn V3] 파일 창구 + [ncn E3] 줄바꿈 맞춤 + [ncn E4] 백업
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
 from ncn.tools.findreplace import (MISSING, REASON_EDIT_TOOL_FILE_NOT_READ, REASON_FILE_NOT_FOUND,   # 찾아 바꾸기·오류 이유
                                    REASON_FILE_WRITE_ERROR, REASON_FIND_AND_REPLACE_MISSING_FILEPATH, REASON_UNKNOWN,  # 이어서 가져오는 이름들(오류 이유 코드)
@@ -45,6 +48,14 @@ def validate_and_resolve_file_path(args: Any) -> dict:      # Edit·MultiEdit �
     return {"originalPath": file_path, "resolvedPath": resolved_path}  # 원래 경로와 실경로를 함께 반환
 
 
+def find_and_replace_e3(content: str, old_s: str, new_s: str, replace_all: bool, edit_index: int = 0) -> str:   # [ncn E3] 줄바꿈을 무시한 찾아 바꾸기
+    """CRLF 가 있는 파일(E3 켜짐)이면 내용·old·new 를 LF 로 맞춰 치환하고 결과를 원래 다수 줄바꿈으로. 아니면 cn 그대로."""
+    if not encoding.lf_matching(content):                    # LF 전용 파일·E3 꺼짐
+        return execute_find_and_replace(content, old_s, new_s, replace_all, edit_index)   # cn 그대로
+    out = execute_find_and_replace(encoding.to_lf(content), encoding.to_lf(old_s), encoding.to_lf(new_s), replace_all, edit_index)   # LF 로 비교·치환
+    return encoding.conform_newlines(content, out)           # 원래 줄바꿈으로 되돌림
+
+
 def _js_received(v: Any) -> str:                            # JS 타입 이름 흉내(오류 메시지용)
     """Node ERR_INVALID_ARG_TYPE 의 'Received …' 부분(대표 경우만)."""
     if isinstance(v, bool):                                 # 불리언
@@ -66,7 +77,7 @@ async def _preprocess(args: dict) -> PreprocessResult:      # Edit 의 preproces
     resolved_path = validate_and_resolve_file_path(args)["resolvedPath"]   # 경로 검증
     old_s, new_s, rep_all = validate_single_edit(old_string, new_string, replace_all)   # 인자 검증
     old_content = await fsio.read_text_file(resolved_path)              # 지금 내용
-    new_content = execute_find_and_replace(old_content, old_s, new_s, rep_all if rep_all is not None else False, 0)  # 바꾼 새 내용 계산(replaceAll ?? false)
+    new_content = find_and_replace_e3(old_content, old_s, new_s, rep_all if rep_all is not None else False, 0)  # 바꾼 새 내용 계산(replaceAll ?? false) — [ncn E3] CRLF 파일은 LF 로 비교
     diff = generate_diff(old_content, new_content, resolved_path)   # 미리보기 diff
     redo = {"old_string": old_s, "new_string": new_s, "replace_all": rep_all if rep_all is not None else False}   # [ncn 부록B B6] run 에서 다시 찾아 바꿀 재료
     return PreprocessResult(                                # run 인자와 미리보기를 묶어 반환
@@ -84,9 +95,11 @@ async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # 
         if redo is not None and not cn_compat():             # [ncn 부록B B6] 고친 동작(cn 원래 동작: 미리 계산한 내용을 그대로 씀)
             current = await fsio.read_text_file(args["resolvedPath"])   # 승인 뒤 실행 시점의 내용
             if current != old_content:                       # 승인 대기 중 사용자·린터가 고쳤으면
-                new_content = execute_find_and_replace(current, redo["old_string"], redo["new_string"], redo["replace_all"], 0)  # 지금 내용에서 다시 찾아 바꿈(못 찾음·여러 곳이면 cn 글로 오류)
+                new_content = find_and_replace_e3(current, redo["old_string"], redo["new_string"], redo["replace_all"], 0)  # 지금 내용에서 다시 찾아 바꿈(못 찾음·여러 곳이면 cn 글로 오류)
                 old_content = current                       # diff 기준도 지금 내용
-        await fsio.write_text_file(args["resolvedPath"], new_content)   # 쓰기
+        snap = await backup.capture(args["resolvedPath"], "Edit")   # [ncn E4] 쓰기 직전 원본(꺼져 있으면 None)
+        await fsio.write_text_file(args["resolvedPath"], new_content)   # 쓰기([ncn E3] 디스크면 원래 인코딩·BOM·줄바꿈으로)
+        backup.commit(snap)                                  # [ncn E4] 쓰기 성공 → 백업으로 남김
         diff = generate_diff(old_content, new_content, args["resolvedPath"])   # 결과용 diff
         return f"Successfully edited {args['resolvedPath']}\nDiff:\n{diff}"  # 성공 메시지 + diff
     except ContinueError:                                   # ContinueError 는 그대로 올린다

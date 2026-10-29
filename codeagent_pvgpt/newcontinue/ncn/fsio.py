@@ -4,6 +4,8 @@
 # IDE가 능력을 알리지 않았거나 요청이 실패(거절)하면 디스크로 되돌아간다(V3: "확장이 거절하거나 터미널 모드면 디스크").
 # 도구 쪽 연결(다른 작업자): Read/Edit/MultiEdit/Write 의 read_file_utf8·write_file_utf8 호출을
 #   `await fsio.read_text_file(p)`·`await fsio.write_text_file(p, s)` 로 바꾸면 된다(도구 run·preprocess 는 이미 async).
+# [ncn E3] 디스크 경로는 인코딩·BOM·줄바꿈 보존(ncn/encoding.py). IDE 위임(AcpFiles) 경로는 IDE가 인코딩을 관리하므로 E3 변환을 하지 않는다
+#   (위임이 실패해 디스크로 되돌아가면 그때는 E3 적용). E3 가 꺼져 있으면(ncn.yaml encoding.preserve: false·NCN_CN_COMPAT=1) cn과 같은 UTF-8.
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 import contextvars                                           # 세션(작업)별 구현 보관
@@ -26,13 +28,20 @@ class DiskFiles:                                            # 기본 구현: 디
     """디스크 직접 읽기·쓰기 — Node readFileSync/writeFileSync(utf-8) 흉내 함수를 그대로 쓴다(오류 글도 같음)."""
 
     async def read_text(self, path: str) -> str:            # 디스크에서 읽기
-        """read_file_utf8 — BOM 유지, 줄바꿈 변환 없음."""
+        """read_file_utf8 — BOM 유지, 줄바꿈 변환 없음. [ncn E3] 켜져 있으면 인코딩 판별(BOM·줄바꿈 그대로)."""
+        from ncn import encoding                             # [ncn E3] 인코딩 보존
         from ncn.tools.formatters import read_file_utf8      # 지연 import(도구 모듈과 순환 방지)
+        if encoding.enabled():                               # [ncn E3] 판별해 읽기(cn: 항상 UTF-8)
+            return encoding.read_text(path)                  # 판별 결과 글
         return read_file_utf8(path)                          # 디스크 내용 반환
 
     async def write_text(self, path: str, content: str) -> None:   # 디스크에 쓰기
-        """write_file_utf8 — 줄바꿈 변환 없이 그대로."""
+        """write_file_utf8 — 줄바꿈 변환 없이 그대로. [ncn E3] 켜져 있으면 기존 파일의 인코딩·BOM·다수 줄바꿈으로."""
+        from ncn import encoding                             # [ncn E3] 인코딩 보존
         from ncn.tools.formatters import write_file_utf8     # 지연 import
+        if encoding.enabled():                               # [ncn E3] 원래 형식으로 쓰기(cn: 항상 UTF-8)
+            encoding.write_text(path, content)               # 표현 못 하는 글자면 EncodingSaveError(아무것도 안 씀)
+            return                                          # 끝
         write_file_utf8(path, content)                       # 디스크에 씀
 
 
@@ -112,8 +121,17 @@ async def write_text_file(path: str, content: str) -> None:  # 공개 쓰기 함
 
 def read_text_file_disk(path: str) -> Optional[str]:        # 동기 디스크 읽기(없으면 None)
     """동기 디스크 읽기 — 이벤트 처리처럼 기다릴 수 없는 곳용(diff 의 원래 글 등). 없거나 못 읽으면 None."""
+    from ncn import encoding                                 # [ncn E3] 인코딩 보존
     from ncn.tools.formatters import read_file_utf8          # 지연 import
     try:                                                    # 읽기 시도
+        if encoding.enabled():                               # [ncn E3] 판별해 읽기
+            return encoding.read_text(path)                  # 판별 결과 글
         return read_file_utf8(path)                          # 내용 반환
     except Exception:                                        # 없는 파일·폴더·권한
         return None                                         # 없음으로 처리
+
+
+def writes_to_ide() -> bool:                                # [ncn E4] 지금 쓰기가 IDE 위임인지
+    """현재 구현이 쓰기를 IDE 에 위임하면 참(백업은 IDE 버퍼 글로, 되돌림은 IDE 쓰기 요청으로)."""
+    b = get_backend()                                        # 현재 구현
+    return isinstance(b, AcpFiles) and b.can_write           # 위임 + 쓰기 능력

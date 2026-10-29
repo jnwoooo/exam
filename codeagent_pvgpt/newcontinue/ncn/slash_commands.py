@@ -155,6 +155,16 @@ def _compact(args: list, ctx: SlashContext) -> dict:         # /compact 항목
     return {"compact": True}                                 # 화면이 수동 압축
 
 
+def _undo(args: list, ctx: SlashContext) -> Optional[dict]:  # [ncn E4] /undo 항목(cn 에 없음 — ncn/backup.py)
+    """/undo → 이 세션의 마지막 파일 수정 되돌리기, /undo list → 백업 목록. 결과 글은 기록에 system 메시지로 남아 모델도 안다."""
+    from ncn import backup                                   # 백업·되돌리기
+    from ncn.compat import cn_compat                         # cn 원래 동작 스위치
+    if cn_compat():                                          # NCN_CN_COMPAT=1 → cn 처럼 모르는 명령(일반 글로 LLM 에)
+        return None                                         # 일반 메시지
+    sid = ctx.core.sessions.get_current()["sessionId"]       # 현재 세션 id(백업 폴더 이름)
+    return {"output": backup.undo_command(args, sid)}        # 결과 글
+
+
 def _fork(args: list, ctx: SlashContext) -> dict:            # /fork 항목(handleFork)
     """'cn --fork <id>' 를 보여 준다(클립보드 복사는 ncn 에 없음 → 원문의 실패 경로 글). 'cn' 글자는 원문 그대로(기록에 남는 글)."""
     try:                                                     # 세션 없음 대비
@@ -275,4 +285,5 @@ _HANDLERS = {                                                # commandHandlers(�
     "resume": _sessions, "fork": _fork, "title": _title, "rename": _title, "init": _init,   # 세션·init
     "jobs": _jobs, "skills": _skills, "import-skill": _import_skill, "sessions": _sessions,   # 작업·기술
     "export": _export, "import": _import,                    # 내보내기·가져오기
+    "undo": _undo,                                           # [ncn E4] 되돌리기(SYSTEM_SLASH_COMMANDS 원문 표에는 넣지 않음 — cn 목록 그대로)
 }                                                            # 표 끝
