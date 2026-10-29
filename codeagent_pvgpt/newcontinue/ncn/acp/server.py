@@ -20,11 +20,11 @@ from dataclasses import dataclass, field                     # 자료 구조
 from typing import Any, Optional                             # 타입
 
 from acp import PROTOCOL_VERSION, RequestError               # 규격 버전·JSON-RPC 오류
-from acp.helpers import (start_tool_call, update_agent_message_text, update_current_mode, update_plan,  # 업데이트 생성 도우미
+from acp.helpers import (start_tool_call, update_agent_message_text, update_agent_thought_text, update_current_mode, update_plan,  # 업데이트 생성 도우미
                          update_tool_call, update_user_message_text)   # 도구 갱신·사용자 글
 from acp.schema import (AgentCapabilities, ConfigOptionUpdate, ElicitationFormSessionMode, ElicitationSchema,  # 능력·설정 갱신·질문 형식
                         Implementation, InitializeResponse, LoadSessionResponse, NewSessionResponse,  # 초기화·세션 응답
-                        PromptCapabilities, PromptResponse, SetSessionConfigOptionResponse, SetSessionModeResponse,  # 질문 능력·응답들
+                        McpCapabilities, PromptCapabilities, PromptResponse, SetSessionConfigOptionResponse, SetSessionModeResponse,  # MCP·질문 능력·응답들
                         ToolCallUpdate)                      # 승인 요청의 도구 내용
 
 from ncn import __version__                                  # 버전
@@ -73,6 +73,7 @@ class AcpSession:                                           # ACP 세션 하나 
     turn_usage: Optional[dict] = None                        # 이번 턴 사용량 누적
     cards: dict = field(default_factory=dict)                # 도구 카드(호출 id → _Card)
     last_ask_id: Optional[str] = None                        # 마지막 AskQuestion 카드 id(질문을 카드에 잇기)
+    mcp: Any = None                                          # MCPService(설정 mcpServers + session/new 의 mcpServers)
 
 
 class NcnAgent:                                             # acp Agent 구현
@@ -134,6 +135,8 @@ class NcnAgent:                                             # acp Agent 구현
         for s in self.sessions.values():                     # 세션마다
             try:                                            # 닫기 실패 무시
                 await s.llm.aclose()                         # LLM 클라이언트 닫기
+                if s.mcp is not None:                        # MCP 연결이 있으면
+                    await s.mcp.shutdown()                   # 닫기(stdio 자식 종료)
             except Exception:                                # 이미 닫힘 등
                 pass                                        # 무시
         try:                                                # 질문 처리기 해제
@@ -149,7 +152,8 @@ class NcnAgent:                                             # acp Agent 구현
         log.debug("initialize: client=%s version=%s caps=%s", client_info, protocol_version, client_capabilities)   # 기록
         return InitializeResponse(protocol_version=PROTOCOL_VERSION,   # 규격 버전(정수 1)
                                   agent_capabilities=AgentCapabilities(load_session=True,   # session/load 지원
-                                                                       prompt_capabilities=PromptCapabilities(image=False, audio=False, embedded_context=True)),   # 내장 리소스 지원
+                                                                       prompt_capabilities=PromptCapabilities(image=False, audio=False, embedded_context=True),   # 내장 리소스 지원
+                                                                       mcp_capabilities=McpCapabilities(http=True, sse=True)),   # session/new 의 MCP: stdio·http·sse
                                   agent_info=Implementation(name="ncn", title="ncn (Continue CLI compatible)", version=__version__),   # 에이전트 정보
                                   auth_methods=[])                    # 인증 없음
 
@@ -188,8 +192,6 @@ class NcnAgent:                                             # acp Agent 구현
         from ncn.tools import registry                       # 도구 목록
 
         a = self.args                                        # 명령줄 결과
-        if mcp_servers:                                      # MCP 서버를 받았으면
-            log.warning("mcpServers %d개를 받았지만 무시합니다(MCP 연결은 P3).", len(mcp_servers))   # 받기만 하고 무시를 로그
         cwd_s = os.path.abspath(cwd or os.getcwd())          # 절대 경로(규격상 절대 경로가 온다)
         try:                                                # 작업 폴더로 이동(도구의 상대 경로 기준 = process.cwd)
             os.chdir(cwd_s)                                  # cn 은 실행 폴더가 작업 폴더 — 같게 맞춤
@@ -233,7 +235,8 @@ class NcnAgent:                                             # acp Agent 구현
 
         def all_tools():                                     # getAllAvailableTools(false) — 매 반복 다시
             return registry.get_builtin_tools(model_name=model.name or "", model=model.model, headless=False,   # 대화형 도구 목록(Exit 없음)
-                                              mode=perms.mode, cwd=cwd_p, global_dir=gdir)   # (인자 이어짐)
+                                              mode=perms.mode, cwd=cwd_p, global_dir=gdir,   # (인자 이어짐)
+                                              extra_tools=s.mcp.get_tools() if s.mcp is not None else None)   # MCP 도구(Skills 뒤)
 
         def system_message():                                # getSystemMessage(currentMode) — 대화형(headless 블록 없음)
             return build_system_message(mode=perms.mode, headless=False, format_json=False, cwd=cwd_p,   # 현재 모드 기준
@@ -248,8 +251,22 @@ class NcnAgent:                                             # acp Agent 구현
             validate_context=make_validate_context(model.raw),   # 컨텍스트 검사
             apply_tool_overrides=(lambda defs: registry.apply_chat_completion_tool_overrides(defs, overrides)),   # 도구 덮어쓰기
         )                                                    # 끝
+        from ncn.compaction import make_compaction_hook      # 대화 압축(P3a)
+        s.deps.compaction_hook = make_compaction_hook(history, model.raw, on_compacted=sm.update_history)   # 압축 훅(압축 뒤 세션 저장)
         self.sessions[sid] = s                               # 등록
         return s                                            # 세션 반환
+
+    async def _connect_mcp(self, s: AcpSession, mcp_servers: Any) -> None:   # 세션의 MCP 접속
+        """설정 mcpServers 뒤에 ACP mcpServers(cn 설정 모양으로 바꿈)를 이어 같은 연결 코드로 붙인다.
+        대화형 cn 과 같이 실패해도 던지지 않는다(상태·stderr 로그). cn TUI 는 기다리지 않지만 ncn 은 기다린다(첫 질문부터 도구 보이게)."""
+        from ncn.mcp.acp_servers import acp_servers_to_configs   # ACP → cn 설정 모양
+        from ncn.mcp.service import MCPService               # 연결 관리
+        servers = list(s.cfg.mcp_servers or []) + acp_servers_to_configs(mcp_servers)   # 설정 먼저, 그다음 IDE 가 준 것
+        s.mcp = MCPService(self.environ)                     # 세션마다 하나
+        await s.mcp.initialize(servers, headless=False, wait=True)   # 병렬 접속(실패는 상태로)
+        for c in s.mcp.connections.values():                 # 연결마다
+            if c.status == "error":                          # 실패면
+                log.warning("mcpServers: %s 접속 실패 — %s", c.name, c.error)   # stderr 로그(stdout 금지)
 
     def _session(self, session_id: str) -> AcpSession:      # id 로 세션 찾기
         """없으면 resource_not_found 오류."""
@@ -263,6 +280,7 @@ class NcnAgent:                                             # acp Agent 구현
                           **kwargs: Any) -> NewSessionResponse:   # (인자 이어짐)
         """새 대화. 응답에 모드(normal·plan·auto)와 같은 내용의 config option 을 싣는다."""
         s = self._open(cwd, mcp_servers)                     # 세션 조립
+        await self._connect_mcp(s, mcp_servers)              # MCP 접속(설정 + session/new)
         return NewSessionResponse(session_id=s.id, modes=convert.mode_state(s.perms.mode),   # 세션 id·모드
                                   config_options=convert.config_options(s.perms.mode))   # 설정 선택지(모드)
 
@@ -274,6 +292,7 @@ class NcnAgent:                                             # acp Agent 구현
             raise RequestError.resource_not_found(session_id)   # cn HistoryManager 는 빈 세션을 주지만 IDE 에는 오류로 알림
         data = history_manager_load(session_id, self.environ)   # 세션 읽기
         s = self._open(cwd, mcp_servers, load=data)          # 세션 조립(기록 채움)
+        await self._connect_mcp(s, mcp_servers)              # MCP 접속(설정 + session/load)
         for u in convert.history_to_updates(s.history.get_history(), s.cwd):   # 기록 되살리기
             if u["kind"] == "user":                          # 사용자 글
                 self._update(s, update_user_message_text(u["text"]))   # user_message_chunk 알림 보냄
@@ -318,6 +337,7 @@ class NcnAgent:                                             # acp Agent 구현
         from ncn.app import process_and_combine_prompts      # --prompt 합치기
         from ncn.headless import error_message               # 오류 글
         from ncn.llm.client import AbortSignal               # 중단 신호
+        from ncn.compaction import is_interactive_compact_command   # /compact 판정
         from ncn.loop.agent import run_turn                  # 한 턴
         s = self._session(session_id)                        # 세션
         if s.task is not None and not s.task.done():         # 이미 턴이 돌고 있으면
@@ -348,6 +368,10 @@ class NcnAgent:                                             # acp Agent 구현
         async def body():                                    # 턴 본문(이 작업의 컨텍스트에만 세션·파일 창구를 건다)
             _CURRENT.set(s)                                  # 질문 처리기·승인이 세션을 찾게
             fsio.set_backend(s.files)                        # 이 턴의 파일 창구(IDE 위임 또는 디스크)
+            if is_interactive_compact_command(text):         # 대화형 /compact(slashCommands.ts) → 수동 압축, LLM 턴 없음
+                return await s.deps.compaction_hook("manual", s.history.get_history(),   # useChat.compaction.ts handleCompactCommand
+                                                    {"is_headless": False, "model_name": s.model.model or "",   # 대화형·모델명
+                                                     "deps": s.deps, "signal": s.signal})   # session/cancel 로 취소 가능
             return await run_turn(s.history, text, s.deps, headless=False, model_name=s.model.model or "",   # 대화형 한 턴
                                   signal=s.signal, context_items=items)   # 중단 신호·첨부 맥락
 
@@ -404,6 +428,7 @@ class NcnAgent:                                             # acp Agent 구현
                                     "delayMs": e.get("delay_ms"), "error": e.get("error")})   # 지연·오류
         elif t == "system_message":                          # 압축 안내 등
             self._ext("ncn/system_message", {"sessionId": s.id, "message": e.get("message")})   # _ncn/system_message 확장 알림
+            self._update(s, update_agent_thought_text((e.get("message") or "") + "\n"))   # session/update agent_thought_chunk 로도(규격 안 알림)
 
     def _on_tool_start(self, s: AcpSession, e: dict) -> None:   # 도구 카드 만들기
         """tool_call(status pending, title, kind, locations, rawInput). Edit/Write 는 바뀔 내용(diff)도 싣는다(V4)."""

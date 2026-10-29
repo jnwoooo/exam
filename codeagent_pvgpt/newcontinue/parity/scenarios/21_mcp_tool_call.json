@@ -1,0 +1,44 @@
+{
+  "name": "21_mcp_tool_call",
+  "description": "MCP 도구 호출 결과 글(JSON.stringify(content)) — 글·숫자·그림·리소스·링크, 병렬 호출",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "echo·add·mixed 불러줘",
+  "args": [],
+  "config_append": "mcpServers:\n  - name: fake\n    command: \"{PYTHON}\"\n    args: [\"{PARITY_DIR}/fake_mcp.py\"]\n",
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "echo",
+          "arguments": {
+            "text": "안녕 \"MCP\""
+          }
+        },
+        {
+          "name": "add",
+          "arguments": {
+            "a": 2,
+            "b": 40
+          }
+        },
+        {
+          "name": "mixed",
+          "arguments": {}
+        }
+      ]
+    },
+    {
+      "content": "끝."
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 2
+  }
+}

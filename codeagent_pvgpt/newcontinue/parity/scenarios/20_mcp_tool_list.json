@@ -1,0 +1,23 @@
+{
+  "name": "20_mcp_tool_list",
+  "description": "MCP 도구 목록(echo·add·error·mixed)이 내장 도구 뒤에 cn 모양으로 요청에 실림",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "안녕",
+  "args": [],
+  "config_append": "mcpServers:\n  - name: fake\n    command: \"{PYTHON}\"\n    args: [\"{PARITY_DIR}/fake_mcp.py\"]\n",
+  "llm": [
+    {
+      "content": "안녕하세요."
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 1
+  }
+}

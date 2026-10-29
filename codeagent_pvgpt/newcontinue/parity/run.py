@@ -12,6 +12,7 @@ import os                                                    # 환경변수
 import re                                                    # 정규화
 import shlex                                                 # 명령 문자열 → 목록
 import subprocess                                            # 하네스 실행
+import sys                                                   # 이 파이썬 경로({PYTHON} 자리표시자)
 import tempfile                                              # 임시 폴더
 from pathlib import Path                                     # 경로
 
@@ -25,8 +26,10 @@ KEEP_HEADERS = {"authorization", "content-type"}             # 비교할 헤더(
 DATE_LINE = re.compile(r"(Today's date: )\d{4}-\d{2}-\d{2}")   # 시스템 메시지의 날짜 줄(UTC)
 
 
-def config_yaml(port: int) -> str:
-    """cn·ncn이 같이 읽을 시험용 config.yaml. 모델은 인라인(uses·secrets 쓰면 Hub 호출 — P0 2.1)."""
+def config_yaml(port: int, scen: dict | None = None) -> str:
+    """cn·ncn이 같이 읽을 시험용 config.yaml. 모델은 인라인(uses·secrets 쓰면 Hub 호출 — P0 2.1).
+    시나리오 선택 키: model_options{contextLength, maxTokens}(압축 시험), config_append(설정 원문 덧붙이기 — MCP 등)."""
+    opts = (scen or {}).get("model_options", {})             # 시나리오의 모델 옵션 덮어쓰기(없으면 기본값)
     return (
         "name: parity\nversion: 0.0.1\nschema: v1\n"         # 설정 파일 본문 시작(이름·버전·스키마)
         "models:\n"                                          # models 목록
@@ -38,9 +41,14 @@ def config_yaml(port: int) -> str:
         "    roles: [chat]\n"                                # 역할
         "    capabilities: [tool_use]\n"                     # 도구 사용 능력
         "    defaultCompletionOptions:\n"                    # 완성 옵션
-        "      contextLength: 32768\n"                       # 압축이 우연히 일어나지 않게 넉넉히(압축 시험은 따로)
-        "      maxTokens: 4096\n"                            # 출력 토큰 상한
-    )                                                        # 문자열 이어 붙임 끝
+        f"      contextLength: {opts.get('contextLength', 32768)}\n"   # 기본은 넉넉히(압축은 시나리오에서 줄여서 시험)
+        f"      maxTokens: {opts.get('maxTokens', 4096)}\n"            # 출력 토큰 상한
+    ) + expand_placeholders((scen or {}).get("config_append", ""))   # 시나리오가 덧붙이는 설정 원문(예: mcpServers 블록)
+
+
+def expand_placeholders(text: str) -> str:
+    """config_append 자리표시자: {PYTHON} = 이 실행기의 파이썬(mcp SDK 가 깔린 .venv), {PARITY_DIR} = parity 폴더 절대 경로."""
+    return text.replace("{PYTHON}", sys.executable).replace("{PARITY_DIR}", str(HERE.resolve()))   # 두 하네스가 같은 경로를 쓰게
 
 
 def isolated_env(tmp: Path) -> dict:
@@ -120,7 +128,7 @@ def run_one(scen: dict, cmd: list[str], timeout: int = 120) -> dict:
         server, rec = serve(scen["llm"])                     # 가짜 LLM(빈 포트)
         try:                                                 # 서버 종료를 보장하려 try
             cfg = cnhome / "config.yaml"                     # 설정 파일 경로
-            cfg.write_text(config_yaml(server.server_port), encoding="utf-8")   # 설정
+            cfg.write_text(config_yaml(server.server_port, scen), encoding="utf-8")   # 설정(시나리오 덮어쓰기 반영)
             argv = cmd + ["-p", scen["prompt"], "--config", str(cfg)] + scen.get("args", [])   # cn과 같은 옵션
             proc = subprocess.run(argv, cwd=work, env=isolated_env(tmp), stdin=subprocess.DEVNULL,  # 하네스 실행(입력 없음)
                                   capture_output=True, timeout=timeout)   # 실행

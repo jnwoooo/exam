@@ -204,6 +204,7 @@ plan = 쓰기 도구(Edit·MultiEdit·Write) 목록에서 빠지고 호출돼도
 | `_ncn/ask`(요청) | ncn→IDE | AskQuestion(3-7) |
 | `_ncn/retry`(알림) | ncn→IDE | `{sessionId, attempt, delayMs, error}` — LLM 재시도 직전. **이번 LLM 호출로 받은 agent_message_chunk를 화면에서 지워야 한다**(ncn은 그 조각을 버리고 다시 받음, 부록 B) |
 | `_ncn/system_message`(알림) | ncn→IDE | `{sessionId, message}` — 압축 안내 등 |
+| 대화 압축 | 양방향 | prompt 글이 `/compact`(cn 슬래시 명령 판정)면 LLM 턴 없이 수동 압축. 압축 안내(`Approaching context limit…`·`Chat history auto-compacted successfully.`·`Chat history compacted successfully.`·`Compaction cancelled.`·`Compaction failed: …`)는 `_ncn/system_message` + `session/update` `agent_thought_chunk`로 알림. 취소는 `session/cancel` |
 | `PromptResponse._meta.ncn.stoppedByRejection` | ncn→IDE | 승인 3번으로 멈춤 |
 | 모드 id | — | `normal`·`plan`·`auto`(cn PermissionMode 그대로), config option id `mode` |
 

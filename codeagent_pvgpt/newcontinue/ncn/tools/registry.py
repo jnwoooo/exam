@@ -2,7 +2,7 @@
 #   + utils/modelCapability.ts(isModelCapable) + tools/applyToolOverrides.ts + tools/toolsConfig.ts(베타 플래그)
 # 순서(cn 그대로): Read, Write, List, Bash, Fetch, Checklist, CheckBackgroundJob, AskQuestion
 #   → Search(rg 있을 때 / [추가] NCN_BUILTIN_SEARCH=1) → ReportFailure·UploadArtifact(--id 있을 때, 업로드는 베타)
-#   → MultiEdit(모델이 '능력 있음') 또는 Edit → Exit(헤드리스) → Subagent(베타) → Skills → (MCP 도구는 MCP 모듈이 뒤에 붙임)
+#   → MultiEdit(모델이 '능력 있음') 또는 Edit → Exit(헤드리스) → Subagent(베타) → Skills → MCP 도구(extra_tools — ncn/mcp 가 만든 것, 연결 순서)
 # 권한 필터(allow/ask/exclude, 헤드리스 ask 제외)는 이 목록 다음 단계(permissions)의 일이다 — cn getRequestTools 와 같은 나눔
 from __future__ import annotations                           # 타입 주석 지연 평가
 
@@ -69,14 +69,16 @@ def _check_ripgrep_sync(cwd: str) -> bool:                  # ripgrep 설치 여
 
 def get_builtin_tools(*, model_name: str, headless: bool, mode: str, cwd: pathlib.Path, global_dir: pathlib.Path,  # 내장 도구 목록을 cn 순서로 만든다
                       tool_overrides: Any = None, model: Optional[str] = None, agent_id: Optional[str] = None,
-                      subagent_models: Optional[list[dict]] = None, ripgrep_installed: Optional[bool] = None) -> list[Tool]:  # 인자 목록 끝(반환형은 Tool 목록)
+                      subagent_models: Optional[list[dict]] = None, ripgrep_installed: Optional[bool] = None,  # (인자 이어짐)
+                      extra_tools: Optional[list[Tool]] = None) -> list[Tool]:  # 인자 목록 끝(반환형은 Tool 목록) — extra_tools = MCP 도구
     """getAllAvailableTools(isHeadless) 의 내장 도구 부분 — cn 순서, 권한 필터 전.
     model_name = 설정의 name, model = 설정의 model 필드(둘 중 하나라도 맞으면 MultiEdit).
     mode 는 받기만 한다 — cn은 목록 단계에서 모드를 보지 않고 권한 단계(plan = 쓰기 도구 exclude)에서 거른다.
     tool_overrides(model.chatOptions.toolOverrides — {이름: {description?, disabled?}} 또는 [{name, …}]) 를 주면
     disabled 는 빼고 description 은 바꾼다. cn은 이것을 LLM 요청용 목록에만 적용하므로(실행할 때 찾는 목록엔 미적용)
     루프는 실행용 조회에서는 넘기지 말 것.
-    agent_id 가 None 이면 cn처럼 명령줄의 --id 를 읽는다. ripgrep_installed 는 시험용(None 이면 실제 확인)."""
+    agent_id 가 None 이면 cn처럼 명령줄의 --id 를 읽는다. ripgrep_installed 는 시험용(None 이면 실제 확인).
+    extra_tools(MCPService.get_tools()) 는 Skills 뒤에 붙인다 — cn tools.push(...mcpState.tools.map(convertMcpToolToContinueTool)), 덮어쓰기도 받음."""
     from ncn.tools.read_file import READ_TOOL                # 파일 도구(다른 작업자) — 지연 import
     from ncn.tools.write_file import WRITE_TOOL             # Write 도구
     from ncn.tools.list_files import LIST_TOOL              # List 도구
@@ -128,6 +130,7 @@ def get_builtin_tools(*, model_name: str, headless: bool, mode: str, cwd: pathli
         tools.append(make_subagent_tool(subagent_models))   # 서브에이전트 도구 추가
 
     tools.append(make_skills_tool(cwd_s, str(global_dir)))   # 기술(매번 디스크에서 다시 읽음 — cn과 같음)
+    tools.extend(extra_tools or [])                          # MCP 도구(서버 연결 순서 → 서버가 준 순서)
 
     _ = mode                                                 # (목록 단계에서는 쓰지 않음 — 위 설명)
     if tool_overrides:                                       # 덮어쓰기(요청용 목록에서만)

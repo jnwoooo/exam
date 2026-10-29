@@ -1,0 +1,18 @@
+{
+  "name": "24_manual_compact_headless",
+  "description": "헤드리스 -p \"/compact\" — 빈 기록에 요약 요청만 보내고 성공 JSON 한 줄",
+  "workspace": {
+    "files": {}
+  },
+  "prompt": "/compact",
+  "args": [],
+  "llm": [
+    {
+      "content": "요약할 대화가 없습니다."
+    }
+  ],
+  "expect": {
+    "files": {},
+    "requests": 1
+  }
+}

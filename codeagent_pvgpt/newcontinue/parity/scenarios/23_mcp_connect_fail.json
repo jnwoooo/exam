@@ -1,0 +1,19 @@
+{
+  "name": "23_mcp_connect_fail",
+  "description": "헤드리스: MCP 서버 접속 실패 → stderr {status:error, message:'MCP server(s) failed to load:…'}, 종료 1, LLM 요청 없음",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "안녕",
+  "args": [],
+  "config_append": "mcpServers:\n  - name: broken\n    command: \"{PYTHON}\"\n    args: [\"{PARITY_DIR}/fake_mcp.py\", \"--fail\"]\n",
+  "llm": [],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 0
+  }
+}

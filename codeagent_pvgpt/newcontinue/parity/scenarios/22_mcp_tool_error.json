@@ -1,0 +1,53 @@
+{
+  "name": "22_mcp_tool_error",
+  "description": "MCP 도구 오류: isError 결과(내용만 전달) + 프로토콜 오류(Error executing tool … MCP error -32603) + 필수 인자 누락",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "error 불러줘",
+  "args": [],
+  "config_append": "mcpServers:\n  - name: fake\n    command: \"{PYTHON}\"\n    args: [\"{PARITY_DIR}/fake_mcp.py\"]\n",
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "error",
+          "arguments": {
+            "message": "bad"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "error",
+          "arguments": {
+            "message": "protocol"
+          }
+        }
+      ]
+    },
+    {
+      "tool_calls": [
+        {
+          "name": "add",
+          "arguments": {
+            "a": 1
+          }
+        }
+      ]
+    },
+    {
+      "content": "실패를 확인했습니다."
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 4
+  }
+}

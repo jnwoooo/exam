@@ -293,6 +293,16 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
                     default_completion_options=model.raw.get("defaultCompletionOptions"),  # 기본 완료 옵션
                     request_options=model.request_options)  # 요청 옵션
 
+    # ── MCP(services/MCPService.ts) — 헤드리스는 다 붙을 때까지 기다리고, 하나라도 실패하면 오류(chat() 이 stderr JSON) ──
+    from ncn.mcp.service import MCPService                   # MCP 연결 관리
+    mcp = MCPService(environ)                                # process.env 를 stdio 자식에게
+    try:                                                    # 실패하면 연결·LLM 정리 후 오류를 올림
+        await mcp.initialize(cfg.mcp_servers, headless=True, has_agent_file=bool(a.agent))   # 병렬 접속
+    except BaseException:                                   # 접속 실패·중단
+        await mcp.shutdown()                                # 붙은 서버 정리
+        await llm.aclose()                                  # LLM 클라이언트 닫기
+        raise                                               # 위로(오류 글 그대로)
+
     # ── 대화 기록·세션(--resume / --fork) ──
     sessions = SessionManager(environ, os.fspath(cwd))       # SessionManager 싱글턴 자리
     initial_items: list = []                                 # initializeChatHistory — 초기 기록 목록
@@ -312,7 +322,9 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
     if not initial or not hl.js_trim(initial):               # 프롬프트 없음
         if a.resume or a.fork:                               # 기록만 불러오고 0으로 끝
             await llm.aclose()                              # 리소스 정리
+            await mcp.shutdown()                            # MCP 연결 정리
             return hl.EXIT_OK                               # 정상 종료 코드
+        await mcp.shutdown()                                # MCP 연결 정리
         raise Exception(hl.HEADLESS_REQUIRES_PROMPT)        # 프롬프트가 없으면 오류
 
     # ── 루프 의존성 ──
@@ -321,7 +333,8 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
 
     def all_tools():                                         # getAllAvailableTools(true) — 매 반복 다시(덮어쓰기 없음: 실행용 조회)
         return registry.get_builtin_tools(model_name=model.name or "", model=model.model, headless=True,  # 현재 모드의 내장 도구 목록 조회
-                                          mode=perms.mode, cwd=cwd, global_dir=gdir)  # (인자 이어짐)
+                                          mode=perms.mode, cwd=cwd, global_dir=gdir,  # (인자 이어짐)
+                                          extra_tools=mcp.get_tools())  # MCP 도구(Skills 뒤)
 
     def system_message():                                    # services.systemMessage.getSystemMessage(currentMode) — 시스템 메시지를 만드는 함수
         return build_system_message(mode=perms.mode, headless=True, format_json=a.format == "json", cwd=cwd,  # 현재 모드 기준으로 조립
@@ -340,6 +353,8 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
         validate_context=make_validate_context(model.raw),  # 컨텍스트 검증기
         apply_tool_overrides=(lambda defs: registry.apply_chat_completion_tool_overrides(defs, overrides)),  # 모델별 도구 설정 덮어쓰기 적용
     )                                                       # (괄호 닫기)
+    from ncn.compaction import make_compaction_hook          # 대화 압축(P3a)
+    deps.compaction_hook = make_compaction_hook(history, model.raw, on_compacted=sessions.update_history)   # 압축 훅(압축 뒤 세션 저장)
     exit_tool.EXIT_HANDLER = _hard_exit                      # Exit 도구 = process.exit(1)
 
     try:                                                    # 한 턴 실행 중 어떤 경우에도 LLM 을 닫는다
@@ -353,6 +368,7 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
         sessions.update_history(history.get_history())       # updateSessionHistory — 세션에 기록 저장
     finally:                                                # (finally)
         await llm.aclose()                                  # LLM 클라이언트 닫기
+        await mcp.shutdown()                                # MCP 연결 정리(cn cleanup — stdio 자식 종료)
     return hl.EXIT_OK                                        # gracefulExit(0)
 
 
@@ -389,7 +405,7 @@ def run_stdio_mode(a: argparse.Namespace) -> int:           # --stdio(ACP) 진�
     if errs:                                                # 오류가 있으면
         sys.stderr.write(validation_error_text(errs))       # stderr 로 안내
         return 1                                            # 종료 코드 1
-    pending = [name for name, v in (("--org", a.org), ("--agent", a.agent), ("--mcp", a.mcp)) if v]   # P3 이후(Hub·MCP)
+    pending = [name for name, v in (("--org", a.org), ("--agent", a.agent)) if v]   # P3 이후(Hub). --mcp 는 설정 읽기가 처리(URL 은 바로 연결)
     if pending:                                             # 미지원 옵션이 있으면
         sys.stderr.write(NOT_IMPLEMENTED.format(ver=__version__, what=", ".join(pending)) + "\n")  # 미구현 안내
         return 2                                            # 종료 코드 2
@@ -432,7 +448,7 @@ def main(argv: Optional[list[str]] = None) -> int:          # 프로그램 진�
         sys.stderr.write(validation_error_text(errs))       # 오류 글 출력
         return 1                                            # 종료 코드 1
 
-    pending = [name for name, v in (("--org", a.org), ("--agent", a.agent), ("--mcp", a.mcp)) if v]   # P2 이후(Hub·MCP)
+    pending = [name for name, v in (("--org", a.org), ("--agent", a.agent)) if v]   # P2 이후(Hub). --mcp 는 설정 읽기가 처리(URL 은 바로 연결)
     if pending:                                             # 미지원 옵션이 있으면
         sys.stderr.write(NOT_IMPLEMENTED.format(ver=__version__, what=", ".join(pending)) + "\n")  # 미구현 안내
         return 2                                            # 종료 코드 2
