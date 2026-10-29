@@ -5,6 +5,7 @@ from __future__ import annotations                           # 타입 주석 지
 
 import json                                                  # 요청·응답·기록
 import threading                                             # 서버를 별도 스레드로
+import time                                                  # 느린 응답(delay)
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer   # 표준 HTTP 서버
 
 CHUNK = 8                                                    # 스트리밍 때 글을 몇 글자씩 나눠 보낼지(조각 이어 붙이기 시험)
@@ -58,13 +59,21 @@ class Recorder:
         self.steps = steps                                   # 준비된 응답들
         self.requests: list[dict] = []                       # 기록: {path, headers, body}
         self.lock = threading.Lock()                         # 동시 요청(하위 에이전트 등) 대비
+        self.used: set[int] = set()                          # 이미 쓴 단계 번호
 
     def next_step(self, record: dict) -> tuple[int, dict]:
-        """요청을 기록하고 이번 차례의 응답 단계를 돌려준다."""
-        with self.lock:                                      # 요청 기록은 락으로 보호
+        """요청을 기록하고 이번 차례의 응답 단계를 돌려준다.
+        단계 고르기: 아직 안 쓴 단계 중 첫 번째로, "when"(글)이 있으면 요청 messages(JSON 글)에 그 글이 들어 있는 것만.
+        "when"이 없는 시나리오는 예전처럼 요청 순서대로(동시에 도는 하위 에이전트는 "when"으로 자기 응답을 고른다)."""
+        with self.lock:                                      # 요청 기록·단계 고르기는 락으로 보호
             turn = len(self.requests)                        # 몇 번째 요청인가(0부터)
             self.requests.append(record)                     # 기록
-        step = self.steps[turn] if turn < len(self.steps) else {"content": END_TEXT, "overflow": True}   # 넘치면 끝 글
+            text = json.dumps((record.get("body") or {}).get("messages"), ensure_ascii=False)   # 고르기 기준 글(메시지 전체)
+            idx = next((i for i, st in enumerate(self.steps)  # 첫 번째로 맞는 단계
+                        if i not in self.used and (st.get("when") is None or st["when"] in text)), None)   # 안 썼고 조건이 맞으면
+            if idx is not None:                              # 찾았으면
+                self.used.add(idx)                           # 썼다고 표시
+        step = self.steps[idx] if idx is not None else {"content": END_TEXT, "overflow": True}   # 없으면 끝 글
         return turn, step                                    # 차례와 단계 반환
 
 
@@ -102,6 +111,8 @@ def make_handler(rec: Recorder):
                 rec.requests.append({"path": self.path, "headers": dict(self.headers), "body": body})  # 지원 안 하는 경로도 기록
                 return self.send_json(404, {"error": {"message": f"not supported: {self.path}"}})  # 404 응답
             turn, step = rec.next_step({"path": self.path, "headers": dict(self.headers), "body": body})   # 기록 + 차례
+            if step.get("delay"):                             # 느린 응답 재현(동시 실행·취소 시험): {"delay": 초}
+                time.sleep(float(step["delay"]))             # 이 요청만 기다린다(서버는 요청마다 스레드)
             if step.get("status"):                            # 오류 재현(재시도 시험): {"status": 503}
                 return self.send_json(step["status"], {"error": {"message": step.get("content", "error")}})  # 오류 단계는 해당 상태로 응답
             text, calls = scripted_message(step, turn)        # 응답 내용

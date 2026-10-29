@@ -2,7 +2,7 @@
 
 > P1 이식 중 작업자들이 찾은 cn(커밋 5522c6f) 동작 중 버그로 보이는 것. **지금 ncn은 전부 cn과 똑같이 옮겨 두었다**(차등 시험 일치 우선).
 > 결정 방법: 항목마다 "유지(cn과 같게)" / "고침(ncn 부록 B로 다르게)" 중 고른다. 고치는 것은 [ncn] 표시 + 옵션으로 cn 동작을 켤 수 있게 한다.
-> **2026-10-30: ★ 항목(S1~S7, B1, B3, B4, B6) 고침** — 코드 주석 `[ncn 부록B Sx]`, 환경변수 `NCN_CN_COMPAT=1`이면 cn 원래 동작(`ncn/compat.py`), 시험 `tests/test_ncn_fixes.py`. 차등 시험 16/16 유지(요청 본문 불변). B16은 P3.
+> **2026-10-30: ★ 항목(S1~S7, B1, B3, B4, B6) 고침**, 이어서 **B16·C1 고침**(P3c), **M1~M3 고침**(MCP) — 코드 주석 `[ncn 부록B Sx]`, 환경변수 `NCN_CN_COMPAT=1`이면 cn 원래 동작(`ncn/compat.py`), 시험 `tests/test_ncn_fixes.py`. 차등 시험 16/16 유지(요청 본문 불변). B16은 P3.
 > 권장: ★ = 보안·데이터 손상 위험이 있어 고치기 권장. 나머지는 cn과 같게 두는 것을 권장(요청 본문 차이가 생기면 차등 시험이 깨짐).
 
 ## 보안·권한
@@ -38,7 +38,7 @@
 | B13 | `git rev-parse` 출력이 "false"여도 git 저장소로 판정 | sysmsg | 유지(영향 작음) |
 | B14 | validateContextLength(64000 상한 없음)와 getModelMaxTokens 값 불일치 | tokenizer | 유지(32k 모델엔 영향 없음) |
 | B15 | 압축 위치(compactionIndex)가 사실상 효과 없음, 압축 요약 호출 중 기록이 주 대화에 섞임 | loop | P3에서 결정 |
-| B16 | Subagent 동시 실행 시 전역 상태 경쟁(권한·시스템 메시지·기록 섞임) | subagent | ★ 고침(P3 — 독립 객체로) |
+| B16 | Subagent 동시 실행 시 전역 상태 경쟁(권한·시스템 메시지·기록 섞임) | subagent | ★ 고침(P3 — 독립 객체로) **고침(2026-10-30, ncn/subagent.py — 하위 대화마다 자기 ChatHistory·권한·시스템 메시지·LLMClient, 헤드리스에서도 실제 실행(cn은 "No active session found"), ACP 취소 연동. 추가 E: ~/.continue/ncn.yaml 도구 제한·결과 길이·동시 실행 수. 시험 tests/test_subagent.py, 차등 25_subagent_compat)** |
 | B17 | `isModelCapable`의 `/o\d/`가 이름 어디든 'o'+숫자면 참(`foo2`) | registry | 유지(도구 목록이 바뀌면 cn과 달라짐) |
 | B18 | Skills `getRelativePath` 앞부분 글자 비교(`/a/b` vs `/a/bc`) | skills | 고침 권장 |
 | B19 | 비치명 경고 여러 개가 ","로 이어짐, 주입 슬러그 오류 글에 `[object Object]` | config | 유지(글만) |
@@ -62,13 +62,13 @@
 ## P3(압축·MCP)에서 추가 — 2026-10-30
 | # | 내용 | 권장 |
 |---|---|---|
-| C1 | 압축 요약 호출 중 모델이 도구를 부르면 **실제로 실행됨**(요약 답이 handleToolCalls를 거침) | ★ 고침 — 요약 호출은 도구 없이 |
+| C1 | 압축 요약 호출 중 모델이 도구를 부르면 **실제로 실행됨**(요약 답이 handleToolCalls를 거침) | ★ 고침 — 요약 호출은 도구 없이 **고침(2026-10-30, ncn/loop/agent.py — 요약 호출의 도구 호출은 실행·기록 없이 무시, 받은 글이 요약. 요청 본문의 tools 는 cn처럼 그대로 보냄. 시험 tests/test_compaction.py test_c1_*)** |
 | C2 | 헤드리스 `--format json` 자동 압축 안내 줄이 절대 안 나옴(알림 함수가 headless면 return, 성공 판정은 없는 "✓" 검색) | 유지 |
 | C3 | 헤드리스 사용자 메시지 전 압축 검사가 시스템 메시지·도구를 빼고 세어 사실상 발동 안 함 | 유지(차등 일치) |
 | C4 | 대화형 수동 압축 성공 안내·자동 압축 실패 경고가 system 메시지로 기록에 남아 LLM에 전송 | 유지 |
 | C5 | 압축이 기록의 첫 system 항목(`[Tool canceled…]` 등)을 "시스템 메시지"로 보존 | 유지 |
 | C6 | ACP에서 앞 공백 `" /compact"`도 압축됨(cn TUI는 일반 메시지) | 고침 권장(ncn 쪽 판정만) |
-| M1 | MCP 도구 오류(isError)가 표시 없이 일반 글로 모델에 감, annotations 버려짐 | 고침 권장 — 사내 도구 오류를 모델이 구분 못 함 |
-| M2 | tools/list 첫 쪽만 받고 cursor 다음 쪽 무시 | 고침 권장 |
-| M3 | 서버 이름이 같으면 덮이고, 도구 이름이 같으면 요청에 중복 | 고침 권장 |
+| M1 | MCP 도구 오류(isError)가 표시 없이 일반 글로 모델에 감, annotations 버려짐 | 고침 권장 — 사내 도구 오류를 모델이 구분 못 함 **고침(2026-10-30, ncn/mcp/tools.py — isError면 `Error executing tool {이름}: {결과 글}`, 루프 오류 경로라 ACP 카드 failed. annotations는 cn처럼 계속 뺌. 시험 tests/test_mcp.py test_m1_*, 차등 22는 env NCN_CN_COMPAT=1로 cn 비교)** |
+| M2 | tools/list 첫 쪽만 받고 cursor 다음 쪽 무시 | 고침 권장 **고침(2026-10-30, ncn/mcp/service.py — nextCursor 끝까지, 상한 100쪽+경고. 시험 test_m2_*)** |
+| M3 | 서버 이름이 같으면 덮이고, 도구 이름이 같으면 요청에 중복 | 고침 권장 **고침(2026-10-30, ncn/mcp/service.py — 같은 서버 이름은 뒤의 것 건너뜀, 같은 도구 이름은 먼저 온 것만, 내장 도구 이름과 겹치면 내장 우선 — 모두 stderr 경고. 시험 test_m3_*)** |
 | 정정 | 계획 5-6의 "cn은 MCP 시간 제한 없음"은 틀림 — Node SDK 기본 60초(`MCP error -32001: Request timed out`). ncn도 60초, `requestOptions.timeout`(초) 우선 | — |

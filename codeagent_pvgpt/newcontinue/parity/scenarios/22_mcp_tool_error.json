@@ -1,6 +1,6 @@
 {
   "name": "22_mcp_tool_error",
-  "description": "MCP 도구 오류: isError 결과(내용만 전달) + 프로토콜 오류(Error executing tool … MCP error -32603) + 필수 인자 누락",
+  "description": "MCP 도구 오류: isError 결과(내용만 전달) + 프로토콜 오류(Error executing tool … MCP error -32603) + 필수 인자 누락 — env NCN_CN_COMPAT=1: ncn 부록B M1(isError → Error executing tool …)을 끄고 cn 과 비교(고친 동작은 tests/test_mcp.py)",
   "workspace": {
     "files": {
       "coupon.py": "def discount(price):\n    return price * 0.9\n"
@@ -8,6 +8,9 @@
   },
   "prompt": "error 불러줘",
   "args": [],
+  "env": {
+    "NCN_CN_COMPAT": "1"
+  },
   "config_append": "mcpServers:\n  - name: fake\n    command: \"{PYTHON}\"\n    args: [\"{PARITY_DIR}/fake_mcp.py\"]\n",
   "llm": [
     {

@@ -200,8 +200,11 @@ def generate_subagent_tool_description(models: Optional[list[dict]]) -> str:  # 
     return f"Launch a specialized subagent to handle a specific task.\n\nHere are the available subagents:\n{agent_list}\n"  # cn 원문 틀에 목록을 끼움
 
 
-def make_subagent_tool(models: Optional[list[dict]]) -> Tool:  # 모델 목록을 반영한 Subagent 도구를 만드는 함수
-    """subagentTool() — models 는 설정의 models 목록(dict: name·roles·chatOptions …)."""
+def make_subagent_tool(models: Optional[list], host: Any = None) -> Tool:  # 모델 목록을 반영한 Subagent 도구를 만드는 함수
+    """subagentTool() — models 는 설정의 models 목록(dict: name·roles·chatOptions … 또는 ModelConfig).
+    host(ncn.subagent.SubagentHost)가 있으면 run 이 하위 대화를 실제로 실행한다. 없으면 cn 헤드리스와 같은 'No active session found'."""
+    from ncn.subagent import model_dicts                     # ModelConfig → cn 모양 dict
+    models = model_dicts(models)                             # getSubagentModels 는 dict 를 본다
     names = [m["name"] for m in get_subagent_models(models)]   # getAgentNames
     params: dict[str, Any] = {                               # {...META.parameters, properties: {...META.properties, subagent_name}}
         "type": _SUBAGENT_PARAMETERS["type"],               # 기본 스키마의 type 재사용
@@ -227,12 +230,14 @@ def make_subagent_tool(models: Optional[list[dict]]) -> Tool:  # 모델 목록�
         return PreprocessResult(args=args, preview=[ToolCallPreview(type="text", content=f"Spawning {agent['name']} to: {args.get('description')}")])  # 미리보기 'Spawning <모델> to: <설명>'
 
     async def run(args: dict, context=None) -> str:         # run 훅
-        """run — P3.5에서 하위 대화 실행. 지금은 cn 헤드리스와 같은 'No active session found'(P0 결과 4장)."""
+        """run — 하위 대화 실행(ncn/subagent.py). 호스트가 없으면 cn 헤드리스와 같은 'No active session found'(P0 4장)."""
         agent = find(args.get("subagent_name"))              # 찾기
         if not agent:                                       # 모르는 이름이면 거부
             raise Exception(f"Unknown agent type: {args.get('subagent_name')}")  # cn 원문 오류 글
-        # P3에서: parentSessionId 확인 → executeSubAgent → `${response}\n<task_metadata>\nstatus: completed|failed\n</task_metadata>`
-        raise Exception("No active session found")          # 하위 대화 실행은 P3.5 — 지금은 헤드리스와 같은 오류
+        if host is None:                                    # 부모 정보가 없으면(시험·단독 사용)
+            raise Exception("No active session found")      # cn 헤드리스와 같은 오류
+        from ncn.subagent import run_subagent_tool          # 하위 대화 실행(지연 import — 순환 방지)
+        return await run_subagent_tool(host, agent, args, getattr(context, "tool_call_id", None))   # 결과 글(<task_metadata> 포함)
 
     return Tool(                                            # 이름 목록을 반영한 도구 객체 반환
         name="Subagent",                                    # 모델에 보이는 도구 이름

@@ -332,9 +332,11 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
     overrides = (model.chat_options or {}).get("toolOverrides")   # model.chatOptions.toolOverrides — 모델의 도구 덮어쓰기 설정
 
     def all_tools():                                         # getAllAvailableTools(true) — 매 반복 다시(덮어쓰기 없음: 실행용 조회)
-        return registry.get_builtin_tools(model_name=model.name or "", model=model.model, headless=True,  # 현재 모드의 내장 도구 목록 조회
-                                          mode=perms.mode, cwd=cwd, global_dir=gdir,  # (인자 이어짐)
-                                          extra_tools=mcp.get_tools())  # MCP 도구(Skills 뒤)
+        kw = dict(model_name=model.name or "", model=model.model, headless=True,   # 현재 모드의 내장 도구 목록 조회 인자
+                  mode=perms.mode, cwd=cwd, global_dir=gdir,   # (인자 이어짐)
+                  subagent_models=cfg.models, subagent_host=subagent_host)   # Subagent(베타): 설정 models + 하위 대화 호스트
+        builtin = frozenset(t.name for t in registry.get_builtin_tools(**kw))   # [ncn 부록B M3] 이 세션에 실제로 있는 내장 도구 이름
+        return registry.get_builtin_tools(**kw, extra_tools=mcp.get_tools(builtin_names=builtin))   # MCP 도구(Skills 뒤, 내장과 겹치면 내장 우선)
 
     def system_message():                                    # services.systemMessage.getSystemMessage(currentMode) — 시스템 메시지를 만드는 함수
         return build_system_message(mode=perms.mode, headless=True, format_json=a.format == "json", cwd=cwd,  # 현재 모드 기준으로 조립
@@ -343,6 +345,13 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
     def on_event(e: dict) -> None:                           # 사용량 → 세션 저장(trackSessionUsage)
         if e.get("type") == "usage" and isinstance(e.get("usage"), dict):  # 사용량 이벤트면
             sessions.track_usage(e["usage"])                # 세션에 사용량 누적·저장
+
+    from ncn.llm.client import AbortSignal                   # 턴 중단 신호(하위 대화와 공유)
+    from ncn.subagent import SubagentHost, load_ncn_settings  # 하위 에이전트 호스트·ncn.yaml
+    turn_signal = AbortSignal()                              # 이 턴의 중단 신호(run_turn 에 넘김 — 없을 때 루프가 만드는 것과 같음)
+    subagent_host = SubagentHost(models=cfg.models, headless=True, tools=all_tools, system_message=system_message,  # [ncn 부록B B16] 하위 대화를 독립 객체로
+                                 parent_history=history, get_signal=lambda: turn_signal, on_event=on_event,  # 부모 기록(세션 id "")·중단·사용량
+                                 settings=load_ncn_settings(gdir))   # ~/.continue/ncn.yaml(추가 E)
 
     deps = LoopDeps(                                        # 루프 의존성 묶음 생성
         llm=llm, tools=all_tools,                           # LLM·도구 목록 함수
@@ -358,7 +367,7 @@ async def run_headless(prompt: Optional[str], a: argparse.Namespace, *, cwd: pat
     exit_tool.EXIT_HANDLER = _hard_exit                      # Exit 도구 = process.exit(1)
 
     try:                                                    # 한 턴 실행 중 어떤 경우에도 LLM 을 닫는다
-        result = await run_turn(history, initial, deps, headless=True, model_name=model_name)   # processMessage — 루프 한 턴 실행
+        result = await run_turn(history, initial, deps, headless=True, model_name=model_name, signal=turn_signal)   # processMessage — 루프 한 턴 실행
         if result.manual_compaction is not None:             # /compact(P3) — 결과 줄
             sys.stdout.write(hl.format_manual_compaction_line(history_length=len(history.get_history())))  # /compact 결과 줄 출력
         out = hl.format_headless_output(result.response, silent=bool(a.silent), format=a.format)   # processAndOutputResponse — 출력할 최종 글 만들기

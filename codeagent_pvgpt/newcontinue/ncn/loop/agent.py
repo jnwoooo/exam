@@ -15,6 +15,7 @@ import math                                                  # Math.round 흉내
 from dataclasses import dataclass, field                     # 자료 구조
 from typing import Any, Awaitable, Callable, Optional, Union  # 타입
 
+from ncn.compat import cn_compat                             # cn 원래 동작 스위치(부록B C1)
 from ncn.llm.client import APIUserAbortError, AbortSignal    # 중단
 from ncn.llm.retry import (BackoffOptions, RetryMarker, chat_completion_stream_with_backoff,  # 재시도·백오프 도구와 컨텍스트 초과 판정
                            is_context_length_error, with_exponential_backoff)   # 재시도
@@ -219,6 +220,10 @@ async def stream_chat_response(history: ChatHistory, deps: LoopDeps, *, headless
             final_response = content                        # 최종 응답을 이번 글로
         if content:                                         # 글이 있을 때만
             ev.safe_emit(deps.on_event, ev.content_complete(content))  # 글 끝 이벤트를 보낸다(onContentComplete)
+
+        if is_compacting and result.tool_calls and not cn_compat():   # [ncn 부록B C1] 요약 호출 중 도구 호출 — cn은 실제로 실행한다
+            log.warning("Ignoring %d tool call(s) requested during compaction", len(result.tool_calls))   # 실행·기록 없이 무시
+            return TurnResult(response=content or full_response)   # 받은 글만 요약으로(요청 본문의 tools 는 cn과 같게 보냈다)
 
         should_return = await handle_tool_calls(result.tool_calls, content, history, tools=all_tools,  # 7 도구 호출 처리(권한 확인·실행·기록 추가)
                                                 check_permission=deps.check_permission, ask_user=deps.ask_user,  # 권한 판정과 승인 질문 콜백을 넘긴다

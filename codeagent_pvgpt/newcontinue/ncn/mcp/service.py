@@ -2,11 +2,15 @@
 #   runTool·shutdownConnections) + mcpUtils.ts(isAuthError). 클라이언트는 공식 mcp 파이썬 SDK 2.x(ClientSession).
 # cn 동작 그대로:
 #   - 설정 mcpServers 를 병렬로 접속. 연결 표는 서버 name 이 키(이름이 같으면 뒤의 것이 덮음 — Map.set).
+#     [ncn 부록B M3] 이름이 같은 서버는 뒤의 것을 건너뛰고 stderr 경고(호환 모드는 cn 처럼 덮음).
 #   - 접속 전 설정 JSON 에 남은 ${{ secrets.X }} 가 있으면: 헤드리스는 오류, 대화형은 경고("… MCP Server has unresolved secrets: …").
 #   - 접속 실패: status "error", error = 오류 글(경고가 있으면 "\n\nServer stderr:\n" + 경고들 — stdio stderr 포함).
 #   - 헤드리스는 모두 끝날 때까지 기다리고 실패가 있으면 "MCP server(s) failed to load:\n<이름>: <오류>…" 로 던진다.
 #     대화형(cn TUI)은 기다리지 않는다 — ncn ACP 는 wait=True 로 기다린다(첫 질문부터 도구가 보이게, 실패는 던지지 않음).
-#   - 서버 능력에 prompts 가 있으면 prompts/list, tools 가 있으면 tools/list(첫 쪽만 — cn 도 cursor 를 따라가지 않음).
+#   - 서버 능력에 prompts 가 있으면 prompts/list, tools 가 있으면 tools/list(cn 은 첫 쪽만 — nextCursor 를 따라가지 않음).
+#     [ncn 부록B M2] nextCursor 를 끝까지 따라간다(상한 MAX_TOOL_PAGES 쪽). 호환 모드는 cn 처럼 첫 쪽만.
+#   - 도구 목록(get_tools): cn 은 서버마다 이어 붙일 뿐이라 같은 이름이 요청에 두 번 실린다.
+#     [ncn 부록B M3] 먼저 온 것만(내장 도구 이름과 겹치면 내장 우선) + stderr 경고. 호환 모드는 cn 처럼 전부.
 #   - type 없는 원격 서버: streamable-http 먼저, 실패하면(인증 오류 제외) SSE. 인증 오류(401/405) 시 대화형 cn 은 npx mcp-remote 로
 #     다시 시도하지만 ncn 은 하지 않는다(폐쇄망 — npx 없음).
 #   - runTool: 연결된 서버를 순서대로 보며 그 이름의 도구가 있는 첫 서버에 tools/call. 없으면 "Tool <이름> not found".
@@ -20,10 +24,12 @@ import asyncio                                               # 비동기
 import errno                                                 # spawn 오류 코드
 import logging                                               # 로그(stderr — stdout 금지)
 import os                                                    # 환경변수
+import sys                                                   # stderr 경고(부록B M3)
 import urllib.parse                                          # 주소 분해(오류 글)
 from dataclasses import dataclass, field                     # 자료 구조
 from typing import Any, Mapping, Optional                    # 타입
 
+from ncn.compat import cn_compat                             # cn 원래 동작 스위치(NCN_CN_COMPAT=1)
 from ncn.config import secrets as _sec                       # 템플릿 변수·FQSN 해석
 from ncn.tools.base import Tool                              # 공용 형식
 
@@ -35,11 +41,25 @@ except NameError:                                            # 3.10 은 백포�
 log = logging.getLogger("ncn.mcp")                           # 로거
 
 DEFAULT_REQUEST_TIMEOUT_S = 60.0                             # Node SDK DEFAULT_REQUEST_TIMEOUT_MSEC = 60000 (초 단위)
+MAX_TOOL_PAGES = 100                                         # [ncn 부록B M2] tools/list 쪽 상한(무한 반복 방지)
+# [ncn 부록B M3] 내장 도구 이름(ncn/tools/registry.py 가 넣을 수 있는 전부) — MCP 도구가 이 이름이면 내장이 이긴다
+BUILTIN_TOOL_NAMES = frozenset({"Read", "Write", "List", "Bash", "Fetch", "Checklist", "CheckBackgroundJob", "AskQuestion",   # 늘 있는 것
+                                "Search", "ReportFailure", "UploadArtifact", "MultiEdit", "Edit", "Exit", "Subagent", "Skills"})   # 조건부로 있는 것
 CLIENT_NAME, CLIENT_VERSION = "continue-cli-client", "1.0.0"  # cn: new Client({name, version}) — 클라이언트 정보
 UNRESOLVED_SECRETS = ("{name} MCP Server has unresolved secrets: {secrets}\n"   # cn 원문(MCPService.ts connectServer)
                       "For personal use you can set the secret in the hub at https://continue.dev/settings/secrets or pass it to the CLI environment.\n"   # 둘째 줄
                       "Org-level secrets can only be used for MCP by Background Agents (https://docs.continue.dev/hub/agents/overview) "   # 셋째 줄 앞
                       "when \"Include in Env\" is enabled for the secret.")   # 셋째 줄 끝
+
+
+def _warn(message: str) -> None:                             # [ncn 부록B M3] 사용자에게 보이는 경고(헤드리스·ACP 모두 stderr — stdout 금지)
+    """'ncn: <글>' 한 줄을 stderr 에 바로 쓴다(로그 설정과 상관없이 보이게)."""
+    try:                                                     # stderr 가 닫혔어도 동작은 계속
+        sys.stderr.write(f"ncn: {message}\n")                # 한 줄 경고
+        sys.stderr.flush()                                   # 바로 내보냄
+    except Exception:                                        # 쓰기 실패
+        pass                                                 # 무시
+    log.debug("warning: %s", message)                        # 로그 파일에도 남김
 
 
 class McpClientError(Exception):                             # cn(Node SDK) 원문 글로 바꾼 오류
@@ -152,6 +172,7 @@ class MCPService:                                            # cn MCPService 대
         self.is_headless: bool = False                       # 헤드리스 여부
         self._api_key_cache: dict[str, str] = {}             # apiKeyCache(이름 → apiKey)
         self._pending: list[asyncio.Task] = []                # 기다리지 않은 접속 작업(wait=False)
+        self._warned: set = set()                            # [ncn 부록B M3] 이미 경고한 도구 이름 겹침(같은 경고 반복 방지)
 
     # ───────── 초기화 ─────────
     async def initialize(self, servers: Optional[list], *, headless: bool, has_agent_file: bool = False, wait: Optional[bool] = None) -> None:   # doInitialize 대응(병렬 접속)
@@ -159,7 +180,19 @@ class MCPService:                                            # cn MCPService 대
         self.is_headless = headless                          # 보관
         await self.shutdown()                                # 기존 연결 정리
         self.connections.clear()                             # 표 비움
-        coros = [self.connect_server(c) for c in (servers or []) if c]   # null 블록은 건너뜀
+        configs = [c for c in (servers or []) if c]          # null 블록은 건너뜀
+        if not cn_compat():                                  # [ncn 부록B M3] 이름 겹침 처리(cn: 뒤의 것이 Map.set 으로 앞의 것을 덮음)
+            seen: set = set()                                # 이미 본 이름
+            kept = []                                        # 남길 설정
+            for c in configs:                                # 설정 순서대로
+                name = (c.get("name") or "") if isinstance(c, dict) else ""   # 서버 이름
+                if name in seen:                             # 앞에 같은 이름이 있으면
+                    _warn(f"MCP 서버 이름 '{name}' 이(가) 중복되어 뒤의 설정을 건너뜁니다")   # 경고
+                    continue                                 # 뒤의 것은 건너뜀(먼저 온 것이 이김)
+                seen.add(name)                               # 본 이름에 추가
+                kept.append(c)                               # 남김
+            configs = kept                                   # 겹침 뺀 목록
+        coros = [self.connect_server(c) for c in configs]    # 서버마다 접속 코루틴
         if wait is None:                                     # 기본값
             wait = headless or has_agent_file                # cn: isHeadless || hasAgentFile 이면 기다림
         if not wait:                                         # 기다리지 않음(cn TUI)
@@ -202,7 +235,7 @@ class MCPService:                                            # cn MCPService 대
                     log.warning("Failed to load MCP prompts: %s: %s", conn.name, msg)   # 기록
             if caps is not None and caps.tools is not None:  # tools 능력
                 try:                                         # 목록 실패는 경고
-                    conn.tools = list((await self._request(conn, conn.session.list_tools())).tools)   # tools/list(첫 쪽)
+                    conn.tools = await self._list_tools(conn)   # tools/list(부록B M2: 모든 쪽)
                 except Exception as e:                       # 실패
                     msg = str(to_node_error(e, conn))        # 오류 글
                     conn.warnings.append(f"Failed to load tools: {msg}")   # 원문
@@ -216,6 +249,26 @@ class MCPService:                                            # cn MCPService 대
             else:                                            # 없으면
                 conn.error = message                         # 오류 글만
             log.error("Failed to connect to MCP server %s: %s", conn.name, conn.error)   # 기록
+
+    async def _list_tools(self, conn: ServerConnection) -> list:   # tools/list 전부 받기
+        """[ncn 부록B M2] nextCursor 가 있으면 다음 쪽을 계속 요청(최대 MAX_TOOL_PAGES 쪽).
+        cn 원래 동작(호환 모드): 첫 쪽만 — client.listTools() 한 번, nextCursor 무시."""
+        from mcp_types import PaginatedRequestParams         # 쪽 요청 인자(cursor)
+        result = await self._request(conn, conn.session.list_tools())   # 첫 쪽
+        tools = list(result.tools)                           # 첫 쪽 도구
+        if cn_compat():                                      # cn 원래 동작
+            return tools                                     # 첫 쪽만
+        cursor = result.next_cursor                          # 다음 쪽 표시
+        pages = 1                                            # 받은 쪽 수
+        while cursor is not None:                            # 다음 쪽이 있는 동안
+            if pages >= MAX_TOOL_PAGES:                      # 상한에 닿으면
+                _warn(f"MCP 서버 '{conn.name}' 의 tools/list 가 {MAX_TOOL_PAGES}쪽을 넘어 나머지를 받지 않습니다")   # 경고
+                break                                        # 멈춤(받은 것까지만)
+            result = await self._request(conn, conn.session.list_tools(params=PaginatedRequestParams(cursor=cursor)))   # 다음 쪽
+            tools.extend(result.tools)                       # 이어 붙임
+            cursor = result.next_cursor                      # 그다음 쪽 표시
+            pages += 1                                       # 쪽 수 증가
+        return tools                                         # 전부
 
     # ───────── 전송·세션 ─────────
     def _timeout(self, conn: ServerConnection) -> float:     # 요청 시간 제한(초)
@@ -285,14 +338,36 @@ class MCPService:                                            # cn MCPService 대
                     collector.close_parent_end()             # 쓰기 끝 정리(이미 닫혔으면 무시)
 
     # ───────── 도구 ─────────
-    def get_tools(self) -> list[Tool]:                       # 연결된 서버의 도구를 ncn Tool 로(cn mcpState.tools.map(convert…))
-        """updateState: 연결된 서버(삽입 순서)의 tools 를 이어 붙여 변환."""
-        from ncn.mcp.tools import convert_mcp_tool_to_continue_tool   # 변환
+    def get_tools(self, builtin_names: Optional[frozenset] = None) -> list[Tool]:   # 연결된 서버의 도구를 ncn Tool 로(cn mcpState.tools.map(convert…))
+        """updateState: 연결된 서버(삽입 순서)의 tools 를 이어 붙여 변환.
+        [ncn 부록B M3] 이름이 겹치면 먼저 온 것만 — 내장 도구 이름(builtin_names, 기본 BUILTIN_TOOL_NAMES)과 겹치면 뺀다
+        + stderr 경고(같은 겹침은 한 번만). cn 원래 동작(호환 모드): 겹쳐도 전부 넣는다(요청에 같은 이름이 두 번)."""
+        from ncn.mcp.tools import convert_mcp_tool_to_continue_tool, mcp_tool_fields   # 변환·이름 꺼내기
+        compat = cn_compat()                                 # cn 원래 동작인가
+        reserved = BUILTIN_TOOL_NAMES if builtin_names is None else builtin_names   # 내장 이름
+        seen: dict[str, str] = {}                            # 도구 이름 → 먼저 넣은 서버 이름
         out: list[Tool] = []                                 # 결과
         for conn in list(self.connections.values()):         # 연결마다(삽입 순서)
-            if conn.status == "connected":                   # 연결된 것만
-                out.extend(convert_mcp_tool_to_continue_tool(t, self.run_tool) for t in conn.tools)   # 변환해 추가
+            if conn.status != "connected":                   # 연결된 것만
+                continue                                     # 나머지는 건너뜀
+            for t in conn.tools:                             # 서버가 준 순서
+                name = mcp_tool_fields(t)[0]                 # 도구 이름
+                if not compat:                               # [ncn 부록B M3] 겹침 검사
+                    if name in reserved:                     # 내장 도구와 겹침
+                        self._warn_once(("builtin", conn.name, name), f"MCP 서버 '{conn.name}' 의 도구 '{name}' 이(가) 내장 도구와 이름이 같아 내장 도구를 씁니다")   # 경고
+                        continue                             # MCP 쪽은 뺌
+                    if name in seen:                         # 다른(또는 같은) 서버에 이미 있음
+                        self._warn_once(("dup", conn.name, name), f"MCP 도구 '{name}' 이(가) 서버 '{seen[name]}' 와 '{conn.name}' 에 모두 있어 '{seen[name]}' 것만 씁니다")   # 경고
+                        continue                             # 뒤의 것은 뺌(run_tool 도 먼저 온 서버를 부름)
+                    seen[name] = conn.name                   # 먼저 온 서버 기억
+                out.append(convert_mcp_tool_to_continue_tool(t, self.run_tool))   # 변환해 추가
         return out                                           # 결과
+
+    def _warn_once(self, key: tuple, message: str) -> None:  # [ncn 부록B M3] 같은 겹침 경고는 한 번만
+        """get_tools 는 세션·턴마다 불릴 수 있어 key 로 중복 경고를 막는다."""
+        if key not in self._warned:                          # 처음이면
+            self._warned.add(key)                            # 기억
+            _warn(message)                                   # 경고
 
     def get_prompts(self) -> list:                           # 연결된 서버의 프롬프트(cn: 대화형 슬래시 명령에만 씀)
         """connectedServers.flatMap(s => s.prompts)."""

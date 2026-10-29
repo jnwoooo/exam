@@ -156,7 +156,8 @@ def test_stdio_list_call_and_shutdown():                     # 연결·목록·�
         ctx = ToolRunContext(tool_call_id="c")               # 실행 정보
         assert await tl["echo"].run({"text": "안녕"}, ctx) == '[{"type":"text","text":"echo: 안녕"}]'   # 글
         assert await tl["add"].run({"a": 2, "b": 40}, ctx) == '[{"type":"text","text":"42"}]'   # 숫자
-        assert await tl["error"].run({"message": "bad"}, ctx) == '[{"type":"text","text":"failed: bad"}]'   # isError 결과도 내용만
+        with pytest.raises(mtools.McpToolError, match=r'^\[\{"type":"text","text":"failed: bad"\}\]$'):   # [ncn 부록B M1] isError 결과는 오류로
+            await tl["error"].run({"message": "bad"}, ctx)   # 호출
         assert json.loads(await tl["mixed"].run({}, ctx))[0] == {"type": "text", "text": "한글 \"따옴표\" / slash"}   # annotations 빠짐
         with pytest.raises(McpClientError, match="^MCP error -32603: internal failure$"):   # 프로토콜 오류
             await tl["error"].run({"message": "protocol"}, ctx)   # 호출
@@ -230,7 +231,8 @@ def test_streamable_http_with_bearer_token():                # apiKey → Author
             await s.initialize([{"name": "h", "type": "streamable-http", "url": srv.url, "apiKey": "tok"},   # apiKey
                                 {"name": "h2", "url": srv.url, "requestOptions": {"headers": {"Authorization": "Bearer tok"}}}],   # 헤더(자동 종류)
                                headless=True)                # 접속
-            assert [t.name for t in s.get_tools()] == ["echo", "add", "error", "mixed"] * 2   # 두 연결 모두(이름 같아도 목록에는 둘 다 — cn 과 같음)
+            assert all(c.status == "connected" for c in s.connections.values())   # 두 연결 모두 됨
+            assert [t.name for t in s.get_tools()] == ["echo", "add", "error", "mixed"]   # [ncn 부록B M3] 겹치는 이름은 먼저 온 서버 것만(cn 은 두 번)
             r = await s.run_tool("add", {"a": 1, "b": 2})    # 첫 서버로
             assert mtools.format_call_tool_result(r) == '[{"type":"text","text":"3"}]'   # 결과
             await s.shutdown()                               # 정리
@@ -307,6 +309,107 @@ def test_headless_cli_end_to_end(tmp_path):                  # ncn -p + 설정 m
     assert p.returncode == 0, p.stderr.decode()              # 정상
     assert p.stdout.decode() == "42입니다.\n"                # 최종 답
     assert rec.requests[1]["body"]["messages"][-1]["content"] == '[{"type":"text","text":"42"}]'   # 결과 글
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 부록B M1~M3 — ncn 이 고친 동작(호환 모드 NCN_CN_COMPAT=1 은 cn 그대로)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PAGED_SERVER = """
+import sys, anyio, mcp_types as types
+from mcp.server.lowlevel import Server
+from mcp.server.stdio import stdio_server
+N = int(sys.argv[1])
+async def list_tools(ctx, params):
+    i = int(params.cursor) if params is not None and params.cursor else 0
+    tool = types.Tool(name=f"t{i}", description="", input_schema={"type": "object"})
+    return types.ListToolsResult(tools=[tool], next_cursor=str(i + 1) if i + 1 < N else None)
+async def call_tool(ctx, params):
+    return types.CallToolResult(content=[types.TextContent(text=params.name)])
+async def main():
+    s = Server("paged", version="1.0.0", on_list_tools=list_tools, on_call_tool=call_tool)
+    async with stdio_server() as (r, w):
+        await s.run(r, w, s.create_initialization_options())
+anyio.run(main)
+"""                                                          # 한 쪽에 도구 하나씩 N 쪽을 주는 서버(nextCursor = 다음 번호)
+
+
+def test_m1_is_error_result_goes_through_loop_error_path(tmp_path):   # [ncn 부록B M1] isError → "Error executing tool …" + errored
+    from ncn.loop.tool_calls import PreprocessedToolCall, ToolCall, execute_streamed_tool_calls   # 루프 실행 단계
+    from ncn.loop.history import ChatHistory                 # 기록
+
+    async def go(compat: bool):                              # 한 번 실행(호환 여부)
+        os.environ["NCN_CN_COMPAT"] = "1" if compat else "0"  # 스위치
+        s = MCPService()                                     # 서비스
+        await s.initialize([stdio_cfg()], headless=True)     # 접속
+        try:                                                 # 끝나면 정리
+            tool = {t.name: t for t in s.get_tools()}["error"]   # error 도구
+            call = PreprocessedToolCall(call=ToolCall(id="c1", name="error", arguments={"message": "bad"}), tool=tool)   # 호출 하나
+            events: list = []                                # 화면 이벤트
+            _, entries = await execute_streamed_tool_calls([call], ChatHistory(), lambda t, a: "allow", None, events.append, True)   # 실행
+            return entries[0], events                        # 결과
+        finally:                                             # 정리
+            await s.shutdown()                               # 연결 닫기
+    try:                                                     # 환경변수 되돌리기
+        fixed, events = run(go(False))                       # 고친 동작
+        assert fixed["content"] == 'Error executing tool error: [{"type":"text","text":"failed: bad"}]'   # 내장 도구 실패 형식
+        assert fixed["status"] == "errored"                  # 오류 상태(ACP 카드 failed)
+        assert any("error" in str(e).lower() for e in events)   # 오류 이벤트가 나감
+        compat, _ = run(go(True))                            # cn 원래 동작
+        assert compat["content"] == '[{"type":"text","text":"failed: bad"}]' and compat["status"] == "done"   # 내용만·성공
+    finally:                                                 # 정리
+        os.environ.pop("NCN_CN_COMPAT", None)                # 지움
+
+
+def test_m2_tools_list_follows_next_cursor(tmp_path, monkeypatch):   # [ncn 부록B M2] 모든 쪽 받기 + 상한
+    script = tmp_path / "paged.py"                           # 서버 파일
+    script.write_text(PAGED_SERVER, encoding="utf-8")        # 쓰기
+
+    async def names(n: int) -> list:                         # N 쪽 서버의 도구 이름들
+        s = MCPService()                                     # 서비스
+        await s.initialize([{"name": "p", "command": PY, "args": [str(script), str(n)]}], headless=True)   # 접속
+        try:                                                 # 끝나면 정리
+            return [t.name for t in s.get_tools()]           # 이름
+        finally:                                             # 정리
+            await s.shutdown()                               # 닫기
+    monkeypatch.delenv("NCN_CN_COMPAT", raising=False)       # 고친 동작
+    assert run(names(3)) == ["t0", "t1", "t2"]               # 세 쪽 모두
+    import ncn.mcp.service as svc                            # 상한 바꾸기
+    monkeypatch.setattr(svc, "MAX_TOOL_PAGES", 2)            # 상한 2쪽
+    assert run(names(5)) == ["t0", "t1"]                     # 상한에서 멈춤
+    monkeypatch.setenv("NCN_CN_COMPAT", "1")                 # cn 원래 동작
+    assert run(names(3)) == ["t0"]                           # 첫 쪽만
+
+
+def test_m3_duplicate_server_and_tool_names(monkeypatch, capsys):   # [ncn 부록B M3] 서버·도구 이름 겹침
+    from mcp_types import Tool as McpTool                    # SDK 도구 형식
+    monkeypatch.delenv("NCN_CN_COMPAT", raising=False)       # 고친 동작
+
+    async def dup_servers():                                 # 같은 서버 이름 두 번
+        s = MCPService()                                     # 서비스
+        await s.initialize([stdio_cfg("fake"), {"name": "fake", "command": "/nonexistent/yy"}], headless=True)   # 뒤의 것은 실패할 설정
+        try:                                                 # 정리
+            return s.connections["fake"].status, len(s.connections)   # 앞의 것이 남음
+        finally:                                             # 정리
+            await s.shutdown()                               # 닫기
+    assert run(dup_servers()) == ("connected", 1)            # 뒤의 것은 건너뜀(헤드리스 실패도 없음)
+    assert "MCP 서버 이름 'fake'" in capsys.readouterr().err   # stderr 경고
+
+    def svc_with(tools_by_server: dict) -> MCPService:       # 연결된 척하는 서비스
+        s = MCPService()                                     # 서비스
+        from ncn.mcp.service import ServerConnection         # 연결 상태
+        for name, tnames in tools_by_server.items():         # 서버마다
+            s.connections[name] = ServerConnection(config={"name": name}, status="connected",   # 연결됨
+                                                   tools=[McpTool(name=n, input_schema={"type": "object"}) for n in tnames])   # 도구
+        return s                                             # 서비스
+    s = svc_with({"a": ["x", "Read", "y"], "b": ["y", "z"]})  # y 겹침, Read 는 내장과 겹침
+    assert [t.name for t in s.get_tools()] == ["x", "y", "z"]   # 먼저 온 것만, 내장 이름 뺌
+    err = capsys.readouterr().err                            # 경고
+    assert "'Read'" in err and "'y'" in err                  # 두 경고
+    s.get_tools()                                            # 다시 불러도
+    assert capsys.readouterr().err == ""                     # 같은 경고는 한 번만
+    monkeypatch.setenv("NCN_CN_COMPAT", "1")                 # cn 원래 동작
+    assert [t.name for t in svc_with({"a": ["x", "Read", "y"], "b": ["y"]}).get_tools()] == ["x", "Read", "y", "y"]   # 전부
 
 
 # ─────────────────────────────────────────────────────────────────────────────

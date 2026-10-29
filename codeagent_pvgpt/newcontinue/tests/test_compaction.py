@@ -348,3 +348,50 @@ def test_acp_slash_compact(tmp_path):                       # ACP /compact — �
     thoughts = [u["content"]["text"] for u in ide.of("agent_thought_chunk")]   # session/update 알림
     assert thoughts == ["Chat history compacted successfully.\n"]   # 압축 안내
     h.check_stdout()                                        # stdout 은 JSON 줄만
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# [ncn 부록B C1] 요약 호출 중 도구 호출은 실행하지 않는다(cn은 실행 — NCN_CN_COMPAT=1)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _c1_run(steps):                                         # 요약 호출에서 모델이 도구를 부르는 경우
+    """(결과, 녹화기, 도구가 불린 횟수, 서비스 기록)."""
+    from ncn.tools.base import Tool                          # 공용 도구 형식
+    calls = []                                              # 도구 실행 기록
+
+    async def run_tool(args, ctx=None):                     # 실행되면 기록
+        calls.append(args)                                  # 불림
+        return "WROTE"                                      # 결과 글
+
+    t = Tool(name="Write", display_name="Write", description="w", parameters={"type": "object", "properties": {}}, run=run_tool)   # 가짜 쓰기 도구
+    server, rec = serve(steps)                              # 가짜 서버
+    items = [user("q"), asst("a")]                          # 압축할 기록
+    history = ChatHistory(items)                            # 서비스 기록
+    try:                                                    # 서버 종료 보장
+        deps = make_deps(server.server_port)                # 의존성
+        deps.tools = [t]                                    # 도구 하나
+        res = asyncio.run(cp.compact_chat_history(items, BIG, history, deps, headless=True, model_name="fake-model"))   # 압축 실행
+    finally:                                                # 끝나면
+        server.shutdown()                                   # 서버 종료
+    return res, rec, calls, history                         # 결과 반환
+
+
+C1_STEPS = [{"content": "요약", "tool_calls": [{"name": "Write", "arguments": {"filepath": "x"}}]}, {"content": "둘째"}]   # 요약 글 + 도구 호출
+
+
+def test_c1_compaction_ignores_tool_calls():                # 기본: 도구를 실행하지 않고 받은 글이 요약
+    res, rec, calls, history = _c1_run(C1_STEPS)            # 실행
+    assert calls == []                                      # 실행 안 됨
+    assert len(rec.requests) == 1                           # 요약 호출 한 번으로 끝
+    assert res["compactionContent"] == "요약"               # 받은 글이 요약
+    assert [t["function"]["name"] for t in rec.requests[0]["body"]["tools"]] == ["Write"]   # 요청 본문의 tools 는 cn과 같게 보냄
+    assert history.get_history() == [user("q"), asst("a")]  # 주 기록에 도구 호출이 섞이지 않음
+
+
+def test_c1_compat_executes_tool_like_cn(cn_compat_env):    # NCN_CN_COMPAT=1: cn처럼 실행
+    res, rec, calls, history = _c1_run(C1_STEPS)            # 실행
+    assert calls == [{"filepath": "x"}]                     # 실행됨(cn 버그 그대로)
+    assert len(rec.requests) == 2                           # 도구 뒤 한 번 더 호출
+    assert res["compactionContent"] == "요약둘째"            # 두 호출 글이 이어짐
+    assert history.get_history()[2]["toolCallStates"][0]["status"] == "done"   # 도구 호출이 주 기록에 섞임(cn B15)

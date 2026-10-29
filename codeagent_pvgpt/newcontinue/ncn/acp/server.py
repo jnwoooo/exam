@@ -35,6 +35,7 @@ log = logging.getLogger("ncn.acp")                           # 로거(stderr)
 
 _CURRENT: contextvars.ContextVar[Optional["AcpSession"]] = contextvars.ContextVar("ncn_acp_session", default=None)   # 지금 턴의 세션
 CANCEL_GRACE_S = 1.0                                         # 취소 뒤 턴이 스스로 끝나기를 기다리는 시간(초) — 넘으면 작업 취소
+SUBAGENT_PROGRESS_INTERVAL_S = 0.1                           # Subagent 진행 표시 최소 간격(초)
 
 
 @dataclass   # 자료 클래스로 선언
@@ -74,6 +75,9 @@ class AcpSession:                                           # ACP 세션 하나 
     cards: dict = field(default_factory=dict)                # 도구 카드(호출 id → _Card)
     last_ask_id: Optional[str] = None                        # 마지막 AskQuestion 카드 id(질문을 카드에 잇기)
     mcp: Any = None                                          # MCPService(설정 mcpServers + session/new 의 mcpServers)
+    progress_sent: dict = field(default_factory=dict)        # Subagent 진행 표시를 마지막으로 보낸 시각(호출 id → 초)
+    progress_latest: dict = field(default_factory=dict)      # 아직 안 보낸 최근 진행 출력(호출 id → (이름, 글))
+    progress_timers: dict = field(default_factory=dict)      # 예약된 진행 표시(호출 id → TimerHandle)
 
 
 class NcnAgent:                                             # acp Agent 구현
@@ -234,14 +238,24 @@ class NcnAgent:                                             # acp Agent 구현
         overrides = (model.chat_options or {}).get("toolOverrides")   # 모델별 도구 덮어쓰기
 
         def all_tools():                                     # getAllAvailableTools(false) — 매 반복 다시
-            return registry.get_builtin_tools(model_name=model.name or "", model=model.model, headless=False,   # 대화형 도구 목록(Exit 없음)
-                                              mode=perms.mode, cwd=cwd_p, global_dir=gdir,   # (인자 이어짐)
-                                              extra_tools=s.mcp.get_tools() if s.mcp is not None else None)   # MCP 도구(Skills 뒤)
+            kw = dict(model_name=model.name or "", model=model.model, headless=False,   # 대화형 도구 목록(Exit 없음) 인자
+                      mode=perms.mode, cwd=cwd_p, global_dir=gdir,   # (인자 이어짐)
+                      subagent_models=cfg.models, subagent_host=subagent_host)   # Subagent(베타): 설정 models + 하위 대화 호스트
+            if s.mcp is None:                                # MCP 연결이 없으면
+                return registry.get_builtin_tools(**kw)      # 내장 도구만
+            builtin = frozenset(t.name for t in registry.get_builtin_tools(**kw))   # [ncn 부록B M3] 이 세션에 실제로 있는 내장 도구 이름
+            return registry.get_builtin_tools(**kw, extra_tools=s.mcp.get_tools(builtin_names=builtin))   # MCP 도구(Skills 뒤, 내장과 겹치면 내장 우선)
 
         def system_message():                                # getSystemMessage(currentMode) — 대화형(headless 블록 없음)
             return build_system_message(mode=perms.mode, headless=False, format_json=False, cwd=cwd_p,   # 현재 모드 기준
                                         global_dir=gdir, config=cfg, additional_rules=a.rule, environ=self.environ)   # (인자 이어짐)
 
+        from ncn.subagent import SubagentHost, load_ncn_settings   # 하위 에이전트 호스트·ncn.yaml
+        subagent_host = SubagentHost(models=cfg.models, headless=False, tools=all_tools, system_message=system_message,   # [ncn 부록B B16] 세션마다 독립
+                                     parent_history=history, get_signal=lambda: s.signal,   # 부모 기록·지금 턴 중단 신호(session/cancel → 하위도 중단)
+                                     on_event=lambda e: self._on_event(s, e),   # 하위 사용량을 이 턴 사용량에
+                                     on_progress=lambda tcid, name, out: self._on_subagent_progress(s, tcid, name, out),   # 카드 안 진행 표시
+                                     settings=load_ncn_settings(gdir))   # ~/.continue/ncn.yaml(추가 E)
         s.deps = LoopDeps(                                   # 루프 의존성
             llm=llm, tools=all_tools,                        # LLM·도구 목록 함수
             check_permission=lambda tool, args: self._check(s, tool, args),   # 실행 시점 판정(Bash 위험 판정 포함) — 카드 먼저 보낸 뒤
@@ -466,6 +480,7 @@ class NcnAgent:                                             # acp Agent 구현
     def _on_tool_end(self, s: AcpSession, e: dict) -> None:  # 도구 카드 끝내기
         """tool_call_update: 성공 → completed(+diff, 결과 글), 거부(canceled)·오류 → failed(글). Checklist 성공이면 plan 도."""
         tcid = e.get("tool_call_id") or ""                   # 호출 id
+        self._drop_subagent_progress(s, tcid)                # 남은 Subagent 진행 표시 버림(끝 결과가 마지막이 되게)
         card = s.cards.get(tcid)                             # 카드
         name = e.get("name") or (card.name if card else "")  # 도구 이름
         ok = e.get("type") == "tool_result" and e.get("status") == "done"   # 성공인가
@@ -485,6 +500,40 @@ class NcnAgent:                                             # acp Agent 구현
         self._enqueue(send)                                  # 순서대로 보냄
         if ok and name == "Checklist" and card is not None and isinstance(card.args, dict):   # Checklist 성공
             self._update(s, update_plan(convert.checklist_to_plan(card.args.get("checklist"))))   # plan 알림 보냄
+
+    def _on_subagent_progress(self, s: AcpSession, tcid: str, name: str, output: str) -> None:   # 하위 에이전트 진행 → 카드 갱신
+        """[ncn] Subagent 카드(tool_call)의 content 를 하위 대화 출력(지금까지)으로 바꾸고 _meta.ncn.subagent 에 이름·글자 수.
+        조각마다 보내면 너무 많으므로 같은 카드는 0.1초에 한 번만 — 그 사이에 온 것은 남은 시간 뒤 마지막 것 하나만 보낸다.
+        도구가 끝나면(_on_tool_end) 남은 예약은 버린다(끝난 카드가 다시 in_progress 로 돌아가지 않게)."""
+        import time                                          # 보낸 시각
+        s.progress_latest[tcid] = (name, output)             # 가장 최근 출력
+        if tcid in s.progress_timers:                        # 이미 예약돼 있으면
+            return                                          # 그때 최근 것을 보낸다
+        wait = SUBAGENT_PROGRESS_INTERVAL_S - (time.monotonic() - s.progress_sent.get(tcid, 0.0))   # 남은 간격
+        if wait <= 0:                                        # 간격이 지났으면
+            self._send_subagent_progress(s, tcid)            # 바로 보냄
+            return                                          # 끝
+        s.progress_timers[tcid] = asyncio.get_event_loop().call_later(wait, self._send_subagent_progress, s, tcid)   # 남은 시간 뒤 예약
+
+    def _send_subagent_progress(self, s: AcpSession, tcid: str) -> None:   # 진행 표시 하나 보내기
+        """가장 최근 출력으로 tool_call_update(in_progress) 하나를 줄 세운다."""
+        import time                                          # 보낸 시각
+        s.progress_timers.pop(tcid, None)                    # 예약 해제
+        latest = s.progress_latest.pop(tcid, None)           # 보낼 출력
+        if latest is None:                                   # 없으면(이미 끝남)
+            return                                          # 할 일 없음
+        name, output = latest                                # 이름·출력
+        s.progress_sent[tcid] = time.monotonic()             # 시각 기록
+        u = update_tool_call(tcid, status="in_progress", content=[convert.text_content(output)])   # 카드 내용 = 지금까지 출력
+        u = u.model_copy(update={"field_meta": {"ncn": {"subagent": {"name": name, "outputChars": len(output)}}}})   # _meta 에 하위 이름·길이
+        self._update(s, u)                                   # session/update 줄 세움
+
+    def _drop_subagent_progress(self, s: AcpSession, tcid: str) -> None:   # 남은 진행 표시 버리기
+        """도구가 끝났으면 예약된 진행 표시를 취소한다."""
+        timer = s.progress_timers.pop(tcid, None)            # 예약
+        if timer is not None:                                # 있으면
+            timer.cancel()                                   # 취소
+        s.progress_latest.pop(tcid, None)                    # 남은 출력 버림
 
     # ───────── 승인(ask_user) → session/request_permission ─────────
     async def _check(self, s: AcpSession, tool: Any, args: Any) -> str:   # 실행 시점 권한 판정(루프가 await)

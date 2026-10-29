@@ -1,0 +1,36 @@
+{
+  "name": "25_subagent_compat",
+  "description": "베타 Subagent(--beta-subagent-tool) + NCN_CN_COMPAT=1 — 도구 설명·인자에 subagent 모델 목록, 헤드리스 cn 은 'No active session found' 로 실패(ncn 기본은 실제 실행 — 부록B B16)",
+  "workspace": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    }
+  },
+  "prompt": "explorer 로 discount 위치를 찾아줘",
+  "args": ["--beta-subagent-tool"],
+  "env": {"NCN_CN_COMPAT": "1"},
+  "config_append": "  - name: explorer\n    provider: openai\n    model: fake-model\n    apiBase: http://127.0.0.1:9/v1/\n    apiKey: sk-parity\n    roles: [subagent]\n    chatOptions:\n      baseSystemMessage: 코드 탐색 전담. 파일을 수정하지 않는다.\n",
+  "llm": [
+    {
+      "tool_calls": [
+        {
+          "name": "Subagent",
+          "arguments": {
+            "description": "discount 찾기",
+            "prompt": "discount 함수가 어디 있는지 찾아라",
+            "subagent_name": "explorer"
+          }
+        }
+      ]
+    },
+    {
+      "content": "하위 에이전트를 쓸 수 없었습니다."
+    }
+  ],
+  "expect": {
+    "files": {
+      "coupon.py": "def discount(price):\n    return price * 0.9\n"
+    },
+    "requests": 2
+  }
+}

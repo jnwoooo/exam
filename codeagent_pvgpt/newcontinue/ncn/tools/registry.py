@@ -70,7 +70,8 @@ def _check_ripgrep_sync(cwd: str) -> bool:                  # ripgrep 설치 여
 def get_builtin_tools(*, model_name: str, headless: bool, mode: str, cwd: pathlib.Path, global_dir: pathlib.Path,  # 내장 도구 목록을 cn 순서로 만든다
                       tool_overrides: Any = None, model: Optional[str] = None, agent_id: Optional[str] = None,
                       subagent_models: Optional[list[dict]] = None, ripgrep_installed: Optional[bool] = None,  # (인자 이어짐)
-                      extra_tools: Optional[list[Tool]] = None) -> list[Tool]:  # 인자 목록 끝(반환형은 Tool 목록) — extra_tools = MCP 도구
+                      extra_tools: Optional[list[Tool]] = None,  # extra_tools = MCP 도구
+                      subagent_host: Any = None) -> list[Tool]:  # 인자 목록 끝(반환형은 Tool 목록) — subagent_host = ncn.subagent.SubagentHost(하위 대화 실행용)
     """getAllAvailableTools(isHeadless) 의 내장 도구 부분 — cn 순서, 권한 필터 전.
     model_name = 설정의 name, model = 설정의 model 필드(둘 중 하나라도 맞으면 MultiEdit).
     mode 는 받기만 한다 — cn은 목록 단계에서 모드를 보지 않고 권한 단계(plan = 쓰기 도구 exclude)에서 거른다.
@@ -127,7 +128,7 @@ def get_builtin_tools(*, model_name: str, headless: bool, mode: str, cwd: pathli
         tools.append(EXIT_TOOL)                             # 종료 도구 추가
 
     if is_beta_subagent_tool_enabled():                      # 베타
-        tools.append(make_subagent_tool(subagent_models))   # 서브에이전트 도구 추가
+        tools.append(make_subagent_tool(subagent_models, host=subagent_host))   # 서브에이전트 도구 추가(호스트가 있으면 실제 실행)
 
     tools.append(make_skills_tool(cwd_s, str(global_dir)))   # 기술(매번 디스크에서 다시 읽음 — cn과 같음)
     tools.extend(extra_tools or [])                          # MCP 도구(서버 연결 순서 → 서버가 준 순서)

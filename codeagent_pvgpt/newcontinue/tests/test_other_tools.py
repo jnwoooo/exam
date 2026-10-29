@@ -523,5 +523,5 @@ def test_subagent_tool():                                   # Subagent 도구 �
     assert run(t.preprocess({"description": "find", "prompt": "p", "subagent_name": "explorer"})).preview[0].content == "Spawning explorer to: find"  # 미리보기 글 확인
     with pytest.raises(Exception, match="^Unknown agent type: nope. Available agents: explorer$"):  # 모르는 이름은 오류
         run(t.preprocess({"description": "d", "prompt": "p", "subagent_name": "nope"}))  # 전처리 실행
-    with pytest.raises(Exception, match="^No active session found$"):   # 헤드리스 cn 과 같은 결과(P3에서 실행 구현)
+    with pytest.raises(Exception, match="^No active session found$"):   # 호스트 없이 만든 도구는 cn 헤드리스와 같은 결과(실행은 tests/test_subagent.py)
         run(t.run({"description": "d", "prompt": "p", "subagent_name": "explorer"}))  # 실행

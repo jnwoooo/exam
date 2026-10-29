@@ -28,7 +28,8 @@ DATE_LINE = re.compile(r"(Today's date: )\d{4}-\d{2}-\d{2}")   # 시스템 메�
 
 def config_yaml(port: int, scen: dict | None = None) -> str:
     """cn·ncn이 같이 읽을 시험용 config.yaml. 모델은 인라인(uses·secrets 쓰면 Hub 호출 — P0 2.1).
-    시나리오 선택 키: model_options{contextLength, maxTokens}(압축 시험), config_append(설정 원문 덧붙이기 — MCP 등)."""
+    시나리오 선택 키: model_options{contextLength, maxTokens}(압축 시험), config_append(설정 원문 덧붙이기 — MCP 등).
+    (실행 환경변수는 시나리오 키 env{이름: 값} — run_one 이 두 하네스 모두에 넣는다.)"""
     opts = (scen or {}).get("model_options", {})             # 시나리오의 모델 옵션 덮어쓰기(없으면 기본값)
     return (
         "name: parity\nversion: 0.0.1\nschema: v1\n"         # 설정 파일 본문 시작(이름·버전·스키마)
@@ -130,7 +131,8 @@ def run_one(scen: dict, cmd: list[str], timeout: int = 120) -> dict:
             cfg = cnhome / "config.yaml"                     # 설정 파일 경로
             cfg.write_text(config_yaml(server.server_port, scen), encoding="utf-8")   # 설정(시나리오 덮어쓰기 반영)
             argv = cmd + ["-p", scen["prompt"], "--config", str(cfg)] + scen.get("args", [])   # cn과 같은 옵션
-            proc = subprocess.run(argv, cwd=work, env=isolated_env(tmp), stdin=subprocess.DEVNULL,  # 하네스 실행(입력 없음)
+            env = {**isolated_env(tmp), **{str(k): str(v) for k, v in (scen.get("env") or {}).items()}}   # 시나리오 env(두 하네스 모두 — 예: NCN_CN_COMPAT=1)
+            proc = subprocess.run(argv, cwd=work, env=env, stdin=subprocess.DEVNULL,  # 하네스 실행(입력 없음)
                                   capture_output=True, timeout=timeout)   # 실행
         finally:                                             # 예외가 나도
             server.shutdown()                                # 가짜 LLM 종료
