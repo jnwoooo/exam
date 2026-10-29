@@ -3,12 +3,14 @@
 # 부모 디렉터리 확인 규칙을 그대로 옮겼다(pathspec 은 대소문자·오류 글이 달라 쓰지 않음)
 from __future__ import annotations                           # 타입 주석 지연 평가
 
+import os                                                    # [ncn 부록B S5] 작업 폴더
 import re                                                    # 정규식
 from urllib.parse import unquote, urlsplit                   # file:// URI → 경로
 
+from ncn.compat import cn_compat                             # [ncn 부록B S5] cn 원래 동작 스위치
 from ncn.tools.base import ContinueError                     # cn ContinueError
 from ncn.tools.formatters import (JS_WS_CLASS, node_platform, path_basename,   # JS 공백·실행 OS·Node path
-                                  path_dirname, path_is_absolute)
+                                  path_dirname, path_is_absolute, path_relative, path_resolve)  # 상대경로·절대경로 함수([ncn 부록B S5])
 
 # ───────────────────────── core/indexing/ignore.ts:8-91 차단 목록(원문 순서) ─────────────────────────
 DEFAULT_SECURITY_IGNORE_FILETYPES = [                       # 민감 파일 이름 패턴 목록(cn 원문 순서)
@@ -374,8 +376,28 @@ def _file_url_to_path(s: str) -> str:                       # file: URL 을 경�
     return unquote(path)                                    # 인코딩을 풀어 반환
 
 
+_DARWIN_FIRMLINK = re.compile(r"^private/(?:tmp|var|etc)(?:/|$)")   # [ncn 부록B S5] macOS /tmp·/var·/etc 의 실제 위치(/private/...) 앞부분
+
+
+def _full_relative_pieces(abs_path: str) -> str:            # [ncn 부록B S5] 절대경로를 "조각 전체" 상대 글로 바꾸는 함수
+    """절대경로 → 판정용 상대 글(조각 전체). 작업 폴더(cwd) 안이면 cwd 기준 상대경로, 밖이면 루트·드라이브를 뗀 전체 조각.
+    macOS 의 '/private/tmp|var|etc' 는 '/tmp' 등의 실제 위치라 앞의 'private/' 를 뗀다('private/' 폴더 패턴에 다 걸리지 않게)."""
+    resolved = path_resolve(abs_path)                        # '..'·중복 구분자 정리(Node path.resolve)
+    for base in {os.getcwd(), os.path.realpath(os.getcwd())}:   # 작업 폴더(링크 푼 경로도 — S4 실경로와 맞추려고)
+        rel = path_relative(base, resolved)                  # 작업 폴더 기준 상대경로
+        outside = rel == ".." or rel.startswith("../") or rel.startswith("..\\")   # 위 폴더로 나가면 작업 폴더 밖
+        if rel and not outside and not path_is_absolute(rel):   # 작업 폴더 안(다른 드라이브면 절대경로가 나옴)
+            return rel.replace("\\", "/")                   # 구분자를 '/' 로(판정기 형식)
+    pieces = re.sub(r"^(?:[A-Za-z]:)?[/\\]+", "", resolved).replace("\\", "/")   # 밖이면 루트('/', 'C:\\', UNC '\\\\')를 뗀 전체
+    if node_platform() == "darwin" and _DARWIN_FIRMLINK.match(pieces):   # macOS 의 /private/tmp 등
+        pieces = pieces[len("private/"):]                    # 앞 'private/' 를 뗌
+    return pieces                                           # 판정용 상대 글 반환
+
+
 def is_security_concern(file_path_or_uri: str) -> bool:     # 민감 파일 여부 판정
-    """isSecurityConcern — 절대경로는 '부모 폴더 이름/파일 이름' 두 조각으로 줄여 판정, 상대경로는 전체로."""
+    """isSecurityConcern — 절대경로는 '부모 폴더 이름/파일 이름' 두 조각으로 줄여 판정, 상대경로는 전체로.
+    [ncn 부록B S5] 고친 동작: 절대경로는 cn 두 조각 판정 + 조각 전체(_full_relative_pieces) 판정 중 하나라도 걸리면 민감.
+    cn 원래 동작('/p/secrets/sub/a.txt' → 'sub/a.txt' 만 봐서 통과)은 NCN_CN_COMPAT=1."""
     if not file_path_or_uri:                                 # 빈 값
         return False                                        # 민감하지 않음
     filepath = file_path_or_uri                             # 검사할 경로
@@ -383,19 +405,29 @@ def is_security_concern(file_path_or_uri: str) -> bool:     # 민감 파일 여�
         filepath = _file_url_to_path(file_path_or_uri)       # file:// 이면 경로로
     except Exception:                                        # 아니면 그대로
         pass                                                # 원래 글 사용
+    full_pieces = ""                                        # [ncn 부록B S5] 조각 전체 판정용 글(상대경로면 쓰지 않음)
     if path_is_absolute(filepath):                           # 절대경로
+        if not cn_compat():                                 # [ncn 부록B S5] 고친 동작에서만
+            full_pieces = _full_relative_pieces(filepath)   # 조각 전체(작업 폴더 기준 등)
         d = re.split(r"/|\\", path_dirname(filepath))[-1]    # 바로 위 폴더 이름
         base = path_basename(filepath)                       # 파일 이름
         filepath = f"{d + '/' if d else ''}{base}"          # '폴더/파일' 두 조각으로 줄임
+    if full_pieces and default_file_and_folder_security_ignores.ignores(full_pieces):   # [ncn 부록B S5] 조각 전체 중 민감 폴더·파일이 있으면
+        return True                                         # 민감(cn 두 조각 판정보다 넓게)
     if not filepath:                                        # 비면
         return False                                        # 민감하지 않음
     return default_file_and_folder_security_ignores.ignores(filepath)  # 판정기로 검사해 반환
 
 
+def security_concern_error(filepath: str) -> ContinueError:  # 민감 파일 오류 객체를 만드는 함수
+    """cn 원문 글의 민감 파일 오류(throwIfFileIsSecurityConcern 과 같은 글) — [ncn 부록B S4·S6] 실경로·Write 판정에서도 같은 글을 쓰려고 나눔."""
+    return ContinueError(                                   # cn 원문 메시지로 오류
+        "file_is_security_concern",                         # 이유 코드
+        f"Reading or Editing {filepath} is not allowed because it is a security concern. Do not attempt to read or edit this file in any way.",  # 안내 메시지(cn 원문)
+    )                                                       # 오류 닫기
+
+
 def throw_if_file_is_security_concern(filepath: str) -> None:  # 민감 파일이면 오류를 낸다
     """throwIfFileIsSecurityConcern — 민감 파일이면 cn 원문 글로 ContinueError."""
     if is_security_concern(filepath):                       # 민감 파일이면
-        raise ContinueError(                                # cn 원문 메시지로 오류
-            "file_is_security_concern",                     # 이유 코드
-            f"Reading or Editing {filepath} is not allowed because it is a security concern. Do not attempt to read or edit this file in any way.",  # 안내 메시지(cn 원문)
-        )                                                   # 오류 닫기
+        raise security_concern_error(filepath)              # cn 원문 메시지로 오류

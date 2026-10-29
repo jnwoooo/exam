@@ -8,6 +8,8 @@ import re                                                    # 정규식
 import sys                                                   # stderr 출력
 from typing import Any, List, Union                          # 타입
 
+from ncn.compat import cn_compat                             # [ncn 부록B S3] cn 원래 동작 스위치
+
 DISABLED = "disabled"                                        # 실행 금지(가장 엄격)
 WITH_PERMISSION = "allowedWithPermission"                    # 사용자 승인 필요
 WITHOUT_PERMISSION = "allowedWithoutPermission"              # 자동 승인 가능
@@ -134,7 +136,9 @@ def shell_quote_parse(string: str) -> List[ParsedToken]:    # 명령 문자열�
                 early = {"op": s}                           # 조각 전체를 연산자로 확정
                 done_early = True                           # 중간 종료 표시
                 break                                       # 스캔 중단
-            elif c == "#":                                   # 단어 중간이어도 주석(bash와 다름)
+            elif c == "#" and (i == 0 or cn_compat()):       # [ncn 부록B S3] 셸 규칙: 단어 첫 글자(조각 맨 앞 = 공백·연산자 뒤)의 # 만 주석
+                # cn(shell-quote) 원래 동작: 단어 중간 # 도 주석 → "echo foo#bar; rm -rf /" 의 "; rm -rf /" 를 못 봄(자동 승인 우회)
+                # 고친 동작: 단어 중간 # 은 아래 else 로 가서 보통 글자(bash와 같음). NCN_CN_COMPAT=1 이면 cn 동작
                 commented = True                             # 이후 조각 모두 버림
                 comment_obj = {"comment": string[match.start() + i + 1:]}   # 원본 전체 문자열 기준
                 early = [out, comment_obj] if len(out) else [comment_obj]  # 주석 앞 글자가 있으면 함께 반환

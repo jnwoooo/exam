@@ -1,11 +1,13 @@
 # ncn/tools/edit.py — Edit 도구(한 곳 또는 전부 찾아 바꾸기). cn extensions/cli/src/tools/edit.ts
 # 전제: 이번 프로세스에서 Read 한 파일(실경로 기준)만. 민감 파일 판정은 실경로("부모 폴더/파일 이름")로
-# preprocess 에서 새 내용까지 계산하고, run 은 그 결과를 쓰기만 한다(cn 그대로 — 승인 사이에 파일이 바뀌어도 다시 안 읽음)
+# preprocess 에서 새 내용까지 계산하고, run 은 그 결과를 쓴다. cn은 승인 사이에 파일이 바뀌어도 다시 안 읽음(사용자 수정을 덮어씀)
+# [ncn 부록B B6] ncn은 run 에서 파일을 다시 읽어 preprocess 때와 다르면 다시 찾아 바꾼다(실패면 cn 형식 오류). NCN_CN_COMPAT=1 이면 cn 동작
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 import os                                                    # 현재 폴더
 from typing import Any, Optional                             # 타입
 
+from ncn.compat import cn_compat                             # [ncn 부록B B6] cn 원래 동작 스위치
 from ncn.security.ignore import throw_if_file_is_security_concern   # 민감 파일 차단
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
 from ncn.tools.findreplace import (MISSING, REASON_EDIT_TOOL_FILE_NOT_READ, REASON_FILE_NOT_FOUND,   # 찾아 바꾸기·오류 이유
@@ -15,6 +17,9 @@ from ncn.tools.formatters import (NodeFsError, exists_sync, path_is_absolute, pa
                                   read_file_utf8, realpath_sync, write_file_utf8)  # 읽기·실경로·쓰기 함수
 from ncn.tools.read_file import READ_TOOL, read_files_set    # 읽은 파일 기록
 from ncn.tools.write_file import generate_diff              # diff 생성 함수
+
+
+REDO_KEY = "_ncnRedo"                                        # [ncn 부록B B6] run 인자 안의 '다시 찾아 바꾸기 재료' 키(도구 안에서만 씀)
 
 
 def validate_and_resolve_file_path(args: Any) -> dict:      # Edit·MultiEdit 공용 경로 검증
@@ -61,17 +66,26 @@ async def _preprocess(args: dict) -> PreprocessResult:      # Edit 의 preproces
     old_content = read_file_utf8(resolved_path)              # 지금 내용
     new_content = execute_find_and_replace(old_content, old_s, new_s, rep_all if rep_all is not None else False, 0)  # 바꾼 새 내용 계산(replaceAll ?? false)
     diff = generate_diff(old_content, new_content, resolved_path)   # 미리보기 diff
+    redo = {"old_string": old_s, "new_string": new_s, "replace_all": rep_all if rep_all is not None else False}   # [ncn 부록B B6] run 에서 다시 찾아 바꿀 재료
     return PreprocessResult(                                # run 인자와 미리보기를 묶어 반환
-        args={"resolvedPath": resolved_path, "newContent": new_content, "oldContent": old_content},  # run 에 넘길 인자(실경로·새 내용·옛 내용)
+        args={"resolvedPath": resolved_path, "newContent": new_content, "oldContent": old_content,  # run 에 넘길 인자(실경로·새 내용·옛 내용)
+              **({} if cn_compat() else {REDO_KEY: redo})},  # [ncn 부록B B6] 고친 동작에서만 재료를 붙임(LLM 요청에는 안 들어감)
         preview=[ToolCallPreview("text", "Will make the following changes:"), ToolCallPreview("diff", diff)],  # 미리보기: 안내 글 + diff
     )                                                       # PreprocessResult 닫기
 
 
 async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # Edit 의 run(쓰기만 한다)
-    """run — 새 내용을 쓰고 diff 를 돌려줌."""
+    """run — 새 내용을 쓰고 diff 를 돌려줌. [ncn 부록B B6] 쓰기 전에 다시 읽어 바뀌었으면 다시 찾아 바꿈."""
     try:                                                    # 쓰기 시도
-        write_file_utf8(args["resolvedPath"], args["newContent"])   # 쓰기
-        diff = generate_diff(args["oldContent"], args["newContent"], args["resolvedPath"])   # 결과용 diff
+        old_content, new_content = args["oldContent"], args["newContent"]   # preprocess 때 계산한 내용
+        redo = args.get(REDO_KEY)                            # [ncn 부록B B6] 다시 찾아 바꿀 재료(없으면 cn처럼 그대로 씀)
+        if redo is not None and not cn_compat():             # [ncn 부록B B6] 고친 동작(cn 원래 동작: 미리 계산한 내용을 그대로 씀)
+            current = read_file_utf8(args["resolvedPath"])   # 승인 뒤 실행 시점의 내용
+            if current != old_content:                       # 승인 대기 중 사용자·린터가 고쳤으면
+                new_content = execute_find_and_replace(current, redo["old_string"], redo["new_string"], redo["replace_all"], 0)  # 지금 내용에서 다시 찾아 바꿈(못 찾음·여러 곳이면 cn 글로 오류)
+                old_content = current                       # diff 기준도 지금 내용
+        write_file_utf8(args["resolvedPath"], new_content)   # 쓰기
+        diff = generate_diff(old_content, new_content, args["resolvedPath"])   # 결과용 diff
         return f"Successfully edited {args['resolvedPath']}\nDiff:\n{diff}"  # 성공 메시지 + diff
     except ContinueError:                                   # ContinueError 는 그대로 올린다
         raise                                               # 재전파

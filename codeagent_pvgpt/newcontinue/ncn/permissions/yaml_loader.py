@@ -1,6 +1,6 @@
 # ncn/permissions/yaml_loader.py — ~/.continue/permissions.yaml 읽기·쓰기. cn extensions/cli/src/permissions/permissionsYamlLoader.ts · policyWriter.ts 를 그대로 옮긴 것
 # 파일 형식: allow / ask / exclude 세 목록. 항목은 "Write" 또는 "Bash(npm install)"처럼 "도구(인자 패턴)"
-# "계속 + 다시 묻지 않기"는 generate_policy_rule로 규칙을 만들어 allow 목록 끝에 붙인다(Bash는 "Bash(<명령 이름>*)")
+# "계속 + 다시 묻지 않기"는 generate_policy_rule로 규칙을 만들어 allow 목록 끝에 붙인다(Bash는 cn "Bash(<명령 이름>*)" → ncn 명령 전체 일치, 부록B S1)
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 import json                                                  # 큰따옴표 글 만들기(YAML 출력)
@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional                 # 타입
 
 import yaml                                                  # pyyaml  # yaml 해석 라이브러리
 
+from ncn.compat import cn_compat                             # [ncn 부록B] cn 원래 동작 스위치
 from ncn.permissions.matcher import js_truthy                # JS 참/거짓
 from ncn.permissions.policies import ALLOW, ASK, EXCLUDE, ToolPermissionPolicy   # 정책 형식
 from ncn.security.terminal_security import JS_WS, js_trim    # JS 공백 집합·trim
@@ -124,10 +125,22 @@ def ensure_permissions_yaml_exists(path: Path) -> None:     # 기본 permissions
         logger.info("Created default permissions.yaml: %s", path)  # 생성 로그
 
 
-def generate_policy_rule(tool_name: str, tool_args: Any) -> str:  # '항상 허용' 규칙 문자열을 만드는 함수
-    """policyWriter.ts generatePolicyRule — Bash는 첫 명령 이름으로 "Bash(<이름>*)", 나머지는 도구 이름 그대로."""
+_EXACT_RULE_UNSAFE = re.compile(r"[()*?]")                    # [ncn 부록B S1] 정확 일치 규칙에 넣으면 뜻이 바뀌는 글자(괄호=패턴 해석 실패, * ?=글롭)
+
+
+def generate_policy_rule(tool_name: str, tool_args: Any) -> Optional[str]:  # '항상 허용' 규칙 문자열을 만드는 함수
+    """policyWriter.ts generatePolicyRule — Bash는 첫 명령 이름으로 "Bash(<이름>*)", 나머지는 도구 이름 그대로.
+    [ncn 부록B S1·S2] 기본(고친 동작): Bash는 명령 전체 정확 일치 "Bash(<명령 전체>)". 정확 일치로 적을 수 없는 명령
+    (괄호·* ?·앞뒤 공백·명령 없음)은 규칙을 만들지 않고 None(이번 한 번만 허용). NCN_CN_COMPAT=1 이면 cn 원래 동작."""
     normalized = tool_name                                   # 정규화 없음
     command = tool_args.get("command") if isinstance(tool_args, dict) else None  # 인자에서 command 꺼냄 — toolArgs?.command
+    if normalized == "Bash" and not cn_compat():             # [ncn 부록B S1·S2] 고친 동작: 명령 앞부분 와일드카드·Bash 전체 규칙을 만들지 않음
+        # cn 원래 동작: "ls -la && curl x | sh" → "Bash(ls*)"(뒤 명령까지 전부 허용), "| ls" → "Bash"(Bash 전체 허용)
+        if not isinstance(command, str) or not js_trim(command):   # 명령이 없거나 글이 아니면
+            return None                                     # 규칙 없음(이번 한 번만 허용) — cn은 "Bash"(전체 허용)를 저장
+        if command != js_trim(command) or _EXACT_RULE_UNSAFE.search(command):   # 앞뒤 공백(읽을 때 trim돼 안 맞음)·괄호·글롭 글자
+            return None                                     # 정확 일치로 적을 수 없음 → 규칙 없음
+        return f"Bash({command})"                           # 명령 전체 정확 일치 규칙(matches_arguments의 === 비교로 판정)
     if normalized == "Bash" and js_truthy(command):          # Bash + 명령 있음
         if not isinstance(command, str):                     # JS: command.trim 이 TypeError
             raise TypeError("toolArgs.command.trim is not a function")  # 문자열 아니면 TypeError

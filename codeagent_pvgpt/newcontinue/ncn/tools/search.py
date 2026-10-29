@@ -1,5 +1,6 @@
 # ncn/tools/search.py — Search 도구(코드 검색). cn extensions/cli/src/tools/searchCode.ts 를 그대로 옮긴 것
 # rg 가 있으면 cn과 같은 rg 명령을 셸로 실행(Node child_process.exec 와 같은 셸·출력 한도 1MiB·오류 글)
+# [ncn 부록B S7] ncn 기본은 rg 를 셸 없이 인자 목록으로 실행(패턴의 $·백틱을 셸이 해석하지 않게). 출력·오류 글은 cn과 같게. NCN_CN_COMPAT=1 이면 cn처럼 셸
 # [추가] rg 가 없으면 cn은 도구 자체를 뺀다 — ncn은 NCN_BUILTIN_SEARCH=1 일 때만 표준 라이브러리 검색으로 rg 와 같은 출력 형식("경로:줄:내용")을 낸다(계획 부록 B)
 from __future__ import annotations                           # 타입 주석 지연 평가
 
@@ -10,6 +11,7 @@ import subprocess                                            # 셸 명령
 import threading                                             # 출력 읽기 스레드
 from typing import Optional                                  # 타입
 
+from ncn.compat import cn_compat                             # [ncn 부록B S7] cn 원래 동작 스위치
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview   # 공용 형식
 from ncn.tools.formatters import js_trim, node_platform      # JS trim, Node process.platform 대응
 from ncn.tools.truncate import js_len, parse_env_number      # JS 길이, 환경변수 숫자
@@ -35,10 +37,14 @@ class ExecError(Exception):                                  # exec 실패를 �
         self.stderr = stderr                                 # 받은 오류 출력
 
 
-def _exec_blocking(command: str, cwd: Optional[str]) -> tuple[str, str]:  # 명령을 셸로 실행하는 동기 함수(exec 대응)
+def _exec_blocking(command: str, cwd: Optional[str], argv_direct: Optional[list[str]] = None) -> tuple[str, str]:  # 명령을 셸로 실행하는 동기 함수(exec 대응)
     """exec(command, {cwd}) — 셸로 실행, (stdout, stderr). 실패하면 ExecError.
-    셸: Unix '/bin/sh -c', Windows '%ComSpec% /d /s /c "명령"'(Node 와 같은 명령줄)."""
-    if node_platform() == "win32":                           # Windows는 cmd.exe로 실행
+    셸: Unix '/bin/sh -c', Windows '%ComSpec% /d /s /c "명령"'(Node 와 같은 명령줄).
+    [ncn 부록B S7] argv_direct 를 주면 셸 없이 그 인자 목록으로 실행(command 는 오류 글에만 씀 — cn 글과 같게)."""
+    if argv_direct is not None:                              # [ncn 부록B S7] 셸 없이 인자 목록으로 실행
+        argv = list(argv_direct)                             # 인자 목록 그대로(셸 해석 없음)
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if node_platform() == "win32" else 0   # Windows 창 숨김(결과 같음)
+    elif node_platform() == "win32":                         # Windows는 cmd.exe로 실행
         comspec = os.environ.get("ComSpec") or os.environ.get("COMSPEC") or "cmd.exe"  # ComSpec 환경변수 우선
         argv = f'{comspec} /d /s /c "{command}"'             # windowsVerbatimArguments — 문자열 그대로 CreateProcess 에
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)   # [추가 V6] 창 숨김(결과 같음)
@@ -49,7 +55,7 @@ def _exec_blocking(command: str, cwd: Optional[str]) -> tuple[str, str]:  # 명�
         proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.PIPE,   # Node exec 도 stdin 파이프(닫지 않음)
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags)  # stdout·stderr 파이프 연결
     except OSError as e:                                     # 셸 자체가 없음(거의 없음)
-        raise ExecError(f"spawn {argv[0] if isinstance(argv, list) else comspec} ENOENT", "ENOENT")  # 셸이 없으면 ENOENT 오류로 변환
+        raise ExecError(f"spawn {argv[0] if isinstance(argv, list) else comspec} ENOENT", "ENOENT") from e  # 셸(또는 rg)이 없으면 ENOENT 오류로 변환
     bufs = {"stdout": bytearray(), "stderr": bytearray()}    # 모은 바이트
     over = {"which": None}                                   # 한도를 넘은 쪽
     lock = threading.Lock()                                  # 공유 상태 보호
@@ -95,9 +101,9 @@ def _exec_blocking(command: str, cwd: Optional[str]) -> tuple[str, str]:  # 명�
     return out, err                                          # (stdout, stderr) 반환
 
 
-async def exec_promise(command: str, cwd: Optional[str] = None) -> tuple[str, str]:  # exec를 스레드에서 실행하는 코루틴
-    """util.promisify(exec) — 이벤트 루프를 막지 않게 스레드에서."""
-    return await asyncio.to_thread(_exec_blocking, command, cwd)  # 이벤트 루프를 막지 않고 실행
+async def exec_promise(command: str, cwd: Optional[str] = None, argv_direct: Optional[list[str]] = None) -> tuple[str, str]:  # exec를 스레드에서 실행하는 코루틴
+    """util.promisify(exec) — 이벤트 루프를 막지 않게 스레드에서. argv_direct 는 [ncn 부록B S7] 셸 없는 실행."""
+    return await asyncio.to_thread(_exec_blocking, command, cwd, argv_direct)  # 이벤트 루프를 막지 않고 실행
 
 
 # ───────────────────────── .gitignore 패턴(find-up) ─────────────────────────
@@ -142,6 +148,15 @@ async def check_if_ripgrep_is_installed(cwd: Optional[str] = None) -> bool:  # r
         return False
 
 
+def _js_template(v) -> str:                                 # [ncn 부록B S7] JS 템플릿 문자열 `${v}` 의 글 변환 흉내
+    """셸 문자열로 만들 때와 같은 글이 되게 — None 은 'undefined', 참/거짓은 소문자, 그 밖은 str."""
+    if v is None:                                            # undefined
+        return "undefined"                                   # JS 표기
+    if isinstance(v, bool):                                  # 불리언
+        return "true" if v else "false"                      # JS 표기
+    return v if isinstance(v, str) else str(v)               # 글은 그대로, 나머지는 글로
+
+
 async def search_with_ripgrep(pattern: str, search_path: str, file_pattern: Optional[str], cwd: str) -> tuple[str, str]:  # rg 명령으로 검색하는 코루틴
     """searchWithRipgrep — cn과 글자 하나까지 같은 rg 명령(인자를 큰따옴표로 감쌈 — 셸이 해석함, cn 그대로)."""
     command = f'rg --line-number --with-filename --color never "{pattern}"'   # 기본
@@ -150,7 +165,15 @@ async def search_with_ripgrep(pattern: str, search_path: str, file_pattern: Opti
     for ignore_pattern in get_gitignore_patterns(cwd):       # .gitignore 제외
         command += f' -g "!{ignore_pattern}"'                # 무시 패턴은 -g "!..." 로 제외
     command += f' "{search_path}"'                           # 찾을 곳
-    return await exec_promise(command, cwd)                  # exec(cwd 옵션 없음 = process.cwd() → ncn은 cwd)
+    if cn_compat():                                          # cn 원래 동작: 큰따옴표로 감싸 셸에 넘김($VAR·`cmd`·\" 를 셸이 해석 — 명령 주입 가능)
+        return await exec_promise(command, cwd)              # exec(cwd 옵션 없음 = process.cwd() → ncn은 cwd)
+    argv = ["rg", "--line-number", "--with-filename", "--color", "never", _js_template(pattern)]   # [ncn 부록B S7] 같은 인자를 셸 없이(패턴은 글자 그대로)
+    if file_pattern:                                         # 파일 패턴
+        argv += ["-g", _js_template(file_pattern)]           # 파일 패턴은 -g 옵션으로
+    for ignore_pattern in get_gitignore_patterns(cwd):       # .gitignore 제외(cn과 같은 순서)
+        argv += ["-g", f"!{ignore_pattern}"]                 # 무시 패턴은 -g "!..." 로 제외
+    argv.append(_js_template(search_path))                   # 찾을 곳
+    return await exec_promise(command, cwd, argv)            # 오류 글에는 cn과 같은 명령 글을 씀
 
 
 # ───────────────────────── 절차 2: grep / findstr(cn에서는 rg 없으면 도구가 빠져 실제로는 안 쓰임) ─────────────────────────
@@ -246,7 +269,7 @@ def builtin_search(pattern: str, search_path: str, file_pattern: Optional[str], 
     따르는 규칙: 숨김 파일·폴더 제외, 기호 링크 제외, NUL 이 있는 파일(이진) 제외, .rgignore/.ignore(항상)·.gitignore(git 저장소 안에서만),
     -g 파일 패턴(맞지 않는 파일 제외)과 cn이 붙이는 -g "!<.gitignore 줄>"(우선), 파일·폴더는 이름순."""
     import pathspec                                          # glob 판정
-    if node_platform() != "win32":                           # Unix 셸은 "…" 안을 해석함
+    if node_platform() != "win32" and cn_compat():           # Unix 셸은 "…" 안을 해석함 — [ncn 부록B S7] 고친 rg 가 글자 그대로 받으므로 cn 동작 때만 흉내
         pattern = _sh_double_quote_unescape(pattern)         # 셸 이스케이프를 푼 패턴
         file_pattern = _sh_double_quote_unescape(file_pattern) if file_pattern else file_pattern  # 파일 패턴도 같은 처리
     try:                                                     # 정규식 컴파일 실패 대비

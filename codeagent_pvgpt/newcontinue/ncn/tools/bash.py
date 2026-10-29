@@ -1,15 +1,21 @@
 # ncn/tools/bash.py — Bash 도구(터미널 명령 실행). cn extensions/cli/src/tools/runTerminalCommand.ts 를 그대로 옮긴 것
 # 셸: Windows = powershell.exe -NoLogo -ExecutionPolicy Bypass -Command, WSL/그 밖 = $SHELL(없으면 /bin/bash) -l -c
 # 시간 제한은 "출력이 없는 시간" 기준(출력이 올 때마다 다시 셈), 기본 180초·최대 600초. 출력은 뒷부분을 남기고 5만 자/1천 줄
+# [ncn 부록B B4] 출력 해석: cn은 조각마다 따로 UTF-8 해석(경계의 여러 바이트 글자가 깨짐)·Windows CP949 출력도 UTF-8로 봄.
+#   ncn은 증분 해석 + Windows 에서 PowerShell 출력 인코딩을 UTF-8 로 강제(앞부분 추가) + UTF-8 이 아닌 바이트가 오면 OEM 코드 페이지로 해석.
+#   NCN_CN_COMPAT=1 이면 cn 동작
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 import asyncio                                               # 비동기 실행·타이머
+import codecs                                                # [ncn 부록B B4] 증분 해석기
+import locale                                                # [ncn 부록B B4] 대체 인코딩(시스템 코드 페이지)
 import math                                                  # NaN 판정
 import os                                                    # 환경변수
 from typing import Any, Callable, Optional                   # 타입
 
+from ncn.compat import cn_compat                             # [ncn 부록B B4] cn 원래 동작 스위치
 from ncn.tools.background_jobs import (                      # 백그라운드 작업(Ctrl+B)
-    background_job_service, background_signal_manager, spawn_child, spawn_error_message,  # 작업 서비스·Ctrl+B 신호·프로세스 띄우기·오류 메시지
+    ChildHandle, background_job_service, background_signal_manager, spawn_child, spawn_error_message,  # 손잡이·작업 서비스·Ctrl+B 신호·프로세스 띄우기·오류 메시지
 )                                                            # import 목록 끝
 from ncn.tools.base import PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
 from ncn.tools.formatters import node_platform, to_locale_string   # Node process.platform 값, toLocaleString
@@ -53,10 +59,20 @@ def _get_bash_max_lines() -> int:                            # Bash 출력 줄 �
     return parse_env_number(os.environ.get("CONTINUE_CLI_BASH_MAX_OUTPUT_LINES"), DEFAULT_BASH_MAX_LINES)  # 환경변수 값이 없으면 기본 1000
 
 
+# [ncn 부록B B4] PowerShell 명령 앞에 붙이는 UTF-8 출력 강제(BOM 없는 UTF-8). 실패해도(콘솔 없음 등) 무시하고 사용자 명령은 그대로 실행
+PS_UTF8_PREFIX = ("try{[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding $false}catch{};"   # 콘솔 출력 코드 페이지를 65001로(네이티브 exe 출력도 UTF-8)
+                  "$OutputEncoding=New-Object System.Text.UTF8Encoding $false;")   # 파이프로 네이티브 exe 에 넘길 때도 UTF-8
+
+
 def get_shell_command(command: str) -> tuple[str, list[str]]:  # 플랫폼별 (셸, 인자) 결정 함수
-    """getShellCommand — (셸, 인자). Windows는 PowerShell, WSL·Unix·macOS는 로그인 셸(-l -c)."""
+    """getShellCommand — (셸, 인자). Windows는 PowerShell, WSL·Unix·macOS는 로그인 셸(-l -c).
+    [ncn 부록B B4] Windows 에서는 명령 앞에 PS_UTF8_PREFIX 를 붙인다(LLM 이 본 명령 글은 그대로 — 실행하는 글만). NCN_CN_COMPAT=1 이면 cn 그대로."""
     if node_platform() == "win32":                           # Windows: PowerShell(5.1 기본 — 계획 14-5)
-        return "powershell.exe", ["-NoLogo", "-ExecutionPolicy", "Bypass", "-Command", command]  # PowerShell로 명령 실행
+        # 고른 이유: 콘솔 코드 페이지(cp949)로만 해석하면 cp949 에 없는 글자(이모지·일부 한자)는 PowerShell 이 '?' 로 바꿔 되돌릴 수 없다.
+        # UTF-8 로 강제하면 PowerShell cmdlet 출력·콘솔 코드 페이지를 따르는 exe 출력이 손실 없이 온다. 그래도 cp949 로 직접 쓰는 exe 가 있어
+        # 해석기는 UTF-8 이 깨지면 OEM 코드 페이지로 넘어간다(_HybridDecoder) — 두 방법을 겹쳐 가장 견고하게
+        script = command if cn_compat() else PS_UTF8_PREFIX + command   # [ncn 부록B B4] cn 원래 동작: 앞부분 없음(출력이 cp949)
+        return "powershell.exe", ["-NoLogo", "-ExecutionPolicy", "Bypass", "-Command", script]  # PowerShell로 명령 실행
     if is_running_in_wsl():                                  # WSL: bash 가 늘 있음
         wsl_shell = os.environ.get("SHELL") or "/bin/bash"  # WSL에서도 SHELL 환경변수 우선, 없으면 bash
         return wsl_shell, ["-l", "-c", command]              # WSL은 로그인 셸로 실행
@@ -70,6 +86,68 @@ def _creationflags() -> int:                                 # Windows 콘솔 �
         import subprocess                                    # 상수
         return getattr(subprocess, "CREATE_NO_WINDOW", 0)    # Windows 전용 상수(0x08000000)
     return 0                                                 # 그 밖의 플랫폼은 플래그 없음
+
+
+def _fallback_encoding() -> str:                             # [ncn 부록B B4] UTF-8 이 아닐 때 쓸 인코딩
+    """Windows: OEM 코드 페이지(한국어 Windows = cp949 — 콘솔 프로그램 기본), 못 구하면 시스템 ANSI 코드 페이지. 그 밖: utf-8."""
+    if node_platform() != "win32":                           # Windows 가 아니면 대체 없음
+        return "utf-8"                                       # UTF-8 그대로(깨진 바이트는 U+FFFD — Node 와 같음)
+    try:                                                     # ctypes 로 OEM 코드 페이지 조회(Windows 전용)
+        import ctypes                                        # Windows API 호출
+        cp = ctypes.windll.kernel32.GetOEMCP()               # 예: 949
+        name = f"cp{cp}"                                     # 파이썬 코덱 이름
+        codecs.lookup(name)                                  # 파이썬이 아는 코덱인지 확인
+        return name                                          # OEM 코드 페이지 반환
+    except Exception:                                        # macOS 시험·조회 실패
+        pass                                                 # 아래 대체로
+    enc = locale.getpreferredencoding(False) or "cp949"      # 시스템 ANSI 코드 페이지(없으면 cp949)
+    try:                                                     # 코덱 확인
+        codecs.lookup(enc)                                   # 아는 코덱인지
+        return enc                                           # 시스템 인코딩 반환
+    except LookupError:                                      # 모르는 이름
+        return "cp949"                                       # 현장 기본값(한국어 Windows)
+
+
+class _HybridDecoder:                                        # [ncn 부록B B4] 증분 UTF-8 해석 + 깨지면 대체 인코딩으로 전환
+    """조각 경계에서 글자가 잘려도 이어 붙여 해석(증분). UTF-8 로 해석할 수 없는 바이트가 처음 나오면 그 뒤로는 대체 인코딩(증분)으로."""
+
+    def __init__(self, fallback: str):                       # 대체 인코딩 이름으로 만든다
+        self._fallback_name = fallback                       # 대체 인코딩(utf-8 이면 전환해도 U+FFFD 로 바꿈)
+        self._utf8 = codecs.getincrementaldecoder("utf-8")("strict")   # 엄격 UTF-8(깨짐을 알아채려고)
+        self._fb = codecs.getincrementaldecoder(fallback)("replace")   # 대체 해석기(못 읽는 바이트는 U+FFFD)
+        self._use_fallback = False                           # 대체로 넘어갔는지
+
+    def decode(self, data: bytes, final: bool = False) -> str:   # 조각 하나를 글로
+        """조각 → 글. 아직 덜 온 여러 바이트 글자는 다음 조각까지 들고 있는다."""
+        if self._use_fallback:                               # 이미 대체 모드면
+            return self._fb.decode(data, final)              # 대체 인코딩으로 해석
+        pending = self._utf8.getstate()[0]                   # 앞 조각에서 남은(덜 온) 바이트
+        try:                                                 # UTF-8 로 해석 시도
+            return self._utf8.decode(data, final)            # 성공하면 그대로
+        except UnicodeDecodeError:                           # UTF-8 이 아님(예: cp949 로 직접 쓰는 exe)
+            self._use_fallback = True                        # 이후 전부 대체 인코딩으로
+            return self._fb.decode(pending + data, final)    # 남은 바이트부터 다시 해석
+
+
+class _BashChildHandle(ChildHandle):                         # [ncn 부록B B4] 출력 해석만 바꾼 손잡이
+    """ChildHandle 과 같고 _read 의 해석기만 다르다 — 고친 동작: _HybridDecoder, cn 동작: 조각마다 따로 UTF-8(data.toString())."""
+
+    async def _read(self, stream, which: str) -> None:       # 스트림 하나를 끝까지 읽는 코루틴
+        """스트림 하나를 끝까지 읽어 받는 곳에 넘김(ChildHandle._read 와 같은 흐름)."""
+        if stream is None:                                   # 파이프 없음
+            return                                           # 읽을 것이 없다
+        compat = cn_compat()                                 # cn 원래 동작인지(시작할 때 한 번)
+        dec = None if compat else _HybridDecoder(_fallback_encoding())   # 고친 동작의 해석기
+        while True:                                          # 스트림 끝까지 반복
+            chunk = await stream.read(65536)                 # 조각 읽기
+            if not chunk:                                    # 끝
+                rest = dec.decode(b"", final=True) if dec is not None else ""   # 남은 바이트 마무리
+                if rest:                                     # 남은 글이 있을 때만
+                    self._emit(which, rest)                  # 마지막 글 전달
+                return                                       # 읽기 종료
+            text = chunk.decode("utf-8", errors="replace") if dec is None else dec.decode(chunk)   # cn: 조각마다 따로(경계 글자 깨짐) / ncn: 증분
+            if text:                                         # 빈 글은 넘기지 않음
+                self._emit(which, text)                      # 받는 곳에 전달
 
 
 def _child_env() -> Optional[dict]:                          # 자식 프로세스 환경변수 결정 함수
@@ -223,7 +301,8 @@ def make_bash_tool(cwd: str | os.PathLike | None = None) -> Tool:  # Bash 도구
                 state["timer"] = None                        # 타이머 참조 비움
 
         try:                                                 # 프로세스 띄우기 실패(OSError) 대비
-            child = await spawn_child(shell, sh_args, cwd=work_dir, env=_child_env(), creationflags=_creationflags())  # 셸 프로세스 띄우기(작업 폴더·환경·플래그 전달)
+            spawned = await spawn_child(shell, sh_args, cwd=work_dir, env=_child_env(), creationflags=_creationflags())  # 셸 프로세스 띄우기(작업 폴더·환경·플래그 전달)
+            child = _BashChildHandle(spawned.proc)           # [ncn 부록B B4] 같은 프로세스를 출력 해석만 다른 손잡이로(읽기는 아래 start() 에서 시작)
         except OSError as e:                                 # 'error' 이벤트(셸 없음 등)
             raise BashCommandError(f"Error: {spawn_error_message(shell, e)}")  # Node 형식 오류 메시지로 실패 처리
 

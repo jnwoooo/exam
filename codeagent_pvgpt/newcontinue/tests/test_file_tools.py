@@ -207,7 +207,7 @@ def test_edit_preprocess_errors(edit_file, args, reason):   # preprocess 오류 
     assert e.value.reason == reason                         # 이유 코드 확인
 
 
-def test_edit_success_relative_path_and_replace_all(edit_file, ws):  # 상대경로·전부 바꾸기 성공 시험
+def test_edit_success_relative_path_and_replace_all(edit_file, ws, cn_compat_env):  # 상대경로·전부 바꾸기 성공 시험(cn run 인자 모양 — [ncn 부록B B6] 재료 키가 없는 cn 동작으로)
     run(call(READ_TOOL, {"filepath": "test-edit-file.txt"}))  # 먼저 Read 해 기록
     pre = run(EDIT_TOOL.preprocess({"file_path": "test-edit-file.txt", "old_string": "Hello world", "new_string": "Hi there"}))  # 상대경로로 preprocess
     assert pre.args == {"resolvedPath": str(edit_file), "newContent": "Hi there\nThis is a test file\nGoodbye world", "oldContent": ORIGINAL}  # run 에 넘길 인자 확인
@@ -303,7 +303,7 @@ def test_list_broken_symlink_fails_whole(ws):               # 깨진 링크가 �
     ("/home/u/.ssh/id_rsa", True), ("/proj/secrets/sub/a.txt", False),   # 절대경로는 "부모/이름" 두 조각
     ("/home/u/project/config.json", True), ("/", False), ("file:///home/u/.ssh/known_hosts", True),  # file:// 주소와 루트
 ])                                                          # 표 닫기
-def test_is_security_concern(path, expected):               # 민감 파일 판정 시험
+def test_is_security_concern(path, expected, cn_compat_env):  # 민감 파일 판정 시험(cn 기대값 — [ncn 부록B S5] 고친 동작은 test_ncn_fixes)
     assert is_security_concern(path) is expected            # 기대값과 같아야 함
 
 

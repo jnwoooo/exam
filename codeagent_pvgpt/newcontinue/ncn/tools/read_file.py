@@ -6,7 +6,8 @@ from __future__ import annotations                           # 타입 주석 지
 import os                                                    # 환경변수
 from typing import Optional                                  # 타입
 
-from ncn.security.ignore import throw_if_file_is_security_concern   # 민감 파일 차단
+from ncn.compat import cn_compat                             # [ncn 부록B S4] cn 원래 동작 스위치
+from ncn.security.ignore import is_security_concern, security_concern_error, throw_if_file_is_security_concern   # 민감 파일 차단
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
 from ncn.tools.findreplace import REASON_FILE_TOO_LARGE, REASON_UNKNOWN, REASON_UNSPECIFIED   # 오류 이유
 from ncn.tools.formatters import exists_sync, format_tool_argument, read_file_utf8, realpath_sync, to_locale_string   # Node fs 흉내
@@ -41,12 +42,20 @@ def _strip_dot_slash(filepath: str) -> str:                 # 경로 앞의 './'
 
 
 async def _preprocess(args: dict) -> PreprocessResult:      # Read 의 preprocess(민감 파일 검사 + 미리보기)
-    """preprocess — './' 뗀 원문 경로로 민감 파일 검사(실경로 전), 미리보기."""
+    """preprocess — './' 뗀 원문 경로로 민감 파일 검사(실경로 전), 미리보기. [ncn 부록B S4] 실경로로도 검사."""
     filepath = args["filepath"]                              # let { filepath } = args
     if not isinstance(filepath, str):                        # JS: filepath.startsWith 가 함수 아님
         raise ContinueError(REASON_UNKNOWN, "filepath.startsWith is not a function")  # 문자열이 아니면 JS 와 같은 오류
     filepath = _strip_dot_slash(filepath)                   # './' 제거
     throw_if_file_is_security_concern(filepath)              # 민감 파일이면 오류
+    if not cn_compat() and exists_sync(filepath):            # [ncn 부록B S4] 고친 동작: 링크를 따라간 실제 경로로도 판정
+        # cn 원래 동작: 링크 따라가기 전 경로로만 판정 → 'notes.txt -> .env' 같은 심볼릭 링크로 우회. NCN_CN_COMPAT=1 이면 cn 동작
+        try:                                                # 실경로 구하기 실패(권한 등)는 run 에서 cn 글로 처리되게 둠
+            real_path = realpath_sync(filepath)              # 링크를 푼 실제 경로(run 이 읽는 경로와 같음)
+        except Exception:                                    # 실경로를 못 구하면
+            real_path = None                                # 실경로 판정 생략
+        if real_path is not None and is_security_concern(real_path):   # 실제 경로가 민감 파일이면(둘 중 하나라도 걸리면 거부)
+            raise security_concern_error(filepath)          # cn과 같은 글(모델이 준 경로로 표시)
     return PreprocessResult(args=args, preview=[ToolCallPreview("text", f"Will read {format_tool_argument(filepath)}")])  # "Will read ..." 미리보기와 함께 반환
 
 

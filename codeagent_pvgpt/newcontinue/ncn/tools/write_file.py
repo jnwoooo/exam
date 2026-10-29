@@ -1,15 +1,17 @@
 # ncn/tools/write_file.py — Write 도구 + diff 만들기. cn extensions/cli/src/tools/writeFile.ts
 # diff 는 cn이 쓰는 npm "diff" 8.0.4 의 createTwoFilesPatch 와 글자 하나까지 같게: 줄 단위 Myers 알고리즘(diff/base.js)과
 # 패치 형식(patch/create.js)을 그대로 옮겼다. difflib 은 같은 변경도 줄 맞춤이 달라질 수 있어 쓰지 않음
-# Write 는 민감 파일 검사·Read 선행 검사·Read 기록이 모두 없다(cn 그대로)
+# Write 는 Read 선행 검사·Read 기록이 없다(cn 그대로). 민감 파일 검사는 cn에 없지만 ncn은 한다([ncn 부록B S6], NCN_CN_COMPAT=1 이면 cn처럼 없음)
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 import re                                                    # 줄 나누기
 from typing import Optional                                  # 타입
 
+from ncn.compat import cn_compat                             # [ncn 부록B S6] cn 원래 동작 스위치
+from ncn.security.ignore import is_security_concern, security_concern_error, throw_if_file_is_security_concern   # 민감 파일 판정([ncn 부록B S6])
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
 from ncn.tools.findreplace import REASON_FILE_WRITE_ERROR, REASON_UNKNOWN   # 오류 이유
-from ncn.tools.formatters import exists_sync, mkdir_recursive, path_dirname, read_file_utf8, write_file_utf8   # Node fs·path
+from ncn.tools.formatters import exists_sync, mkdir_recursive, path_dirname, read_file_utf8, realpath_sync, write_file_utf8   # Node fs·path
 
 
 # ───────────────────────── npm diff 8.0.4 — diffLines (diff/base.js + diff/line.js) ─────────────────────────
@@ -229,6 +231,19 @@ def generate_diff(old_content: str, new_content: str, file_path: str) -> str:  #
 
 
 # ───────────────────────── Write 도구 ─────────────────────────
+def _throw_if_write_target_is_security_concern(filepath: str) -> None:   # [ncn 부록B S6] Write 대상 민감 파일 판정
+    """'./' 뗀 경로(Read 와 같은 규칙)로 판정하고, 있는 파일(링크 포함)이면 실경로로도 판정(S4와 같게). 걸리면 cn 원문 글."""
+    shown = filepath[2:] if filepath.startswith("./") else filepath   # Read 처럼 앞 './' 만 뗌
+    throw_if_file_is_security_concern(shown)                 # 경로 판정(형식 오류도 Read 와 같은 글)
+    if exists_sync(shown):                                   # 이미 있는 파일(링크)이면
+        try:                                                # 실경로 구하기 실패는 무시
+            real_path = realpath_sync(shown)                 # 링크를 푼 실제 경로
+        except Exception:                                    # 실패하면
+            return                                          # 실경로 판정 생략
+        if is_security_concern(real_path):                   # 실제 대상이 민감 파일이면
+            raise security_concern_error(shown)             # 같은 글로 거부
+
+
 async def _preprocess(args: dict) -> PreprocessResult:      # Write 의 preprocess(미리보기 만들기)
     """preprocess — 기존 파일이면 diff 미리보기(문맥 2줄), 새 파일이면 앞 3줄."""
     filepath = args.get("filepath") if isinstance(args, dict) else None   # args?.filepath
@@ -239,6 +254,8 @@ async def _preprocess(args: dict) -> PreprocessResult:      # Write 의 preproce
         raise ContinueError(REASON_UNKNOWN, "Filepath must be a string")  # 오류(cn 일반 Error)
     if not isinstance(content, str):                        # 내용이 문자열이 아니면
         raise ContinueError(REASON_UNKNOWN, "New file content must be a string")  # 오류(cn 일반 Error)
+    if not cn_compat():                                     # [ncn 부록B S6] 고친 동작: Write 도 민감 파일 판정(cn은 판정 없이 .env 등도 덮어씀)
+        _throw_if_write_target_is_security_concern(filepath)   # 경로·실경로 중 하나라도 민감하면 Read·Edit 와 같은 글로 거부
     try:                                                    # 기존 파일 diff 를 시도
         if exists_sync(filepath):                            # 기존 파일
             old_content = read_file_utf8(filepath)          # 옛 내용을 읽는다

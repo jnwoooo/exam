@@ -1,5 +1,7 @@
 # ncn/tools/ask_question.py — AskQuestion 도구(사용자에게 되묻기). cn extensions/cli/src/tools/askQuestion.ts + services/QuizService.ts
 # 질문을 "대기 중 질문"으로 걸어 두고, 화면(대화형·ACP _ncn/ask)이 answer_question 으로 답하면 이어진다
+# [ncn 부록B B3] 답할 화면이 없으면(on_question_requested 에 등록된 함수 없음 = 헤드리스) 끝없이 기다리지 않고 바로 오류 결과.
+#   도구 목록·설명은 cn 그대로(요청 본문 불변). NCN_CN_COMPAT=1 이면 cn처럼 끝없이 기다림
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 import asyncio                                               # 답 기다리기
@@ -7,7 +9,12 @@ import time                                                  # requestId
 from dataclasses import dataclass                            # 자료
 from typing import Callable, Optional                        # 타입
 
-from ncn.tools.base import Tool                              # 공용 형식
+from ncn.compat import cn_compat                             # [ncn 부록B B3] cn 원래 동작 스위치
+from ncn.tools.base import ContinueError, Tool               # 공용 형식
+
+# [ncn 부록B B3] 답할 화면이 없을 때 모델에게 돌려줄 글(cn에는 없음 — 루프가 "Error executing tool AskQuestion: …"로 감쌈)
+NO_ANSWERER_MESSAGE = ("No user is available to answer questions in this session (headless mode). "  # 답할 사람이 없다는 안내
+                       "Do not call AskQuestion again; proceed using your best judgment and state any assumptions.")  # 다시 부르지 말고 가정하고 진행하라는 안내
 
 
 @dataclass                                                  # 자료 클래스로 선언
@@ -75,6 +82,8 @@ async def _run(args: dict, context=None) -> str:            # run 훅: 질문을
     question = args.get("question")                          # 질문
     options = args.get("options")                            # 선택지
     default_answer = args.get("defaultAnswer")               # 기본 답
+    if not quiz_service.on_question_requested and not cn_compat():   # [ncn 부록B B3] 답할 화면이 없음(헤드리스) — cn 원래 동작은 끝없이 기다림
+        raise ContinueError("unknown", NO_ANSWERER_MESSAGE)  # 바로 오류 결과(무한 대기 대신)
     answer = await quiz_service.ask_question(question, options, default_answer)   # 답 기다림
     if options and isinstance(options, list) and len(options) > 0:   # options && options.length > 0
         selected_index = _js_index_of(options, answer)       # 몇 번째

@@ -147,8 +147,13 @@ def test_table_72(no, line, base, command, expected):       # 한 행의 시험 
     assert ev(base, command) == expected                    # 판정 결과가 기대와 같아야 한다
 
 
+CN_COMPAT_ROWS = {"A27"}                                     # [ncn 부록B S3] cn 기대값을 compat 모드로 시험하는 행(고친 값은 test_ncn_fixes)
+
+
 @pytest.mark.parametrize("no,command,expected", TABLE_73, ids=[r[0] for r in TABLE_73])  # 7.3 표를 행마다 시험하는 매개변수화
-def test_table_73(no, command, expected):                   # 한 행의 시험 함수
+def test_table_73(no, command, expected, monkeypatch):      # 한 행의 시험 함수
+    if no in CN_COMPAT_ROWS:                                 # [ncn 부록B S3] 고친 동작과 다른 cn 행은 cn 동작으로
+        monkeypatch.setenv("NCN_CN_COMPAT", "1")            # cn 원래 동작 켜기
     assert ev(WO, command) == expected                      # base를 자동 승인으로 두고 판정 비교
 
 
@@ -190,7 +195,9 @@ def test_parse_error_prints_to_stderr_only(capsys):         # 파싱 실패 시 
     ("echo $_x $-y", ["echo", "", ""]),                      # 특수 변수 뒤 한 글자(x, y)를 건너뜀(원본 특이 동작)
     ("", []),                                               # 빈 문자열은 빈 토큰 목록
 ])                                                          # 사례 목록 끝
-def test_shell_quote_parse(src, tokens):                    # 파싱 시험 함수
+def test_shell_quote_parse(src, tokens, monkeypatch):       # 파싱 시험 함수
+    if "foo#bar" in src:                                     # [ncn 부록B S3] 단어 중간 # 사례는 cn 동작으로(고친 값은 test_ncn_fixes)
+        monkeypatch.setenv("NCN_CN_COMPAT", "1")            # cn 원래 동작 켜기
     assert shell_quote_parse(src) == tokens                 # 토큰 목록이 원본 Node 출력과 같아야 한다
 
 

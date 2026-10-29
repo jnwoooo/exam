@@ -57,7 +57,7 @@ def test_bash_metadata(tmp_path):                           # Bash 메타데이�
     assert t.parameters["properties"]["timeout"]["description"] == "Optional timeout in seconds (max 600). Use this parameter for commands that take longer than the default 180 second timeout."  # timeout 설명 원문
 
 
-def test_bash_shell_command_by_platform(monkeypatch):       # 플랫폼별 셸 명령 시험
+def test_bash_shell_command_by_platform(monkeypatch, cn_compat_env):  # 플랫폼별 셸 명령 시험(cn 명령 모양 — [ncn 부록B B4] 고친 win32 앞부분은 test_ncn_fixes)
     """Windows 는 powershell.exe, 그 밖은 $SHELL -l -c(없으면 /bin/bash)."""
     formatters.PLATFORM_OVERRIDE = "win32"                  # win32 로 가장
     assert bash_mod.get_shell_command("dir") == ("powershell.exe", ["-NoLogo", "-ExecutionPolicy", "Bypass", "-Command", "dir"])  # powershell 명령 형태
@@ -414,7 +414,7 @@ def test_checklist():                                       # Checklist 시험
     assert run(CHECKLIST_TOOL.preprocess({"checklist": checklist})).preview[0].type == "checklist"  # 미리보기 종류는 checklist
 
 
-def test_ask_question_answers():                            # AskQuestion 답 처리 시험
+def test_ask_question_answers(cn_compat_env):               # AskQuestion 답 처리 시험(듣는 화면 없이 답함 — [ncn 부록B B3] cn 동작으로)
     """선택지 번호·직접 답·자유 답 글."""
     async def ask(args, answer):                            # 질문하고 답하는 도우미
         task = asyncio.ensure_future(ASK_QUESTION_TOOL.run(args))  # 질문을 비동기로 시작

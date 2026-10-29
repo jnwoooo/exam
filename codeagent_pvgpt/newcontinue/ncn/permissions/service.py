@@ -158,7 +158,10 @@ class PermissionService:                                    # 권한 서비스 �
         """useChat.ts handleToolPermissionResponse(createPolicy) — 규칙 생성 → permissions.yaml allow에 추가 → 다시 읽기.
         실패해도 승인은 그대로 진행(원문: 오류만 기록)."""
         try:                                                # 실패해도 승인 흐름은 계속
-            rule = generate_policy_rule(tool_name, args)     # 예: "Bash(npm*)", "Write"
+            rule = generate_policy_rule(tool_name, args)     # 예: "Bash(npm install)"(cn은 "Bash(npm*)"), "Write"
+            if rule is None:                                 # [ncn 부록B S1·S2] 정확 일치로 적을 수 없는 명령 — cn은 이때도 넓은 규칙을 저장
+                logger.info("No policy rule saved for %s (command cannot be matched exactly)", tool_name)   # 저장 안 함 로그(이번 승인은 그대로)
+                return                                      # 규칙 없이 끝(이번 한 번만 허용)
             add_policy_to_yaml(self.yaml_path, rule)         # 파일에 추가
             logger.debug("Policy created: %s", rule)        # 생성 로그
             self.reload_permissions()                        # 재시작 없이 반영

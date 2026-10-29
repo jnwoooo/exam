@@ -197,7 +197,7 @@ def test_load_permissions_yaml_validation(tmp_path):        # yaml 읽기 검증
     ("Bash", {}, "Bash"), ("Bash", {"command": ""}, "Bash"), ("Bash", {"command": "   "}, "Bash"),  # 명령 없으면 도구 이름
     ("bash", {"command": "ls"}, "bash"), ("Bash", {"command": "| ls"}, "Bash"),   # 첫 명령이 비면 도구 전체 허용 규칙
 ])                                                          # 표 끝
-def test_generate_policy_rule(name, args, rule):            # 표의 각 행으로 규칙 생성 시험
+def test_generate_policy_rule(name, args, rule, cn_compat_env):  # 표의 각 행으로 규칙 생성 시험(cn 기대값 — [ncn 부록B S1·S2] 고친 동작은 test_ncn_fixes)
     assert generate_policy_rule(name, args) == rule         # 생성된 규칙이 기대와 같아야 함
 
 
@@ -256,7 +256,7 @@ def test_service_modes_and_cycle(tmp_path):                 # 모드 전환과 �
         PermissionService(headless=False, global_dir=tmp_path, readonly=True, auto=True)  # 오류 발생 호출
 
 
-def test_add_always_allow_writes_yaml_and_reloads(tmp_path):  # 항상 허용 규칙 저장·재로드 시험
+def test_add_always_allow_writes_yaml_and_reloads(tmp_path, cn_compat_env):  # 항상 허용 규칙 저장·재로드 시험(cn 동작 — [ncn 부록B S1])
     svc = PermissionService(headless=False, global_dir=tmp_path, allow=["Fetch"])  # Fetch를 CLI로 허용한 서비스
     svc.add_always_allow("Bash", {"command": "git status"})  # 규칙 저장
     text = (tmp_path / "permissions.yaml").read_text(encoding="utf-8")  # 저장된 yaml 읽기

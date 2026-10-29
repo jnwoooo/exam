@@ -1,11 +1,13 @@
 # ncn/tools/multi_edit.py — MultiEdit 도구(한 파일에 여러 찾아 바꾸기를 차례로, 전부 되거나 전부 안 되게). cn extensions/cli/src/tools/multiEdit.ts
-# 경로 검증은 Edit 와 같은 validate_and_resolve_file_path(Read 선행·민감 파일). preprocess 에서 전부 계산하고 run 은 쓰기만
+# 경로 검증은 Edit 와 같은 validate_and_resolve_file_path(Read 선행·민감 파일). preprocess 에서 전부 계산하고 run 은 쓰기만(cn)
+# [ncn 부록B B6] ncn은 run 에서 다시 읽어 바뀌었으면 edits 를 다시 차례로 적용(실패면 cn 형식 오류, 아무것도 안 씀). NCN_CN_COMPAT=1 이면 cn 동작
 from __future__ import annotations                           # 타입 주석 지연 평가
 
 from typing import Optional                                  # 타입
 
 from ncn.tools.base import ContinueError, PreprocessResult, Tool, ToolCallPreview, ToolRunContext   # 공용 형식
-from ncn.tools.edit import EDIT_TOOL, validate_and_resolve_file_path   # Edit 와 같은 경로 검증
+from ncn.compat import cn_compat                             # [ncn 부록B B6] cn 원래 동작 스위치
+from ncn.tools.edit import EDIT_TOOL, REDO_KEY, validate_and_resolve_file_path   # Edit 와 같은 경로 검증·B6 재료 키
 from ncn.tools.findreplace import REASON_FILE_WRITE_ERROR, execute_multi_find_and_replace, validate_multi_edit   # 찾아 바꾸기
 from ncn.tools.formatters import read_file_utf8, write_file_utf8   # Node fs 흉내
 from ncn.tools.read_file import READ_TOOL                    # 설명에 들어가는 이름
@@ -25,17 +27,25 @@ async def _preprocess(args: dict) -> PreprocessResult:      # MultiEdit 의 prep
     new_content = execute_multi_find_and_replace(current_content, edits)   # 차례로 적용(실패하면 오류 — 아무것도 안 씀)
     diff = generate_diff(current_content, new_content, resolved_path)   # 미리보기 diff
     return PreprocessResult(                                # run 인자와 미리보기를 묶어 반환
-        args={"file_path": resolved_path, "newContent": new_content, "originalContent": current_content, "editCount": len(edits)},  # run 에 넘길 인자(경로·새 내용·옛 내용·편집 수)
+        args={"file_path": resolved_path, "newContent": new_content, "originalContent": current_content, "editCount": len(edits),  # run 에 넘길 인자(경로·새 내용·옛 내용·편집 수)
+              **({} if cn_compat() else {REDO_KEY: edits})},  # [ncn 부록B B6] 고친 동작에서만 run 에서 다시 적용할 edits 를 붙임(LLM 요청에는 안 들어감)
         preview=[ToolCallPreview("text", f"Will apply {len(edits)} edit{_plural(len(edits))} to {resolved_path}:"),  # 미리보기: 안내 글
                  ToolCallPreview("diff", diff)],            # 미리보기: diff
     )                                                       # PreprocessResult 닫기
 
 
 async def _run(args: dict, context: Optional[ToolRunContext] = None) -> str:  # MultiEdit 의 run(쓰기만 한다)
-    """run — 새 내용을 쓰고 diff 를 돌려줌."""
+    """run — 새 내용을 쓰고 diff 를 돌려줌. [ncn 부록B B6] 쓰기 전에 다시 읽어 바뀌었으면 다시 적용."""
     try:                                                    # 쓰기 시도
-        write_file_utf8(args["file_path"], args["newContent"])   # 쓰기
-        diff = generate_diff(args["originalContent"], args["newContent"], args["file_path"])   # 결과용 diff
+        original, new_content = args["originalContent"], args["newContent"]   # preprocess 때 계산한 내용
+        edits = args.get(REDO_KEY)                           # [ncn 부록B B6] 다시 적용할 edits(없으면 cn처럼 그대로 씀)
+        if edits is not None and not cn_compat():            # [ncn 부록B B6] 고친 동작(cn 원래 동작: 미리 계산한 내용을 그대로 씀)
+            current = read_file_utf8(args["file_path"])      # 승인 뒤 실행 시점의 내용
+            if current != original:                          # 승인 대기 중 바뀌었으면
+                new_content = execute_multi_find_and_replace(current, edits)   # 지금 내용에 차례로 다시 적용(하나라도 실패하면 cn 글로 오류)
+                original = current                          # diff 기준도 지금 내용
+        write_file_utf8(args["file_path"], new_content)      # 쓰기
+        diff = generate_diff(original, new_content, args["file_path"])   # 결과용 diff
         n = args["editCount"]                                # 편집 수
         return f"Successfully edited {args['file_path']} with {n} edit{_plural(n)}\nDiff:\n{diff}"  # 성공 메시지 + diff
     except ContinueError:                                   # ContinueError 는 그대로 올린다

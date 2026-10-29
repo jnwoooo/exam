@@ -18,6 +18,8 @@ from urllib.parse import urlsplit, urlunsplit                # localhost → 127
 
 import httpx                                                 # HTTP 클라이언트
 
+from ncn.compat import cn_compat                             # [ncn 부록B B1] cn 원래 동작 스위치
+
 # ─────────────────────────────────────────────────────────────────────────────
 # JS 호환 JSON — cn은 JSON.parse / JSON.stringify를 쓴다. 숫자 표기·키 순서·undefined 생략을 같게 만든다
 # ─────────────────────────────────────────────────────────────────────────────
@@ -485,8 +487,10 @@ class LLMClient:                                            # 스트리밍 클�
         self.request_options = request_options or {}        # 요청 옵션(없으면 빈 dict)
         self.sdk_max_retries = sdk_max_retries               # SDK 층 재시도 횟수
         ro_timeout = self.request_options.get("timeout")     # 설정의 timeout(문서상 초)
-        # OpenAI.ts:47 — `timeout: requestOptions.timeout || undefined`를 SDK에 그대로 넘긴다. SDK는 이 값을 **밀리초**로 쓴다(cn 버그 후보).
-        self.sdk_timeout_ms: float = float(ro_timeout) if ro_timeout else SDK_DEFAULT_TIMEOUT_MS  # SDK 시간 제한(ms) — 설정값 또는 기본 10분
+        # OpenAI.ts:47 — `timeout: requestOptions.timeout || undefined`를 SDK에 그대로 넘긴다. SDK는 이 값을 **밀리초**로 쓴다(cn 버그: 60 → 60ms).
+        # [ncn 부록B B1] 고친 동작: 설정값(초)을 ×1000 해 밀리초로. NCN_CN_COMPAT=1 이면 cn처럼 그대로(밀리초로 해석)
+        sdk_scale = 1 if cn_compat() else 1000               # [ncn 부록B B1] 초 → 밀리초 배율(cn 동작이면 1)
+        self.sdk_timeout_ms: float = float(ro_timeout) * sdk_scale if ro_timeout else SDK_DEFAULT_TIMEOUT_MS  # SDK 시간 제한(ms) — 설정값 또는 기본 10분
         self.socket_timeout_s: float = float(ro_timeout) if ro_timeout is not None else AGENT_DEFAULT_TIMEOUT_S   # 소켓 시간 제한(초, getAgentOptions)
         self._own_http = http is None                        # 직접 만든 클라이언트면 닫을 책임
         self.http = http or self._make_http()                # HTTP 클라이언트
