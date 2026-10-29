@@ -1,0 +1,24 @@
+# pyproject.toml — ncn(Continue 호환 CLI 하네스). 코드에이전트 서버와 별개 프로그램(사용자 PC에 배포)
+[project]
+name = "ncn"                                   # 명령 이름도 ncn
+version = "0.0.1"                              # P0 뼈대
+description = "Continue CLI(cn) 호환 하네스 + VS 2022 확장용 ACP stdio"
+requires-python = ">=3.10"                     # 하한 3.10 = 공식 mcp·ACP SDK 요구(계획 14-5). 개발 기준은 3.14
+dependencies = []                              # P1부터 추가(httpx·PyYAML·mcp·agent-client-protocol·tiktoken 등)
+
+[project.scripts]
+ncn = "ncn.__main__:main"                      # uv run ncn
+
+[dependency-groups]
+dev = ["pytest>=8"]                            # 시험
+
+[build-system]
+requires = ["hatchling"]                       # 빌드 도구
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ncn"]                             # 배포 묶음에 넣을 패키지
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]                          # 시험 폴더
+pythonpath = ["."]                             # parity 모듈을 import 하기 위해

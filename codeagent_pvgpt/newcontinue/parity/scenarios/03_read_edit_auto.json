@@ -1,0 +1,13 @@
+{
+  "name": "03_read_edit_auto",
+  "description": "Read → Edit(--auto로 승인 생략) — Edit 결과 글과 파일 결과 비교",
+  "workspace": {"files": {"coupon.py": "def discount(price):\n    return price * 0.9\n"}},
+  "prompt": "할인율을 20%로 바꿔줘",
+  "args": ["--auto"],
+  "llm": [
+    {"tool_calls": [{"name": "Read", "arguments": {"filepath": "coupon.py"}}]},
+    {"tool_calls": [{"name": "Edit", "arguments": {"file_path": "coupon.py", "old_string": "price * 0.9", "new_string": "price * 0.8"}}]},
+    {"content": "20%로 바꿨습니다."}
+  ],
+  "expect": {"files": {"coupon.py": "def discount(price):\n    return price * 0.8\n"}, "requests": 3}
+}

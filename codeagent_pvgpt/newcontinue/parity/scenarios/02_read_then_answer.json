@@ -1,0 +1,12 @@
+{
+  "name": "02_read_then_answer",
+  "description": "Read 도구 결과 글(Content of ...) 형식과 tool 메시지 펼치기 비교",
+  "workspace": {"files": {"coupon.py": "def discount(price):\n    return price * 0.9\n"}},
+  "prompt": "coupon.py의 할인율이 얼마야?",
+  "args": [],
+  "llm": [
+    {"tool_calls": [{"name": "Read", "arguments": {"filepath": "coupon.py"}}]},
+    {"content": "10% 할인입니다."}
+  ],
+  "expect": {"files": {"coupon.py": "def discount(price):\n    return price * 0.9\n"}, "requests": 2}
+}

@@ -1,0 +1,11 @@
+{
+  "name": "01_answer_only",
+  "description": "도구 없이 답만 — 시스템 메시지·도구 정의·요청 필드 비교의 기준점",
+  "workspace": {"files": {"README.md": "# shop\n"}},
+  "prompt": "안녕? 한 줄로 답해줘",
+  "args": [],
+  "llm": [
+    {"content": "안녕하세요! 무엇을 도와드릴까요?"}
+  ],
+  "expect": {"files": {"README.md": "# shop\n"}, "requests": 1}
+}
