@@ -1,0 +1,39 @@
+# config.template.yaml — ncn·Continue 공용 설정 틀(cn 호환 config.yaml). 원본: codeagent_pvgpt/continue/config.yaml
+# install.cmd 가 %USERPROFILE%\.continue\config.yaml 이 "없을 때만" 이 파일을 복사한다(있으면 Continue 사용자의 설정을 그대로 씀).
+# 복사할 때 아래의 http://localhost:8200 을 설치 중 입력한 서버 주소로 바꾼다(직접 복사했다면 손으로 바꾼다).
+# 모델(apiBase)과 MCP 모두 코드에이전트 서버(:8200)를 가리킨다 — 외부 LLM 주소·키는 PC에 두지 않는다.
+# 개인 토큰은 %USERPROFILE%\.continue\.env 에 CODEAGENT_TOKEN=ca-... 로 넣는다(install.cmd 가 물어봄) — 이 파일에 평문으로 적지 않음.
+name: 사내 코딩 에이전트                       # 설정 이름(화면 표시용)
+version: 1.0.0                                # 설정 버전
+schema: v1                                    # Continue 설정 형식 버전
+
+models:                                       # 사용할 모델 목록
+  - name: gemma4 (코드에이전트 경유)            # 표시 이름
+    provider: openai                          # OpenAI 호환 주소면 openai
+    model: gemma4-26b-32k:latest              # 서버가 어차피 실제 모델로 고정하지만 표시용으로 맞춤
+    apiBase: http://localhost:8200/v1         # ★ 코드에이전트 서버 프록시(토큰 → 사번 → 한도 → gemma4)
+    apiKey: ${{ secrets.CODEAGENT_TOKEN }}    # 개인 토큰(.env 에서 찾음 — 사용량이 이 사번으로 기록됨)
+    roles: [chat, edit, apply]                # 채팅·편집·적용에 사용(자동완성은 쓰지 않음)
+    capabilities: [tool_use]                  # Agent 모드에 필요 — 자동 감지가 안 되는 모델은 직접 적는다
+    defaultCompletionOptions:                 # 기본 생성 옵션
+      contextLength: 32768                    # gemma4-26b-32k의 컨텍스트 — 대화를 줄이는(압축) 기준
+      maxTokens: 4096                         # 한 번 답의 최대 길이
+    requestOptions:                           # 요청 옵션
+      timeout: 180                            # 모델 요청 시간 제한(초)
+      # caBundlePath: C:\certs\corp-ca.pem    # 사내 HTTPS 인증서가 필요하면 주석을 풀고 CA 파일 경로를 적는다
+
+mcpServers:                                   # 사내 도구(MCP) 서버 목록
+  - name: codeagent                           # 서버 이름(표시·오류 글용)
+    type: streamable-http                     # 원격 MCP(HTTP)
+    url: http://localhost:8200/mcp            # 코드에이전트 서버의 MCP
+    requestOptions:                           # 요청 옵션
+      headers:                                # 보낼 헤더
+        Authorization: Bearer ${{ secrets.CODEAGENT_TOKEN }}   # 같은 개인 토큰 → 사번 → RAG 권한 필터
+      timeout: 120                            # 도구 호출 시간 제한 — request_fix(재시도 포함)가 이보다 길면 실패
+
+rules:                                        # 모든 대화에 붙는 규칙
+  - 코드 수정 전에는 반드시 read_file로 로컬 파일을 읽어 현재 내용을 확인한다.
+  - search_code 결과는 서버 색인(main 기준) 힌트다. 로컬 파일과 다르면 로컬을 따른다.
+  - 사내 규칙이 걸린 수정이나 여러 곳을 고치는 수정은 request_fix로 검증된 수정안을 받은 뒤 편집 도구로 적용한다.
+  - 범위가 넓은 요청(예 "결제 에러 고쳐줘")은 먼저 오류 메시지나 재현 방법을 묻는다.
+  - 비밀번호·토큰·.env 내용은 읽거나 출력하지 않는다.

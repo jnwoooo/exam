@@ -1,0 +1,9 @@
+# packaging/.gitattributes — 줄바꿈 고정(어느 OS 에서 체크아웃해도 같은 결과). 묶음에 넣을 때 build.py 가 한 번 더 맞춘다
+*.cmd text eol=crlf
+# ↑ cmd 배치 파일: LF 면 goto·라벨·긴 줄 해석이 깨지므로 CRLF
+*.ps1 text eol=crlf
+# ↑ PowerShell: Windows 도구들과 맞춤
+*.sh text eol=lf
+# ↑ 셸 스크립트: CRLF 면 /bin/sh 가 "\r" 을 명령 일부로 읽음
+*.spec text eol=lf
+# ↑ PyInstaller 설정(파이썬 문법) — LF

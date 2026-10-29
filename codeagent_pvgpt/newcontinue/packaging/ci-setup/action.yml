@@ -1,0 +1,26 @@
+# packaging/ci-setup/action.yml — GitHub Actions 공통 준비 단계(composite action): uv 설치 → 파이썬 → 의존성 동기화
+# 쓰는 곳: .github/workflows/ncn.yml 의 test·parity·build job(체크아웃 뒤 `uses: ./codeagent_pvgpt/newcontinue/packaging/ci-setup`)
+#          VSIX 워크플로(ncn-vsix.yml)도 build_win.ps1 을 부르기 전에 이것을 쓰면 같은 환경이 된다.
+name: ncn-ci-setup                                         # 액션 이름
+description: uv + Python + ncn 의존성 준비(newcontinue 프로젝트)   # 설명
+inputs:                                                    # 입력
+  python-version:                                          # 파이썬 버전(uv 요청 형식 — 3.14, 3.10, cpython-3.14-windows-aarch64-none 등)
+    description: uv 가 받을 파이썬 버전
+    required: false                                        # 선택
+    default: "3.14"                                        # 기본은 개발 기준 3.14
+runs:                                                      # 실행 내용
+  using: composite                                         # 여러 단계 묶음
+  steps:                                                   # 단계들
+    - name: uv 설치                                         # uv(파이썬·의존성 관리자)
+      uses: astral-sh/setup-uv@v6                          # 공식 설치 액션
+      with:                                                # 설정
+        python-version: ${{ inputs.python-version }}       # UV_PYTHON 으로 지정됨(이후 uv run 이 이 버전을 씀)
+        enable-cache: true                                 # 내려받은 패키지 캐시(러너 사이 재사용)
+        cache-dependency-glob: codeagent_pvgpt/newcontinue/uv.lock   # 잠금 파일이 바뀌면 캐시 새로
+    - name: 파이썬·의존성 동기화                              # .venv 만들기(uv.lock 기준)
+      shell: bash                                          # 모든 OS 에서 bash(Windows 는 Git Bash)
+      working-directory: codeagent_pvgpt/newcontinue       # ncn 프로젝트 폴더
+      run: |                                               # 명령
+        uv python install                                  # UV_PYTHON 버전 받기(이미 있으면 건너뜀)
+        uv sync                                            # 의존성 설치(dev 그룹 포함 — pytest)
+        uv run python -c "import sys, platform; print(sys.version); print(platform.machine())"   # 실제 파이썬·CPU 확인(로그용)

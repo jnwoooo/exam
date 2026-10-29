@@ -82,6 +82,7 @@ def build_parser() -> argparse.ArgumentParser:              # 명령줄 파서�
     p.add_argument("--beta-subagent-tool", action="store_true", default=None, help="Enable beta Subagent tool for invoking subagents")  # --beta-subagent-tool: 베타 Subagent 도구
     # ── ncn 전용 ──
     p.add_argument("--stdio", action="store_true", help="ACP stdio 모드(P2) — VS 2022 확장용")  # --stdio: ACP 모드(ncn 전용, ncn/acp/server.py)
+    p.add_argument("--doctor", action="store_true", help="설치·연결 점검(ncn 전용)")  # --doctor: 설정·서버·MCP·콘솔 점검(ncn/doctor.py)
     p.add_argument("-v", "--version", action="version", version=f"ncn {__version__}", help="Display version number")  # -v/--version: 버전 출력
     return p                                                # 파서 반환
 
@@ -430,6 +431,9 @@ def main(argv: Optional[list[str]] = None) -> int:          # 프로그램 진�
     from ncn.config.env import apply_dotenv                  # dotenv.config() — 모듈 로드 시점(가장 먼저)
     apply_dotenv(os.environ, os.fspath(cwd))                # <cwd>/.env 를 환경변수에 반영
 
+    if "--doctor" in argv:                                   # [ncn 추가] 설치·연결 점검은 다른 모드보다 먼저
+        from ncn.doctor import main as doctor_main           # 점검 모듈(--config·--format json 등은 직접 해석)
+        return doctor_main(argv)                             # 실패 있으면 1, 없으면 0, 옵션 오류 2
     if argv and argv[0] in SUBCOMMANDS:                      # cn 하위 명령
         sys.stderr.write(NOT_IMPLEMENTED.format(ver=__version__, what=f"'{argv[0]}' 하위 명령") + "\n")  # 하위 명령은 미구현 안내
         return 2                                            # 종료 코드 2

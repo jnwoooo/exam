@@ -1,0 +1,232 @@
+# .github/workflows/ncn.yml — ncn(codeagent_pvgpt/newcontinue) 시험·차등 시험·실행 파일 빌드·릴리스
+# 왜 CI 에서 빌드하나: PyInstaller 는 교차 빌드가 안 된다(Windows exe 는 Windows 에서만) — 개발 PC 는 macOS(계획 14-6, P0_결과 4장)
+# 산출물: ncn-<버전>-<os>-<arch>.zip + .sha256 → Actions 아티팩트(항상), GitHub Release 첨부(태그 ncn-v* 일 때)
+# 공통 준비 단계는 codeagent_pvgpt/newcontinue/packaging/ci-setup(composite action), 빌드는 packaging/build_win.ps1·build_unix.sh
+# VSIX 는 별도 워크플로(ncn-vsix.yml)가 packaging/build_win.ps1 <출력 폴더> 를 불러 ncn 폴더를 넣는다.
+name: ncn                                                      # 워크플로 이름(Actions 화면)
+
+on:                                                            # 언제 도는가
+  push:                                                        # 푸시
+    branches: ["**"]                                           # 모든 가지(tags 만 적으면 가지 푸시에 안 돌기 때문에 둘 다 적는다)
+    tags: ["ncn-v*"]                                           # 릴리스 태그(예: ncn-v0.1.0) — 태그 푸시는 paths 조건을 보지 않는다
+    paths:                                                     # 가지 푸시는 이 경로가 바뀔 때만
+      - "codeagent_pvgpt/newcontinue/**"                       # ncn 프로젝트
+      - ".github/workflows/ncn.yml"                            # 이 워크플로
+  workflow_dispatch:                                           # 손으로 실행(Actions → ncn → Run workflow)
+    inputs:                                                    # 입력
+      parity:                                                  # 차등 시험 여부
+        description: "cn 과 차등 시험(parity) 실행"              # 설명
+        type: boolean                                          # 체크 상자
+        default: true                                          # 기본 실행
+
+permissions:                                                   # 기본 권한(최소)
+  contents: read                                               # 저장소 읽기만(릴리스 job 만 쓰기)
+
+concurrency:                                                   # 같은 가지에서 겹치면
+  group: ncn-${{ github.ref }}                                 # 가지·태그별 묶음
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}   # 가지는 이전 실행 취소, 태그는 끝까지
+
+env:                                                           # 모든 job 공통 환경변수
+  NCN_DIR: codeagent_pvgpt/newcontinue                         # ncn 프로젝트 폴더(저장소 루트 기준)
+  CN_COMMIT: 5522c6f                                           # 차등 시험 기준 cn 커밋(.ref 와 같음 — CLAUDE.md)
+  PYTHONUTF8: "1"                                              # 러너 파이썬 출력 UTF-8(Windows 로그 한글 깨짐 방지)
+
+jobs:                                                          # 작업들
+  # ── 1) 단위 시험: 3 OS × 파이썬 3.14(개발 기준)·3.10(하한) ──
+  test:                                                        # 시험 job
+    name: test (${{ matrix.os }}, py${{ matrix.python }})      # 화면 이름
+    runs-on: ${{ matrix.os }}                                  # 러너
+    strategy:                                                  # 행렬
+      fail-fast: false                                         # 하나가 실패해도 나머지는 끝까지(Windows 실패 결과를 보존·비교)
+      matrix:                                                  # 조합
+        os: [ubuntu-latest, macos-latest, windows-latest]      # OS
+        python: ["3.14", "3.10"]                               # 파이썬
+    defaults:                                                  # 기본값
+      run:                                                     # run 단계
+        working-directory: ${{ env.NCN_DIR }}                  # ncn 폴더에서
+        shell: bash                                            # 모든 OS bash
+    steps:                                                     # 단계
+      - uses: actions/checkout@v4                              # 소스 받기
+      - uses: ./codeagent_pvgpt/newcontinue/packaging/ci-setup   # uv·파이썬·의존성(공통 단계)
+        with:                                                  # 입력
+          python-version: ${{ matrix.python }}                 # 행렬의 파이썬
+      - name: pytest                                           # 시험(실패는 그대로 빨간색 — continue-on-error 쓰지 않음)
+        run: uv run pytest -q -rfE --junitxml=pytest-${{ matrix.os }}-${{ matrix.python }}.xml   # 실패·오류 요약 + JUnit 결과 파일
+      - name: 시험 결과 보관                                     # 실패해도 결과 파일을 남겨 웹 세션에서 분석
+        if: always()                                           # 성공·실패 모두
+        uses: actions/upload-artifact@v4                       # 아티팩트 올리기
+        with:                                                  # 설정
+          name: pytest-${{ matrix.os }}-py${{ matrix.python }}   # 아티팩트 이름
+          path: ${{ env.NCN_DIR }}/pytest-*.xml                # JUnit 파일
+          if-no-files-found: ignore                            # 시험 전에 실패했으면 없음
+
+  # ── 2) 차등 시험(선택): cn(Node) 빌드 → 같은 시나리오로 cn·ncn 비교 ──
+  parity:                                                      # 차등 시험 job
+    if: github.event_name != 'workflow_dispatch' || inputs.parity   # 손 실행에서 끄면 건너뜀
+    runs-on: ubuntu-latest                                     # 리눅스만(cn 동작은 OS 무관한 부분 비교)
+    defaults:                                                  # 기본값
+      run:                                                     # run 단계
+        working-directory: ${{ env.NCN_DIR }}                  # ncn 폴더
+        shell: bash                                            # bash
+    steps:                                                     # 단계
+      - uses: actions/checkout@v4                              # 소스 받기
+      - uses: ./codeagent_pvgpt/newcontinue/packaging/ci-setup   # uv·파이썬(3.14)·의존성
+      - uses: actions/setup-node@v4                            # Node(cn 실행·빌드)
+        with:                                                  # 설정
+          node-version: "20"                                   # cn 은 Node 18+ (.nvmrc 20.x)
+      - name: cn 빌드 결과 캐시                                   # dist 는 esbuild 로 묶인 단독 파일(node_modules 없이 실행됨)
+        id: cncache                                            # 단계 id
+        uses: actions/cache@v4                                 # 캐시
+        with:                                                  # 설정
+          path: ~/cn-dist                                      # 빌드된 cn(dist 폴더 사본)
+          key: cn-dist-${{ env.CN_COMMIT }}-node20-v1          # 커밋·Node 가 같으면 재사용
+      - name: npm 캐시                                          # 캐시가 없어 빌드할 때 npm 내려받기 줄이기
+        if: steps.cncache.outputs.cache-hit != 'true'          # 빌드할 때만
+        uses: actions/cache@v4                                 # 캐시
+        with:                                                  # 설정
+          path: ~/.npm                                         # npm 캐시 폴더
+          key: npm-cn-${{ env.CN_COMMIT }}-node20              # 커밋별
+      - name: cn 받기·빌드(기준 커밋)                              # CLAUDE.md 의 방법 그대로
+        if: steps.cncache.outputs.cache-hit != 'true'          # 캐시 없을 때만
+        working-directory: ${{ runner.temp }}                  # 임시 폴더에서
+        run: |                                                 # 명령
+          git clone --filter=blob:none --no-checkout https://github.com/continuedev/continue.git   # 내용 없이 받기(빠름)
+          cd continue && git checkout "$CN_COMMIT"             # 기준 커밋
+          cd extensions/cli                                    # cn 폴더
+          npm run build:local-deps                             # 내부 패키지들 빌드(config-yaml·openai-adapters·core 등)
+          npm run build                                        # cn 묶기(dist/cn.js)
+          node dist/cn.js --version                            # 동작 확인
+          mkdir -p ~/cn-dist && cp -R dist/. ~/cn-dist/        # 캐시할 곳으로 복사
+      - name: cn 버전                                           # 캐시본 동작 확인
+        run: node ~/cn-dist/cn.js --version                    # 버전 출력
+      - name: 차등 시험                                          # 시나리오 전부 — 결과는 parity/out
+        run: |                                                 # 명령(parity.run 은 차이가 있어도 0 — 결과는 아티팩트·요약으로 본다)
+          mkdir -p parity/out                                  # tee 가 쓸 폴더
+          uv run python -m parity.run --cn "node $HOME/cn-dist/cn.js" --ncn "uv run ncn" | tee parity/out/summary.txt   # 실행·요약 저장
+          { echo '### parity'; echo '```'; tail -n 40 parity/out/summary.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"   # 실행 화면 요약에 표시
+      - name: 차등 시험 결과 보관                                  # parity/out(시나리오별 cn.json·ncn.json·diff.txt)
+        if: always()                                           # 실패해도
+        uses: actions/upload-artifact@v4                       # 올리기
+        with:                                                  # 설정
+          name: parity-out                                     # 아티팩트 이름
+          path: ${{ env.NCN_DIR }}/parity/out                  # 결과 폴더
+          if-no-files-found: warn                              # 없으면 경고
+
+  # ── 3) 실행 파일 빌드 + 스모크 시험 + 묶음 zip ──
+  build:                                                       # 빌드 job
+    name: build (${{ matrix.label }})                          # 화면 이름
+    runs-on: ${{ matrix.os }}                                  # 러너
+    # windows-11-arm(arm64)은 실패해도 전체를 막지 않는다:
+    #   공개 저장소 전용·미리보기 러너라 대기·중단이 잦고, tiktoken 등 Rust 확장의 win_arm64 휠이 없으면 소스 빌드(Rust)로 실패할 수 있다.
+    #   현장 PC 대부분은 x64 이고, arm64 PC 는 x64 묶음도 에뮬레이션으로 돈다 → x64 가 필수, arm64 는 덤.
+    continue-on-error: ${{ matrix.optional }}                  # arm64 만 참
+    strategy:                                                  # 행렬
+      fail-fast: false                                         # 하나가 실패해도 나머지 빌드는 끝까지
+      matrix:                                                  # 조합
+        include:                                               # 직접 나열
+          - { label: windows-x64, os: windows-latest, python: "3.14", optional: false }   # 필수(현장 PC)
+          - { label: windows-arm64, os: windows-11-arm, python: "cpython-3.14-windows-aarch64-none", optional: true }   # 선택(arm64 파이썬을 명시)
+          - { label: macos-arm64, os: macos-latest, python: "3.14", optional: false }     # macOS(Apple 실리콘)
+          - { label: linux-x64, os: ubuntu-latest, python: "3.14", optional: false }      # Linux — 러너의 glibc 보다 오래된 배포판에서는 안 돌 수 있음
+    defaults:                                                  # 기본값
+      run:                                                     # run 단계
+        working-directory: ${{ env.NCN_DIR }}                  # ncn 폴더
+        shell: bash                                            # bash(Windows 는 아래 단계에서 powershell 지정)
+    steps:                                                     # 단계
+      - uses: actions/checkout@v4                              # 소스 받기
+      - uses: ./codeagent_pvgpt/newcontinue/packaging/ci-setup   # uv·파이썬·의존성
+        with:                                                  # 입력
+          python-version: ${{ matrix.python }}                 # 행렬의 파이썬
+      - name: 빌드(Windows)                                     # VSIX 워크플로와 같은 스크립트·인자
+        id: build_win                                          # 단계 id(출력: version·zip_name·exe …)
+        if: runner.os == 'Windows'                             # Windows 만
+        shell: powershell                                      # Windows PowerShell 5.1(현장·VSIX 와 같은 셸로 스크립트 검증)
+        run: .\packaging\build_win.ps1 dist                    # 출력 폴더 dist
+      - name: 빌드(macOS·Linux)                                 # 같은 build.py
+        id: build_unix                                         # 단계 id
+        if: runner.os != 'Windows'                             # 그 밖의 OS
+        run: sh packaging/build_unix.sh dist                   # 출력 폴더 dist
+      - name: 빌드 결과 정리                                      # 두 빌드 단계 중 실행된 쪽의 출력을 하나로
+        id: out                                                # 단계 id
+        run: |                                                 # build_info.json 에서 읽음(OS 무관)
+          uv run python -c "import json, os; d = json.load(open('dist/build_info.json', encoding='utf-8')); open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8', newline='\n').write(''.join(f'{k}={d[k]}\n' for k in ('version', 'os', 'arch', 'exe', 'zip_name', 'sha256')))"   # 출력 변수(Windows 에서도 LF — CRLF 가 값에 섞이지 않게)
+          cat dist/build_info.json                             # 로그
+      - name: 태그 버전 확인                                      # 태그 ncn-vX.Y.Z 와 ncn/__init__.py __version__ 이 같아야 함
+        if: startsWith(github.ref, 'refs/tags/ncn-v')          # 태그일 때만
+        run: |                                                 # 비교
+          tag="${GITHUB_REF_NAME#ncn-v}"                       # 태그에서 버전 부분
+          if [ "$tag" != "${{ steps.out.outputs.version }}" ]; then echo "::error::태그 $tag ≠ __version__ ${{ steps.out.outputs.version }} (ncn/__init__.py 를 고치고 다시 태그)"; exit 1; fi   # 다르면 실패
+      - name: 스모크 시험                                         # --version · 가짜 LLM -p · --stdio initialize · --doctor
+        run: uv run python packaging/smoke.py --exe "${{ steps.out.outputs.exe }}" --report dist/smoke.json   # 실패하면 빨간색
+      - name: 설치·제거 시험(Windows)                              # install.cmd /q → 확인 → 재설치(중복 없음) → uninstall.cmd /q → 확인(현장 PC 대신 러너에서)
+        if: runner.os == 'Windows'                             # Windows 만
+        shell: powershell                                      # Windows PowerShell 5.1(레지스트리 확인이 쉬움)
+        env:                                                   # 묻지 않는 설치 값
+          NCN_SERVER: http://127.0.0.1:9                       # 없는 서버(점검은 실패해도 설치는 성공해야 함)
+          NCN_TOKEN: ca-ci-dummy-token                         # 가짜 토큰
+        run: |                                                 # 명령
+          $bundle = "dist\ncn-${{ steps.out.outputs.version }}-windows-${{ steps.out.outputs.arch }}"   # 묶음 폴더
+          $dest = Join-Path $env:LOCALAPPDATA 'ncn'                                  # 설치 폴더
+          function UserPath { (Get-Item HKCU:\Environment).GetValue('Path', '', 'DoNotExpandEnvironmentNames') }   # 풀지 않은 사용자 PATH
+          function Count-Entry { @((UserPath) -split ';' | Where-Object { $_ -ieq '%LOCALAPPDATA%\ncn' }).Count }   # ncn 항목 수
+          & "$bundle\install.cmd" /q; if ($LASTEXITCODE -ne 0) { throw "install.cmd 종료 코드 $LASTEXITCODE" }   # 1차 설치(PowerShell 이 cmd.exe /c 로 실행)
+          & "$dest\ncn.exe" --version; if ($LASTEXITCODE -ne 0) { throw 'ncn --version 실패' }   # 설치본 실행
+          if ((Count-Entry) -ne 1) { throw "PATH 항목 수 $(Count-Entry) (기대 1): $(UserPath)" }   # PATH 에 하나
+          if (-not (Select-String -LiteralPath "$env:USERPROFILE\.continue\.env" -SimpleMatch 'CODEAGENT_TOKEN=ca-ci-dummy-token' -Quiet)) { throw '.env 에 토큰 없음' }   # 토큰 기록
+          if (-not (Select-String -LiteralPath "$env:USERPROFILE\.continue\config.yaml" -SimpleMatch 'http://127.0.0.1:9/v1' -Quiet)) { throw 'config.yaml 서버 주소 치환 안 됨' }   # 템플릿 치환
+          & "$bundle\install.cmd" /q; if ($LASTEXITCODE -ne 0) { throw "재설치 종료 코드 $LASTEXITCODE" }   # 2차 설치(업데이트 흉내)
+          if ((Count-Entry) -ne 1) { throw "재설치 후 PATH 항목 수 $(Count-Entry) (중복 추가됨)" }   # 중복 없음
+          & "$dest\uninstall.cmd" /q                                                 # 제거(설치 폴더 안의 uninstall.cmd — 자기 폴더를 지우는 경우)
+          if (Test-Path "$dest\ncn.exe") { throw '제거 후에도 ncn.exe 가 남음' }       # 폴더 삭제 확인
+          if ((Count-Entry) -ne 0) { throw '제거 후에도 PATH 항목이 남음' }             # PATH 정리 확인
+          if (-not (Test-Path "$env:USERPROFILE\.continue\config.yaml")) { throw '.continue 가 지워짐(남겨야 함)' }   # 설정 보존 확인
+          Write-Host 'install/uninstall OK'                                          # 성공
+      - name: 아티팩트 올리기                                     # zip·해시·빌드 정보·스모크 결과
+        uses: actions/upload-artifact@v4                       # 올리기
+        with:                                                  # 설정
+          name: ncn-${{ steps.out.outputs.version }}-${{ steps.out.outputs.os }}-${{ steps.out.outputs.arch }}   # 예: ncn-0.0.1-windows-x64
+          path: |                                              # 올릴 파일
+            ${{ env.NCN_DIR }}/dist/*.zip
+            ${{ env.NCN_DIR }}/dist/*.sha256
+            ${{ env.NCN_DIR }}/dist/build_info.json
+            ${{ env.NCN_DIR }}/dist/smoke.json
+          if-no-files-found: error                             # zip 이 없으면 실패
+          compression-level: 0                                 # 이미 zip 이라 다시 압축하지 않음
+      - name: 스모크 결과 보관(실패 시)                             # 위 단계까지 못 갔을 때 원인 확인용
+        if: failure()                                          # 실패했을 때만
+        uses: actions/upload-artifact@v4                       # 올리기
+        with:                                                  # 설정
+          name: smoke-failed-${{ matrix.label }}               # 이름
+          path: |                                              # 파일
+            ${{ env.NCN_DIR }}/dist/smoke.json
+            ${{ env.NCN_DIR }}/dist/build_info.json
+            ${{ env.NCN_DIR }}/dist/_build/ncn/warn-ncn.txt
+          if-no-files-found: ignore                            # 없으면 무시
+
+  # ── 4) 릴리스: 태그 ncn-v* 이면 zip 을 GitHub Release 에 첨부 ──
+  release:                                                     # 릴리스 job
+    if: startsWith(github.ref, 'refs/tags/ncn-v')              # 태그일 때만
+    needs: [build]                                             # 빌드(+스모크) 성공 뒤. test 실패는 화면에 남기되 현장 반입을 막지 않음(현장 시험이 목적) · arm64 실패는 continue-on-error 라 막지 않음
+    runs-on: ubuntu-latest                                     # 리눅스
+    permissions:                                               # 이 job 만
+      contents: write                                          # 릴리스 만들기
+    steps:                                                     # 단계
+      - uses: actions/download-artifact@v4                     # 빌드 아티팩트 모두 받기
+        with:                                                  # 설정
+          pattern: ncn-*                                       # ncn-<버전>-<os>-<arch> 들
+          path: release                                        # 받을 폴더
+          merge-multiple: true                                 # 한 폴더에 모음
+      - name: SHA256SUMS 만들기                                  # 개별 .sha256 을 한 파일로
+        working-directory: release                             # 받은 폴더
+        run: cat ./*.zip.sha256 > SHA256SUMS.txt && cat SHA256SUMS.txt   # 합치기·표시
+      - name: 릴리스 만들기                                       # gh CLI(러너에 기본 설치) — 이미 있으면 파일만 덮어씀
+        working-directory: release                             # 받은 폴더
+        env:                                                   # 인증
+          GH_TOKEN: ${{ github.token }}                        # 이 저장소 토큰
+        run: |                                                 # 명령
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then   # 이미 있으면
+            gh release upload "$GITHUB_REF_NAME" ./*.zip ./*.sha256 SHA256SUMS.txt --clobber --repo "$GITHUB_REPOSITORY"   # 파일 갱신
+          else                                                 # 없으면
+            gh release create "$GITHUB_REF_NAME" ./*.zip ./*.sha256 SHA256SUMS.txt --repo "$GITHUB_REPOSITORY" \
+              --title "ncn ${GITHUB_REF_NAME#ncn-v}" --notes "ncn 배포 묶음(서명 없음). 설치: zip 압축 풀기 → install.cmd. 안내: codeagent_pvgpt/newcontinue/배포_가이드.md"   # 새 릴리스
+          fi
