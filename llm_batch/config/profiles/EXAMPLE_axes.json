@@ -1,0 +1,21 @@
+{
+  "from": {
+    "vs": 2008,
+    "os": "Windows XP",
+    "db": "Oracle 10g (Pro*C)",
+    "hmi": "HMI 도구 이름과 판"
+  },
+  "to": {
+    "vs": 2022,
+    "cpp_standard": "c++14",
+    "conformance": "off",
+    "platform": "keep",
+    "charset": "keep",
+    "os": "Windows 11",
+    "db": "Oracle 19c (Pro*C)",
+    "hmi": "HMI 도구 이름과 판"
+  },
+  "policy": {
+    "deprecated_warnings": "suppress"
+  }
+}

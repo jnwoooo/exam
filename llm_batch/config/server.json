@@ -1,0 +1,33 @@
+{
+  "llm": {
+    "endpoint": "",
+    "model": "gemma4-31b",
+    "api_key": "",
+    "use_system_role": true,
+    "max_total_tokens": 24000,
+    "max_output_tokens": 3000,
+    "max_parallel": 4,
+    "timeout_sec": 300,
+    "retries": 2,
+    "need_context_rounds": 2,
+    "server_prompt_reserve_tokens": 0,
+    "busy_retries": 5,
+    "calibrate_first": true,
+    "transport": "openai",
+    "extra_body": {}
+  },
+  "limits": {
+    "big_init_chars": 2000,
+    "slice_context_lines": 25,
+    "cluster_gap_lines": 30,
+    "chunk_enabled": true,
+    "chunk_ledger_chars": 1500,
+    "chunk_head_lines": 25,
+    "compile_timeout_sec": 180,
+    "compile_parallel": 0,
+    "buildlog_max_per_file": 5
+  },
+  "compile": {
+    "mode": "changed"
+  }
+}

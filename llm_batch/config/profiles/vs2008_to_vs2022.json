@@ -1,0 +1,11 @@
+{
+  "from": { "vs": 2008 },
+  "to": {
+    "vs": 2022,
+    "cpp_standard": "c++14",
+    "conformance": "off",
+    "platform": "keep",
+    "charset": "keep"
+  },
+  "policy": { "deprecated_warnings": "suppress" }
+}

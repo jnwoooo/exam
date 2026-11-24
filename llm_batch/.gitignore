@@ -1,0 +1,8 @@
+# 실행하면 생기는 것(커밋하지 않는다)
+__pycache__/
+runs/
+cache/
+build/
+dist/
+*.spec
+relay_calls.jsonl

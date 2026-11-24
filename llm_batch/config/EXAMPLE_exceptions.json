@@ -1,0 +1,32 @@
+{
+  "rules_off": [
+    "R-T3-GETVERSIONEX"
+  ],
+  "skip": [
+    {
+      "path": "ThirdParty/*"
+    },
+    {
+      "path": "Src/Legacy/*",
+      "rules": [
+        "R-T1-CRT-NONSTDC"
+      ]
+    },
+    {
+      "path": "Src/Main.cpp",
+      "rules": [
+        "R-T2-MAKE-PAIR"
+      ],
+      "lines": "120-140"
+    }
+  ],
+  "brace_macros": {
+    "open": [
+      "TRY_BEGIN"
+    ],
+    "close": [],
+    "ignore": [
+      "DECLARE_MY_TABLE"
+    ]
+  }
+}

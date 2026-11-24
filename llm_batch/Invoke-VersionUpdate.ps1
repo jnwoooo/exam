@@ -1,0 +1,114 @@
+﻿<#
+.SYNOPSIS
+  C++ 버전 업데이트 대응 자동화의 단일 진입 명령.
+.DESCRIPTION
+  같은 폴더의 vupdate.exe (없으면 python vupdate.py) 를 호출한다.
+  처리는 전부 vupdate 가 한다. 이 스크립트는 인자를 넘기고 종료 코드를 돌려줄 뿐이다.
+  종료 코드: 0 완료 / 1 완료(수동 검토 있음) / 2 단계 실패 / 3 입력 오류
+
+  sLLM(또는 중계 서버) 주소는 이 스크립트에 적지 않는다. 다음 순서로 정해진다.
+    1) -LlmEndpoint  2) 환경변수 VUPDATE_LLM_ENDPOINT  3) config\server.json 의 llm.endpoint
+  서버 점검(llmcheck)과 빌드 오류 분류(buildlog)는 vupdate 를 직접 부른다. 예: vupdate.exe buildlog --log msbuild.log --run <실행 폴더>
+  Visual Studio 자동 탐지가 틀리면 -VsPath 또는 환경변수 VUPDATE_VS_PATH 로 설치 폴더를 지정한다.
+  Windows SDK 는 -SdkPath 또는 환경변수 VUPDATE_SDK_PATH 로 지정한다(예: C:\Program Files (x86)\Windows Kits\10).
+.EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022
+.EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -EnvProfile vs2008_to_vs2022 -Request PKG_A
+.EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2015 -ToVs 2022 -Platform x64 -Only "Src/Net/*" -NoLlm
+.EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -Axis "os=Windows 7->Windows 11","db=Oracle 19c"
+.EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\build\PKG_A -FromVs 2008 -ToVs 2022 -BuildLog D:\build\msbuild.log
+  (빌드한 소스 트리와 그 빌드의 로그를 주면 컴파일 오류가 난 줄을 sLLM 단계에서 고친다)
+.EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Resume D:\work\runs\PKG_A\20261124_101500
+#>
+param(
+    [string]$Package,
+    [string]$EnvProfile,
+    [string]$FromVs,
+    [string]$ToVs,
+    [string]$CppStandard,
+    [string]$Platform,
+    [string]$Conformance,
+    [string]$Charset,
+    [string]$Deprecated,
+    [string[]]$Axis,
+    [string]$Request,
+    [string[]]$Ask,
+    [string]$AskFile,
+    [string]$FromCppStandard,
+    [string]$Exceptions,
+    [string[]]$DisableRule,
+    [string]$BuildLog,
+    [string[]]$Only,
+    [string[]]$Exclude,
+    [string]$LlmEndpoint,
+    [int]$MaxParallel = 0,
+    [int]$CompileParallel = -1,
+    [string]$VsPath,
+    [string]$SdkPath,
+    [string]$Caller,
+    [string]$Out,
+    [string]$UntilStage,
+    [string]$Resume,
+    [switch]$DryRun,
+    [switch]$NoCompile,
+    [switch]$NoLlm,
+    [switch]$NoChunk
+)
+
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$exe = Join-Path $here "vupdate.exe"
+$py = Join-Path $here "vupdate.py"
+
+$a = @("--console-encoding", "utf-8", "run")
+if ($Resume) {
+    $a += @("--resume", $Resume)
+} else {
+    if (-not $Package) { Write-Host "오류: -Package 로 대상 패키지 폴더를 지정하세요."; exit 3 }
+    $a += @("--package", $Package)
+}
+if ($EnvProfile)  { $a += @("--profile", $EnvProfile) }
+if ($Ask)     { foreach ($x in $Ask) { $a += @("--ask", $x) } }
+if ($AskFile) { $a += @("--ask-file", $AskFile) }
+if ($FromCppStandard) { $a += @("--from-cpp-standard", $FromCppStandard) }
+if ($Exceptions)  { $a += @("--exceptions", $Exceptions) }
+if ($DisableRule) { $a += @("--disable-rule", ($DisableRule -join ",")) }
+if ($BuildLog)    { $a += @("--build-log", $BuildLog) }
+if ($FromVs)      { $a += @("--from-vs", $FromVs) }
+if ($ToVs)        { $a += @("--to-vs", $ToVs) }
+if ($CppStandard) { $a += @("--cpp-standard", $CppStandard) }
+if ($Platform)    { $a += @("--platform", $Platform) }
+if ($Conformance) { $a += @("--conformance", $Conformance) }
+if ($Charset)     { $a += @("--charset", $Charset) }
+if ($Deprecated)  { $a += @("--deprecated", $Deprecated) }
+foreach ($p in $Axis)    { if ($p) { $a += @("--axis", $p) } }
+if ($Request)     { $a += @("--request", $Request) }
+foreach ($p in $Only)    { if ($p) { $a += @("--only", $p) } }
+foreach ($p in $Exclude) { if ($p) { $a += @("--exclude", $p) } }
+if ($LlmEndpoint) { $a += @("--llm-endpoint", $LlmEndpoint) }
+if ($MaxParallel -gt 0) { $a += @("--max-parallel", "$MaxParallel") }
+if ($CompileParallel -ge 0) { $a += @("--compile-parallel", "$CompileParallel") }
+if ($VsPath)      { $a += @("--vs-path", $VsPath) }
+if ($SdkPath)     { $a += @("--sdk-path", $SdkPath) }
+if ($Caller)      { $a += @("--caller", $Caller) }
+if ($Out)         { $a += @("--out", $Out) }
+if ($UntilStage)  { $a += @("--until", $UntilStage) }
+if ($DryRun)      { $a += "--dry-run" }
+if ($NoCompile)   { $a += "--no-compile" }
+if ($NoLlm)       { $a += "--no-llm" }
+if ($NoChunk)     { $a += "--no-chunk" }
+
+if (Test-Path $exe) {
+    & $exe @a
+} elseif (Test-Path $py) {
+    & python $py @a
+} else {
+    Write-Host "오류: vupdate.exe 또는 vupdate.py 가 이 스크립트와 같은 폴더에 없습니다."
+    exit 3
+}
+exit $LASTEXITCODE

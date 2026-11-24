@@ -1,0 +1,12 @@
+﻿# 사용자 요청문 파일. 한 줄에 요청 하나. vupdate run ... --ask-file config\asks.txt
+#   대상: 요청문                 대상 이름이 쓰인 곳을 찾아 요청문대로 고친다(sLLM)
+#   대상1, 대상2: 요청문         대상이 여럿
+#   /정규식/: 요청문             이름 대신 정규식으로 찾는다
+#   @Src/Net/* 대상: 요청문      그 파일들에서만
+#   대상 없는 문장               공통 요청(모든 조각의 지침에 붙는다)
+
+g_data: 배열 g_data 를 구조체 G_DATA 로 바꾼다. g_data[IDX_TEMP] 는 g_data.temp, g_data[IDX_COUNT] 는 g_data.count 로 쓴다
+@Src/Ipc/* MSG_HEADER: 필드 nLen 의 이름이 nLength 로 바뀌었다. 이 구조체의 멤버 접근만 고친다
+SendPacket: 둘째 인자(길이)와 셋째 인자(버퍼)의 순서가 바뀌었다. 호출하는 곳의 인자 순서를 바꾼다
+/LOG_(?:ERR|WARN)/: 첫 인자로 모듈 이름 문자열 "HMI" 를 추가한다
+주석의 문구는 바꾸지 않는다

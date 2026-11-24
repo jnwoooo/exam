@@ -1,0 +1,4 @@
+# 줄바꿈과 인코딩을 바이트 그대로 지켜야 하는 파일(Windows 스크립트: BOM, CP949, CRLF)
+*.ps1 -text
+*.bat -text
+*.zip binary

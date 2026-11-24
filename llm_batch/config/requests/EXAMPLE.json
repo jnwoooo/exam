@@ -1,0 +1,40 @@
+{
+  "common": [
+    "주석의 문구는 바꾸지 않는다",
+    "사내 타입 이름(INT32, UINT8 등)은 그대로 둔다"
+  ],
+  "features": [
+    {
+      "id": "REQ-001",
+      "type": "array_to_struct",
+      "target": "g_data",
+      "mapping": {
+        "IDX_TEMP": "temp",
+        "IDX_COUNT": "count"
+      },
+      "llm_variable_index": false,
+      "struct_name": "G_DATA_T",
+      "unmapped": "reserved",
+      "llm_other_uses": true
+    },
+    {
+      "id": "REQ-002",
+      "type": "struct_change",
+      "target": "MSG_HEADER",
+      "rename": {
+        "nLen": "nLength",
+        "nSeq": "nSequence"
+      },
+      "check_layout": true,
+      "llm_unresolved": false
+    }
+  ],
+  "asks": [
+    "SendPacket: 둘째 인자와 셋째 인자의 순서가 바뀌었다. 호출하는 곳의 인자 순서를 바꾼다",
+    {
+      "target": "MSG_HEADER",
+      "files": "Src/Ipc/*",
+      "text": "필드 nLen 의 이름이 nLength 로 바뀌었다"
+    }
+  ]
+}
