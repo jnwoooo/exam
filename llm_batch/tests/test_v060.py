@@ -67,8 +67,9 @@ with open(req2, "w", encoding="utf-8") as fh:
     json.dump({"features": [{"id": "REQ-B", "type": "array_to_struct", "target": "g_v", "mapping": {"IDX_X": "x"}}]}, fh)
 code, text = cli("run", "--package", pkg2, "--from-vs", "2008", "--to-vs", "2022", "--request", req2, "--no-llm", "--no-compile", "--out", os.path.join(work, "r2"))
 src2, manual2 = out_of(os.path.join(work, "r2"), "changed", "Src", "T.cpp"), out_of(os.path.join(work, "r2"), "manual_review.md")
-check("배열: 인덱스 이름의 값을 찾지 못하면 선언은 그대로 두고 이유와 함께 수동 검토로",
-      "int g_v[8];" in src2 and "g_v.x = 1;" in src2 and "배열 선언" in manual2 and "IDX_X 의 값을 패키지에서 찾지 못함" in manual2)
+# 0.8.0 부터: 선언을 못 바꾸면 사용처도 바꾸지 않는다(선언과 사용처가 어긋난 결과는 컴파일되지 않는다). 바뀐 파일이 없어야 한다
+check("배열: 인덱스 이름의 값을 찾지 못하면 아무것도 적용하지 않고 이유를 수동 검토에 남김",
+      src2 == "" and "적용하지 않은 이유" in manual2 and "IDX_X 의 값을 패키지에서 찾지 못함" in manual2)
 
 # ------------------------------------------------------------------ 2, 3. DB·HMI 기본 규칙과 환경값별 확인 목록
 pkg3 = os.path.join(work, "DBHMI")

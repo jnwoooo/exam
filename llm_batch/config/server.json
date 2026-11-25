@@ -25,7 +25,16 @@
     "chunk_head_lines": 25,
     "compile_timeout_sec": 180,
     "compile_parallel": 0,
-    "buildlog_max_per_file": 5
+    "buildlog_max_per_file": 5,
+    "ask_max_sites": 0,
+    "task_max_targets": 8,
+    "task_max_lines": 150,
+    "ref_decl": true,
+    "ref_chars": 1500,
+    "new_name_check": "mark",
+    "known_names": [],
+    "decl_change_check": true,
+    "size_arg_check": true
   },
   "compile": {
     "mode": "changed"

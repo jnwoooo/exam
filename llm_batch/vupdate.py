@@ -4,7 +4,8 @@
 ==============================================================================
 vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본)
 ==============================================================================
-버전 : 0.4.0 (0.3.0 에 서버 점검, 환경값 축과 공통 요청, 규칙 확충, 빌드 오류 분류를 더함)
+버전 : 0.8.0 (구조 분석, 배열·표 -> 구조체의 사용처 전수 분류와 원자성, 참고 영역과 작업 나누기,
+              호출 예산과 이어서 실행, 수용 검사 추가, 문장 요청의 해석을 더함. 16_추가_0.8.0.md)
 목적 : 레거시 C++ 패키지를 새 Visual Studio 환경(예: 2008 -> 2022)에 맞게
        고치는 작업을 한 명령으로 수행한다. 규칙으로 고칠 수 있는 것은 규칙으로,
        규칙으로 못 고치는 것만 sLLM에 맡기고, 결과를 별도 폴더에 낸다.
@@ -21,6 +22,10 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
   vupdate selftest                               (설치 확인용 자체 시험)
   vupdate llmcheck                               (실제 sLLM 서버가 기대대로 답하는지 점검)
   vupdate buildlog --log msbuild.log --run <실행 폴더>   (빌드 오류 목록을 분류하고 대응을 붙임)
+  vupdate run --package D:\\src\\PKG_A --from-vs 2008 --to-vs 2022 --max-calls 200   (호출 200회까지만. 남으면 종료 코드 4)
+  vupdate run --resume <실행 폴더>                 (대기로 남은 작업을 이어서 보냄)
+  vupdate run ... --ask "[if] WriteLog: 인자에 줄 번호를 더한다"     (if 문 안에서 쓰인 곳만)
+  vupdate run ... --say "if 문 안에서 로그를 남기는 함수를 찾아 줘"   (대상 이름 없이 문장으로)
 
 [이 파일의 구획]  수정할 때는 해당 구획만 고친다. 구획 사이의 호출은
                   실행기(M10)가 넘겨주는 ctx 객체와 저장소(M03)만 거친다.
@@ -28,6 +33,7 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
   M02 설정      버전 대응표, 프로필/요청사항/서버 설정 읽기와 검증
   M03 저장소    실행 상태 DB(SQLite 파일 하나)
   M04 어휘분석  인코딩 판별, 주석/문자열 마스킹, 함수 경계, 초기화 목록
+  M04 구조분석  블록 트리, 제어문 범위, 선언 찾기(0.8.0). 대상 판단과 조각 구성, 수용 검사가 여기에 기댄다
   M05 규칙      규칙 카탈로그(T0~T3)와 탐지 함수
   M06 sLLM연결  토큰 추정과 보정, HTTP 호출, 오류 분류(한도 초과/과부하/거절)
   M07 컴파일    Visual Studio 찾기, cl /Zs 호출(환경 등급 '나'에서만)
@@ -36,7 +42,7 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
   S2  탐지      규칙 스캔 -> 이슈
   S3  설정흡수  코드 변경 없이 옵션/매크로로 해결할 항목 정리
   S4  규칙적용  T1/T2 규칙 -> 수정 레코드
-  S5  영향분석  요청사항(배열 -> 구조체) 처리, 헤더 의존 파일 파악
+  S5  영향분석  요청사항(배열·표 -> 구조체, 요청문, 문장 요청) 처리, 헤더 의존 파일 파악
   S6  sLLM수정  T3 이슈를 조각으로 잘라 sLLM에 보내고 수정 블록 수용 검사
   S7  병합      수정 레코드를 적용해 결과 파일 생성
   S8  검증      L0~L2 (+ 환경 '나'면 L3 컴파일 검사), 불합격 시 되돌림
@@ -49,7 +55,7 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
              실행 폴더의 logs/run.log 에 전부 남는다. 오류가 나면 이 접두어로
              어느 구획의 어느 함수인지 바로 찾을 수 있다.
 
-[v0.4.0 에서 구현하지 않은 것]  (04_개발구조.md 의 구현 범위 표 참조)
+[구현하지 않은 것]  (04_개발구조.md 의 구현 범위 표, 16_추가_0.8.0.md 6절 참조)
   - sLLM 호출의 MCP 서버 경유(05_기능정의.md 10절). 지금은 설정의 주소로 직접 호출한다
   - 프로젝트 변환과 전체 빌드(환경 등급 '다')
   - .rc/.idl/.def 의 규칙 탐지
@@ -57,10 +63,13 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
   - DB, HMI 제품의 판별 세부 규칙(널리 쓰이는 DB 접근 기술과 HMI 구성 요소는 0.6.0 에서 기본 규칙으로 넣었다)
   - 컴파일러 수준의 영향범위 분석. 구조체 변경 요청(struct_change)은 글자 기준의 근사로 처리한다
   - .vcxproj 가 가져오는 .props 파일의 설정
+  - 평면 배열(레코드 간격 stride)의 구조체 변환, 열 타입을 바꿀 때의 값 범위 검사, 유형 사전(config/types.json)
+  - 실제 sLLM 으로 확인한 것은 없다. 조각 구성, 수용 검사, 문장 요청의 해석은 모두 모의 모델로만 확인했다
 """
 
 import argparse
 import bisect
+import collections
 import csv
 import difflib
 import fnmatch
@@ -90,13 +99,14 @@ from concurrent.futures import ThreadPoolExecutor
 # 목적: 모든 구획이 같이 쓰는 최소한의 도구. 로그 접두어 규칙을 여기서 보장한다.
 # ============================================================================
 APP = "vupdate"
-VERSION = "0.7.1"
+VERSION = "0.8.0"
 
 STAGES = [("S0", "준비"), ("S1", "인벤토리"), ("S2", "탐지"), ("S3", "설정흡수"),
           ("S4", "규칙적용"), ("S5", "영향분석"), ("S6", "sLLM수정"), ("S7", "병합"),
           ("S8", "검증"), ("S9", "산출")]
 
 EXIT_OK, EXIT_REVIEW, EXIT_FAIL, EXIT_INPUT = 0, 1, 2, 3
+EXIT_PENDING = 4                                  # sLLM 에 보내지 못한 작업이 남았다(호출 예산, 서버 한도). --resume 으로 이어서 보낸다
 
 
 class UserInputError(Exception):
@@ -262,7 +272,17 @@ DEFAULT_SERVER = {
         "chunk_enabled": True,       # 한도를 넘는 구간을 나눠 순서대로 처리(분할 순차). False 면 수동 검토로 보낸다
         "chunk_ledger_chars": 1500,  # 뒤 조각에 넘기는 "앞 조각에서 바꾼 내용"의 최대 글자 수
         "buildlog_max_per_file": 5,  # --build-log 로 넣는 오류 가운데 한 파일에서 sLLM 에 맡길 최대 건수
-        "ask_max_sites": 300,        # 사용자 요청문 하나가 sLLM 에 맡길 수 있는 줄 수의 상한. 넘는 곳은 수동 검토
+        "ask_max_sites": 0,          # 사용자 요청문 하나가 sLLM 에 맡길 줄 수의 상한. 0 이면 두지 않는다(양은 --max-calls 로 조절한다)
+        "task_max_targets": 8,       # 독립 수정: 작업 하나에 넣는 수정 지점의 최대 수. 0 이면 나누지 않는다(0.7.1 방식)
+        "task_max_lines": 150,       # 독립 수정: 작업 하나의 첫 지점과 끝 지점 사이의 최대 줄 수. 0 이면 보지 않는다
+        "ref_decl": True,            # 대상 줄에 쓰인 이름의 선언과 감싼 구문의 머리를 [참고]로 붙인다
+        "ref_chars": 1500,           # [참고: 선언]에 넣는 글자 수의 상한
+        "new_name_check": "mark",    # 수정에 조각·패키지 어디에도 없는 이름이 생겼을 때: mark(검토 메모만) / reject(기각하고 다시 요청) / off
+        "known_names": [],           # 새 이름 검사에서 아는 이름으로 칠 것(사내 공용 함수 등). 표준 C·CRT 의 흔한 이름은 내장돼 있다
+        "word_suffixes": ["s", "er", "ger", "ing", "ging", "ed", "ged"],   # 문장 요청: 낱말 뒤에 붙어도 같은 낱말로 보는 꼴(log -> logs, logger, logging)
+        "say_max_candidates": 600,   # 문장 요청: 모델에게 추리게 할 후보 이름의 최대 수(많이 쓰인 순서로 자른다)
+        "decl_change_check": True,   # 선언을 없앴는데 다른 줄에서 쓰이거나, 이미 있는 이름을 다시 선언한 수정을 기각한다
+        "size_arg_check": True,      # 새로 쓴 sizeof(이름) 의 이름이 포인터로 확정되면 기각한다
         "rule_candidate_min": 3,     # 보고서의 규칙 후보: sLLM 이 같은 수정을 이 횟수 이상 했을 때 알린다
         "chunk_head_lines": 25,      # 뒤 조각에 참고로 붙이는 함수 앞부분 줄 수
         "compile_timeout_sec": 180,
@@ -476,7 +496,7 @@ def _load_request_file(args):
     features: 기능 변경(배열 -> 구조체 등). 규칙으로 처리할 수 있는 부분은 규칙으로 처리한다.
     common  : 공통 요청. 문장 목록이며 sLLM 에 보내는 모든 조각의 [수정 지침] 뒤에 붙는다. 규칙 수정에는 영향이 없다."""
     if not getattr(args, "request", None):
-        return {"features": [], "common": []}
+        return {"features": [], "common": [], "_asks_raw": [], "_says_raw": []}
     path = find_config(args.request, "requests")
     req = load_json(path, "요청사항")
     feats = req.get("features") or []
@@ -513,6 +533,13 @@ def _load_request_file(args):
                 ft["mapping"] = table
             elif not isinstance(mp, dict) or not mp:
                 raise UserInputError("array_to_struct 요청에는 mapping(인덱스 -> 필드명)이 필요합니다: %s" % ft["id"])
+            for key in ("variable_index", "bare_use"):
+                if key in ft and ft[key] not in ("stop", "manual", "llm", "cast", "raw_view"):
+                    raise UserInputError("array_to_struct 요청의 %s 값이 올바르지 않습니다(stop, manual, llm, cast, raw_view 중 하나): %s" % (key, ft["id"]))
+            if ft.get("bare_use") == "raw_view" and ft.get("variable_index") != "raw_view":
+                raise UserInputError("bare_use 의 raw_view 는 variable_index 도 raw_view 일 때만 쓸 수 있습니다: %s" % ft["id"])
+            if ft.get("on_unresolved", "stop") not in ("stop", "keep"):
+                raise UserInputError("array_to_struct 요청의 on_unresolved 값이 올바르지 않습니다(stop, keep 중 하나): %s" % ft["id"])
     common = req.get("common") or []
     if isinstance(common, str):
         common = [common]
@@ -525,9 +552,15 @@ def _load_request_file(args):
         if isinstance(it, dict):
             tg = it.get("targets") or it.get("target") or "*"
             tg = ", ".join(tg) if isinstance(tg, list) else str(tg)
-            it = "%s%s: %s" % (("@%s " % it["files"]) if it.get("files") else "", tg, it.get("text", ""))
+            tags = [str(it[k]) for k in ("where", "action") if it.get(k) and str(it[k]) not in ("any", "modify")]
+            it = "%s%s%s: %s" % (("@%s " % it["files"]) if it.get("files") else "", ("[%s] " % ", ".join(tags)) if tags else "",
+                                 tg, it.get("text", ""))
         raw.append(str(it))
-    return {"features": feats, "common": common, "_asks_raw": raw}
+    says = []                                 # 요청 파일의 sentences: 문장 또는 {"text", "files"}
+    for it in req.get("sentences") or []:
+        says.append(("@%s %s" % (it["files"], it.get("text", ""))) if isinstance(it, dict) and it.get("files")
+                    else str(it.get("text", "") if isinstance(it, dict) else it))
+    return {"features": feats, "common": common, "_asks_raw": raw, "_says_raw": says}
 
 
 # ----------------------------------------------------------------------------
@@ -593,7 +626,9 @@ def exc_skip(exc, rel, rule_id, line):
 
 
 _ASK_TARGET = r"(?:/[^/]+/|[A-Za-z_]\w*)"
-_ASK_LINE_RE = re.compile(r"^(?:@(?P<files>\S+)\s+)?(?P<targets>%s(?:\s*,\s*%s)*)\s*:\s*(?P<text>\S.*)$" % (_ASK_TARGET, _ASK_TARGET))
+_ASK_LINE_RE = re.compile(r"^(?:@(?P<files>\S+)\s+)?(?:\[(?P<tags>[A-Za-z,\s]+)\]\s*)?(?P<targets>%s(?:\s*,\s*%s)*)\s*:\s*(?P<text>\S.*)$"
+                          % (_ASK_TARGET, _ASK_TARGET))
+_ASK_TAGS = ("if", "for", "while", "loop", "switch", "string", "comment", "find", "modify", "any")
 
 
 def parse_asks(lines):
@@ -602,6 +637,8 @@ def parse_asks(lines):
         대상1, 대상2: 요청문              대상이 여럿
         /정규식/: 요청문                  이름 대신 정규식으로 찾는다
         @Src/Net/* 대상: 요청문           그 파일들에서만
+        [if] 대상: 요청문                 if 문 안에서 쓰인 곳만(for, while, loop, switch, string, comment 도 된다)
+        [find] 대상: 요청문               고치지 않고 찾은 곳의 목록만 낸다(out/found_<번호>.md). [if, find] 처럼 함께 쓸 수 있다
         *: 요청문  또는  대상 없는 문장    공통 요청(sLLM 에 보내는 모든 조각의 지침에 붙는다)
     '#' 으로 시작하는 줄과 빈 줄은 건너뛴다. 돌려주는 값: (요청 목록, 공통 요청 목록)"""
     asks, common = [], []
@@ -623,8 +660,16 @@ def parse_asks(lines):
                     re.compile(t[1:-1])
                 except re.error as e:
                     raise UserInputError("요청문의 정규식이 올바르지 않습니다: %s (%s)" % (t, e))
+        where, action = "any", "modify"
+        for tag in [x.strip().lower() for x in (m.group("tags") or "").split(",") if x.strip()]:
+            if tag not in _ASK_TAGS:
+                raise UserInputError("요청문의 꼬리표가 올바르지 않습니다: [%s] (쓸 수 있는 것: %s)" % (tag, ", ".join(_ASK_TAGS)))
+            if tag in ("find", "modify"):
+                action = tag
+            else:
+                where = tag
         asks.append({"id": "ASK-%d" % (len(asks) + 1), "targets": targets, "text": m.group("text").strip(),
-                     "files": (m.group("files") or "").replace("\\", "/").strip("/").lower()})
+                     "files": (m.group("files") or "").replace("\\", "/").strip("/").lower(), "where": where, "action": action})
     return asks, common
 
 
@@ -644,6 +689,24 @@ def load_request(args):
     asks, common = parse_asks(lines)
     req["asks"] = asks
     req["common"] = list(req.get("common") or []) + common
+    # 문장 요청(--say, --say-file, 요청 파일의 sentences): 대상 이름을 적지 않은 요청. S5 에서 명시형으로 푼다(_resolve_sentences)
+    says = list(req.pop("_says_raw", []))
+    path = getattr(args, "say_file", None)
+    if path:
+        if not os.path.isfile(path):
+            raise UserInputError("문장 요청 파일이 없습니다: %s" % path)
+        says += read_log_text(path).splitlines()
+    says += [str(x) for x in (getattr(args, "say", None) or [])]
+    req["sentences"] = []
+    for raw in says:
+        line = " ".join(str(raw).replace("\ufeff", "").split())
+        if not line or line.startswith("#"):
+            continue
+        m = re.match(r"^@(\S+)\s+(.+)$", line)
+        req["sentences"].append({"id": "SAY-%d" % (len(req["sentences"]) + 1), "text": (m.group(2) if m else line)[:500],
+                                 "files": (m.group(1) if m else "").replace("\\", "/").strip("/").lower()})
+    if req["sentences"]:
+        LOGC.info("문장 요청 %d건을 읽음(대상은 영향범위 단계에서 정한다)" % len(req["sentences"]))
     if sum(len(x) for x in req["common"]) > 1500:
         raise UserInputError("공통 요청이 너무 깁니다(합계 1,500자 이내). 모든 sLLM 요청에 붙으므로 짧게 적습니다.")
     if asks or common:
@@ -713,6 +776,10 @@ def collect_opts(args, saved=None):
         if int(v) < 0:
             raise UserInputError("--compile-parallel 은 0(자동) 이상이어야 합니다: %s" % v)
         o["compile_parallel"] = int(v)
+    v = getattr(args, "max_calls", None)      # 호출 예산은 실행할 때마다 새로 준다(이어서 실행할 때 앞의 값을 물려받지 않는다)
+    if v is not None and int(v) < 1:
+        raise UserInputError("--max-calls 는 1 이상이어야 합니다: %s" % v)
+    o["max_calls"] = int(v) if v is not None else 0
     if saved is None:                         # 예외와 빌드 로그도 처음 실행의 값을 그대로 쓴다
         o["disable_rules"] = [x.strip() for v in (getattr(args, "disable_rule", None) or []) for x in str(v).split(",") if x.strip()]
         for key, what in (("exceptions", "예외 파일"), ("build_log", "빌드 로그 파일")):
@@ -1020,6 +1087,7 @@ class Doc:
         self.text = self.code = self.struct = ""
         self.strings, self.funcs, self.inits, self.line_starts = [], [], [], [0]
         self.parse_ok = False
+        self._blocks, self.blocks_ok = None, False       # 블록 목록은 get_blocks 가 필요할 때 만든다
 
     def line_of(self, pos):
         return bisect.bisect_right(self.line_starts, pos)
@@ -1033,6 +1101,12 @@ class Doc:
     @property
     def n_lines(self):
         return len(self.line_starts)
+
+    def get_blocks(self):
+        """블록 목록(block_tree). 처음 부를 때 한 번 만든다. 프로젝트 고유의 괄호 매크로를 반영한 본문으로 만든다."""
+        if self._blocks is None:
+            self._blocks, self.blocks_ok = block_tree(_apply_brace_macros(self.struct))
+        return self._blocks
 
 
 def encode_work(doc, work_text):
@@ -1106,6 +1180,443 @@ def pp_balance_of(code):
 
 
 # ============================================================================
+# [M04 구조분석]  블록, 제어문 범위, 문장 경계, 선언 찾기, 초기화 목록의 모양 (0.8.0)
+# 목적: "이 위치가 어떤 구문 안인가", "이 이름은 어디서 어떻게 선언됐는가"를 컴파일러 없이 답한다.
+#       대상 판단(S5), 조각 구성(S6), 수용 검사(S6)가 모두 여기에 기댄다(15_구분별_검토현황과_구현명세 3절).
+# 방식: 주석·문자열·전처리기를 가린 본문(Doc.struct)에서 괄호 짝과 문장 끝(;)만 보고 판단한다.
+# 한계: 전처리기를 실행하지 않는다. 괄호를 숨긴 매크로, #if 로 갈라진 문장은 틀릴 수 있다. 그런 곳은
+#       certain=False 나 None 으로 돌려주고, 부르는 쪽이 "확정 아님"으로 다룬다.
+# 이 구획의 함수
+#   블록          block_tree, block_at, func_at
+#   제어문·문장   ctrl_ranges, is_stmt_start, stmt_start_of
+#   선언          decl_regex, find_decl
+#   초기화 목록   init_shape
+#   그 밖         const_value, comment_spans, word_parts
+# ============================================================================
+LOGS = Log("M04.구조분석")
+
+_CTRL_HEAD_RE = re.compile(r"^\s*(?:else\s+)?(if|for|while|switch|catch)\b")
+_CONTAINER_NAME_RE = re.compile(r"\b(?:class|struct|union|namespace)\s+([A-Za-z_]\w*)")
+_NOT_DECL_WORDS = {"return", "delete", "goto", "case", "else", "throw", "new", "sizeof", "typedef", "using", "break", "continue"}
+_NOT_CALL_WORDS = {"if", "for", "while", "switch", "return", "sizeof", "catch", "defined", "else", "do", "case", "new", "delete",
+                   "throw", "static_cast", "reinterpret_cast", "const_cast", "dynamic_cast", "typeid", "alignof", "decltype",
+                   "operator", "void", "int", "char", "long", "short", "unsigned", "signed", "float", "double", "bool",
+                   "wchar_t", "auto", "noexcept", "__declspec", "__attribute__", "__pragma"}
+
+
+def block_tree(struct):
+    """중괄호 블록의 목록을 만든다(여는 위치 순서). 돌려주는 값: (블록 목록, 괄호 짝이 맞았는지)
+    블록: {"kind", "name", "head", "open", "close", "parent"}. head 는 머리글이 시작하는 위치, parent 는 목록의 번호(없으면 -1).
+    kind: func, container(class/struct/union/namespace), init(= 뒤의 초기화 목록), if, for, while, switch, catch, else, do, try, other
+    초기화 목록 안쪽의 중괄호(표의 행)는 블록으로 남기지 않는다. 150만 자 표에서 행이 수만 개여도 느려지지 않게 하기 위한 것이다."""
+    blocks, stack, ok, stmt, skip = [], [], True, 0, 0
+    for m in _BR_RE.finditer(struct):
+        i = m.start()
+        c = struct[i]
+        if c == ";":
+            stmt = i + 1
+            continue
+        if c == "{":
+            if skip or (stack and blocks[stack[-1]]["kind"] == "init"):
+                skip += 1                                   # 초기화 목록 안쪽: 깊이만 센다
+                continue
+            header, hstart = struct[stmt:i], stmt
+            if header.count(")") > header.count("("):
+                # for (a; b; c) 의 머리: 괄호 안의 ; 에서 문장이 끊겨 "c)" 만 남았다. 앞의 for 까지 거슬러 올라가 머리를 다시 잡는다
+                back = struct.rfind("for", max(0, stmt - 2000), stmt)
+                while back >= 0:
+                    cand = struct[back:i]
+                    if (re.match(r"for\s*\(", cand) and cand.count("(") == cand.count(")")
+                            and (back == 0 or not (struct[back - 1].isalnum() or struct[back - 1] == "_"))):
+                        header, hstart = cand, back
+                        break
+                    back = struct.rfind("for", max(0, stmt - 2000), back)
+            hs = header.strip()
+            parent = stack[-1] if stack else -1
+            pkind = blocks[parent]["kind"] if parent >= 0 else None
+            kind, name = "other", ""
+            if hs.endswith("="):
+                kind = "init"
+            elif pkind in (None, "container"):
+                hs2 = _DECLSPEC_RE.sub("", hs)
+                if _ENUM_RE.match(hs2):
+                    kind = "other"
+                elif _CONTAINER_RE.match(hs2) and ")" not in hs2:
+                    kind = "container"
+                    nm = _CONTAINER_NAME_RE.search(hs2)
+                    name = nm.group(1) if nm else ""
+                elif ")" in hs:
+                    fname, _pos = _func_name(header)
+                    if fname:
+                        kind, name = "func", fname
+            else:
+                cm = _CTRL_HEAD_RE.match(hs)
+                if cm:
+                    kind = cm.group(1)
+                elif hs in ("else", "do", "try"):
+                    kind = hs
+                elif _CONTAINER_RE.match(hs) and ")" not in hs:   # 함수 안에서 정의한 구조체
+                    kind = "container"
+                    nm = _CONTAINER_NAME_RE.search(hs)
+                    name = nm.group(1) if nm else ""
+            blocks.append({"kind": kind, "name": name, "head": hstart + (len(header) - len(header.lstrip())),
+                           "open": i, "close": -1, "parent": parent})
+            stack.append(len(blocks) - 1)
+            stmt = i + 1
+        else:
+            if skip:
+                skip -= 1
+                continue
+            if not stack:
+                ok = False
+            else:
+                blocks[stack.pop()]["close"] = i + 1
+            stmt = i + 1
+    if stack or skip:
+        ok = False
+    for b in blocks:                                         # 닫히지 않은 블록은 파일 끝까지로 둔다(위치 판단이 멈추지 않게)
+        if b["close"] < 0:
+            b["close"] = len(struct)
+    return blocks, ok
+
+
+def block_at(blocks, pos, kinds=None):
+    """pos 를 포함하는 가장 안쪽 블록의 번호(없으면 -1). kinds 를 주면 그 종류인 가장 안쪽 블록을 찾는다.
+    블록 안쪽이란 여는 중괄호 뒤부터 닫는 중괄호 앞까지다."""
+    lo, hi = 0, len(blocks)
+    while lo < hi:                                           # open <= pos 인 마지막 블록
+        mid = (lo + hi) // 2
+        if blocks[mid]["open"] < pos:
+            lo = mid + 1
+        else:
+            hi = mid
+    k = lo - 1
+    while k >= 0 and not (blocks[k]["open"] < pos < blocks[k]["close"]):
+        k = blocks[k]["parent"] if blocks[k]["open"] < pos else k - 1
+    while k >= 0 and kinds and blocks[k]["kind"] not in kinds:
+        k = blocks[k]["parent"]
+    return k
+
+
+def func_at(doc, pos):
+    """pos 를 본문에 품은 함수(Doc.funcs 의 항목). 없으면 None."""
+    for f in doc.funcs:
+        if f["body_start"] < pos < f["end"]:
+            return f
+    return None
+
+
+def _match_fwd(s, pos, o, c, limit=400000):
+    """pos 의 여는 괄호 o 와 짝이 되는 닫는 괄호 c 의 위치(없으면 -1). limit 글자 안에서만 찾는다."""
+    d = 0
+    for i in range(pos, min(len(s), pos + limit)):
+        ch = s[i]
+        if ch == o:
+            d += 1
+        elif ch == c:
+            d -= 1
+            if d == 0:
+                return i
+    return -1
+
+
+_CTRL_KW_RE = {k: re.compile(r"(?<![\w#])%s\s*\(" % k) for k in ("if", "for", "while", "switch")}
+_ELSE_RE = re.compile(r"\s*else\b")
+
+
+def _stmt_end(s, pos):
+    """pos 에서 시작하는 문장 하나의 끝 위치(끝 문자 다음). 중괄호 블록이면 짝까지, 제어문이면 그 범위까지, 아니면 ; 까지."""
+    n = len(s)
+    while pos < n and s[pos].isspace():
+        pos += 1
+    if pos >= n:
+        return n
+    if s[pos] == "{":
+        e = _match_fwd(s, pos, "{", "}")
+        return e + 1 if e >= 0 else n
+    for k, rx in _CTRL_KW_RE.items():
+        if rx.match(s, pos):
+            return _ctrl_end(s, pos, k)[1]
+    m = re.compile(r"(?:else|do|try)\b").match(s, pos)
+    if m:
+        e = _stmt_end(s, m.end())
+        if s.startswith("do", pos):                           # do 본문 뒤의 while (...) ;
+            w = re.compile(r"\s*while\s*\(").match(s, e)
+            if w:
+                c = _match_fwd(s, w.end() - 1, "(", ")", 5000)
+                sc = s.find(";", c) if c >= 0 else -1
+                return sc + 1 if sc >= 0 else e
+        return e
+    d = 0
+    for i in range(pos, n):
+        ch = s[i]
+        if ch in "({[":
+            d += 1
+        elif ch in ")}]":
+            if d == 0:
+                return i                                      # 감싼 블록의 끝에 닿았다(; 없이 끝난 문장)
+            d -= 1
+        elif ch == ";" and d == 0:
+            return i + 1
+    return n
+
+
+def _ctrl_end(s, pos, kind):
+    """pos 에서 시작하는 제어문의 (조건 괄호 끝, 문장 끝). 조건 괄호의 짝을 못 찾으면 (-1, -1).
+    if 는 뒤따르는 else 와 else if 까지 한 범위로 본다."""
+    p = s.find("(", pos)
+    c = _match_fwd(s, p, "(", ")", 5000) if p >= 0 else -1
+    if c < 0:
+        return -1, -1
+    end = _stmt_end(s, c + 1)
+    if kind == "if":
+        m = _ELSE_RE.match(s, end)
+        if m:
+            end = _stmt_end(s, m.end())
+    return c + 1, end
+
+
+def ctrl_ranges(struct, kinds=("if",)):
+    """제어문의 범위 목록. 돌려주는 값: [{"kind", "start", "cond_end", "end"}] (시작 위치 순서), 범위를 못 정한 개수
+    else if 로 이어진 것은 맨 앞 if 의 범위에 들어 있으므로 따로 올리지 않는다. do 의 꼬리인 while (...) ; 도 올리지 않는다.
+    struct 는 전처리기까지 가린 본문이어야 한다(#if 는 가려져 있어 잡히지 않는다)."""
+    out, bad = [], 0
+    for k in kinds:
+        k2 = {"loop": None}.get(k, k)
+        for kw in (("for", "while") if k2 is None else (k2,)):
+            for m in _CTRL_KW_RE[kw].finditer(struct):
+                pre = struct[max(0, m.start() - 12):m.start()].rstrip()
+                if kw == "if" and pre.endswith("else"):
+                    continue                                  # else if: 앞 if 의 연쇄에 들어 있다
+                ce, end = _ctrl_end(struct, m.start(), kw)
+                if ce < 0:
+                    bad += 1
+                    continue
+                if kw == "while" and pre.endswith("}") and struct[ce:end].strip() == ";":
+                    continue                                  # do { } while (...); 의 꼬리
+                out.append({"kind": kw, "start": m.start(), "cond_end": ce, "end": end})
+    out.sort(key=lambda r: r["start"])
+    return out, bad
+
+
+def is_stmt_start(struct, pos):
+    """pos(줄의 시작)가 문장이 시작할 수 있는 자리인가: 그 앞의 마지막 코드 문자가 ; { } 이거나 파일의 처음이다."""
+    i = pos - 1
+    while i >= 0 and struct[i].isspace():
+        i -= 1
+    return i < 0 or struct[i] in ";{}"
+
+
+def stmt_start_of(struct, pos):
+    """pos 를 품은 문장이 시작하는 위치(첫 코드 문자). 선언 머리를 찾을 때 쓴다(예: 큰 초기화 목록의 '{' 에서 선언의 처음으로)."""
+    i = pos - 1
+    d = 0
+    while i >= 0:
+        ch = struct[i]
+        if ch in ")]":
+            d += 1
+        elif ch in "([":
+            d -= 1
+        elif ch in ";{}" and d <= 0:
+            break
+        i -= 1
+    i += 1
+    while i < pos and struct[i].isspace():
+        i += 1
+    return i
+
+
+def decl_regex(name):
+    """문장 하나가 name 을 선언하는지 보는 정규식. 그룹 1 은 이름 뒤의 [..] 들이다.
+    '타입 [*&] 이름 [..] (= , ; { ( 또는 끝)' 꼴을 본다. 앞 선언자를 건너뛰는 꼴(char *a, name[10])도 받는다."""
+    return re.compile(r"^\s*(?:(?:const|static|unsigned|signed|long|short|struct|volatile|constexpr|thread_local|extern|register|mutable)\s+)*"
+                      r"(?!(?:%s)\b)[A-Za-z_][\w:]*(?:\s*<[^;{}]*>)?(?:\s*(?:const|\*|&))*[\s\*&]+"
+                      r"(?:[^;=(){}]*?,\s*[\*&\s]*)?%s\s*((?:\[[^\]]*\])*)\s*(?:=|,|\{|\(|$)"
+                      % ("|".join(sorted(_NOT_DECL_WORDS)), re.escape(name)), re.S)
+
+
+def _decl_info(kind, stmt, name, arr, pos, head=""):
+    """선언 문장에서 배열·포인터 여부를 읽어 결과 dict 를 만든다."""
+    text = " ".join(stmt.split())
+    before = text.split(name)[0] if name in text else text
+    # 포인터 여부: 이름 바로 앞 선언자에 * 가 붙었는가(char *a, b[10] 에서 b 는 포인터가 아니다)
+    last = before.rsplit(",", 1)[-1]
+    return {"kind": kind, "text": text[:200], "pos": pos, "is_array": bool(arr), "is_pointer": "*" in last and not arr,
+            "certain": True, "head": head}
+
+
+def find_decl(struct, pos, name, big=()):
+    """pos 에서 쓰인 name 의 선언을 함수 안에서 찾는다. 돌려주는 값: dict 또는 None
+      kind: "local"(지역 변수) / "param"(함수 인자) / "outside"(함수 안에는 선언이 없다. head 에 함수 머리글이 들어 있다)
+    방법: pos 에서 거꾸로 가며 문장을 하나씩 본다. 이미 닫힌 블록( } ... { ) 안의 선언은 범위 밖이므로 보지 않는다.
+          감싼 블록의 '{' 를 만나면 그 블록의 첫 문장도 검사한 뒤 바깥 블록으로 나간다. 함수 머리에 닿으면 인자 목록을 본다.
+    big: 큰 초기화 목록의 (시작, 끝) 목록. 그 안은 건너뛴다(수만 줄짜리 표를 한 글자씩 보지 않기 위한 것)."""
+    rx = decl_regex(name)
+    spans = sorted(big)
+    depth, end, i, steps = 0, pos, pos - 1, 0
+    while i >= 0 and steps < 600000:
+        steps += 1
+        for s0, e0 in spans:                                  # 큰 초기화 목록 안이면 그 시작으로 건너뛴다
+            if s0 < i < e0 - 1:
+                i = s0
+                break
+        ch = struct[i]
+        if ch == "}":
+            if depth == 0:
+                stmt = struct[i + 1:end]
+                m = rx.match(stmt)
+                if m:
+                    return _decl_info("local", stmt, name, m.group(1), i + 1)
+            depth += 1
+        elif ch == "{":
+            if depth > 0:
+                depth -= 1
+                if depth == 0:
+                    end = i
+            else:
+                stmt = struct[i + 1:end]
+                m = rx.match(stmt)
+                if m:
+                    return _decl_info("local", stmt, name, m.group(1), i + 1)
+                hs = max(struct.rfind(";", 0, i), struct.rfind("}", 0, i), struct.rfind("{", 0, i)) + 1
+                head = struct[hs:i]
+                if ")" in head and not re.match(r"\s*(?:else\s+)?(?:if|for|while|switch|catch|do|try|else)\b", head):
+                    pm = re.search(r"[(,]\s*([^(),]*?[\s\*&])%s\s*(\[[^\]]*\])?\s*(?:=[^,)]*)?[,)]" % re.escape(name), head)
+                    if pm:
+                        return _decl_info("param", pm.group(1) + name + (pm.group(2) or ""), name, pm.group(2), hs, head)
+                    return {"kind": "outside", "text": "", "pos": hs, "is_array": False, "is_pointer": False,
+                            "certain": False, "head": " ".join(head.split())}
+                fm = re.search(r"\bfor\s*\(([^;]*);", head)   # for (int i = 0; ...) 의 선언
+                if fm:
+                    m2 = rx.match(fm.group(1))
+                    if m2:
+                        return _decl_info("local", fm.group(1), name, m2.group(1), hs)
+                end = i
+        elif ch == ";" and depth == 0:
+            stmt = struct[i + 1:end]
+            m = rx.match(stmt)
+            if m:
+                return _decl_info("local", stmt, name, m.group(1), i + 1)
+            end = i
+        i -= 1
+    return None
+
+
+def init_shape(struct, open_pos):
+    """초기화 목록( = { ... } )의 모양을 센다. open_pos 는 여는 중괄호의 위치다.
+    돌려주는 값: {"end", "rows", "row_counts": {요소 수: 행 수}, "flat": 맨 바깥 깊이의 요소 수, "macro_rows", "ok"}
+      rows       안쪽 중괄호로 묶인 행의 수(2차원 표의 행)
+      flat       안쪽 중괄호 없이 놓인 요소의 수(1차원 배열, 또는 괄호를 생략한 표)
+      macro_rows 행을 매크로 호출로 쓴 표인가(이름( 꼴이 바깥 깊이에 있다). 그러면 요소 수를 믿을 수 없다"""
+    depth = rows = n = flat = 0
+    had = macro = False
+    counts = {}
+    end = -1
+    for i in range(open_pos, len(struct)):
+        ch = struct[i]
+        if ch == "{":
+            depth += 1
+            if depth == 2:
+                n, had = 0, False
+        elif ch == "}":
+            if depth == 2:
+                rows += 1
+                k = n + (1 if had else 0)
+                counts[k] = counts.get(k, 0) + 1
+            elif depth == 1 and had:
+                flat += 1
+            depth -= 1
+            if depth == 0:
+                end = i + 1
+                break
+            if depth == 1:
+                had = False                                    # 행 하나가 끝났다. 바깥 깊이의 요소로는 세지 않는다
+        elif depth == 2:
+            if ch == ",":
+                n += 1
+                had = False
+            elif not ch.isspace():
+                had = True
+        elif depth == 1:
+            if ch == ",":
+                if had:
+                    flat += 1
+                had = False
+            elif ch == "(":
+                macro = True
+            elif not ch.isspace():
+                had = True
+    return {"end": end, "rows": rows, "row_counts": counts, "flat": flat, "macro_rows": macro, "ok": end > 0}
+
+
+def const_value(expr, names):
+    """정수 상수식의 값을 구한다. names 는 {이름: 값}. 숫자, 이름, + - * / 와 괄호만 받는다. 그 밖이면 None.
+    eval 을 쓰지 않는다(소스에서 읽은 글자를 실행하지 않기 위한 것)."""
+    toks = re.findall(r"0[xX][0-9a-fA-F]+[uUlL]*|\d+[uUlL]*|[A-Za-z_]\w*|[-+*/()]|\S", expr)
+    pos = [0]
+
+    def peek():
+        return toks[pos[0]] if pos[0] < len(toks) else None
+
+    def atom():
+        t = peek()
+        if t is None:
+            return None
+        pos[0] += 1
+        if t == "(":
+            v = add()
+            if peek() != ")":
+                return None
+            pos[0] += 1
+            return v
+        if t in "+-":
+            v = atom()
+            return None if v is None else (v if t == "+" else -v)
+        if re.match(r"0[xX]|\d", t):
+            return int(t.rstrip("uUlL"), 0)
+        if re.match(r"[A-Za-z_]", t):
+            return names.get(t)
+        return None
+
+    def mul():
+        v = atom()
+        while v is not None and peek() in ("*", "/"):
+            op = toks[pos[0]]
+            pos[0] += 1
+            w = atom()
+            if w is None or (op == "/" and w == 0):
+                return None
+            v = v * w if op == "*" else int(v / w)
+        return v
+
+    def add():
+        v = mul()
+        while v is not None and peek() in ("+", "-"):
+            op = toks[pos[0]]
+            pos[0] += 1
+            w = mul()
+            if w is None:
+                return None
+            v = v + w if op == "+" else v - w
+        return v
+
+    if not toks:
+        return None
+    v = add()
+    return v if pos[0] == len(toks) else None
+
+
+def comment_spans(text):
+    """주석의 (시작, 끝) 목록. mask_code 와 같은 토큰 규칙을 쓴다."""
+    return [m.span() for m in _TOKEN_RE.finditer(text) if m.group()[0] == "/"]
+
+
+def word_parts(name):
+    """식별자를 낱말로 쪼갠다(소문자). writeCertVerifLog -> [write, cert, verif, log], WR_EVT_LOG -> [wr, evt, log]"""
+    return [w.lower() for w in re.findall(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+", name)]
+
+
+# ============================================================================
 # [M05 규칙]  규칙 카탈로그와 탐지
 # 목적: 버전 변경으로 문제가 되는 코드 패턴을 정의한다. sLLM 없이 처리하는 범위를
 #       넓히려면 여기에 규칙을 추가한다.
@@ -1137,7 +1648,8 @@ RULES = [
      "title": "보안 CRT 경고 대상 함수 사용(C4996)", "when": {"since": 2005, "standing": True},
      "pattern": r"(?<![\w.>:])(?:strcpy|strcat|sprintf|vsprintf|sscanf|scanf|fopen|strncpy|strncat|strtok|gets|"
                 r"localtime|gmtime|ctime|asctime|getenv|wcscpy|wcscat|swscanf|_snprintf|_vsnprintf|_splitpath|"
-                r"_makepath|mbstowcs|wcstombs)\s*\(",
+                r"_makepath|mbstowcs|wcstombs|_itoa|_ltoa|_ultoa|_i64toa|_ui64toa|_itow|_ltow|_ultow|_strlwr|_strupr|"
+                r"_wcslwr|_wcsupr|_mktemp|_ecvt|_fcvt|_gcvt)\s*\(",
      "setting": "전처리기 정의 추가: _CRT_SECURE_NO_WARNINGS"},
     {"id": "R-T0-CRT-NONSTDC", "tier": "T0", "category": "CRT", "collapse": True,
      "title": "POSIX 이름 함수 사용(C4996)", "when": {"since": 2005, "standing": True, "deprecated": "suppress"},
@@ -2647,6 +3159,8 @@ def parse_vcproj(text):
                 cfg["runtime"] = ta.get("RuntimeLibrary", "")
                 cfg["cl"] = {k: ta[k] for k in ("WarnAsError", "TreatWChar_tAsBuiltInType", "ForceConformanceInForLoopScope",
                                                 "Detect64BitPortabilityProblems") if k in ta}
+                if re.search(r"(?<![\w/-])[/-]sdl(?![\w-])", ta.get("AdditionalOptions", "")):
+                    cfg["cl"]["SDLCheck"] = "true"          # 추가 옵션에 /sdl 을 직접 적은 경우
             elif ta.get("Name") in ("VCLinkerTool", "VCLibrarianTool"):
                 cfg["libs"] += [x for x in ta.get("AdditionalDependencies", "").split() if x]
         configs.append(cfg)
@@ -2718,6 +3232,11 @@ def parse_vcxproj(text):
                     v = _vcx_tag(b, tag)
                     if v is not None:
                         c["cl"][key] = v
+                v = _vcx_tag(b, "SDLCheck")                 # SDL 검사(/sdl): C4996 등을 오류로 올린다
+                if v is not None:
+                    c["cl"]["SDLCheck"] = v
+                if re.search(r"(?<![\w/-])[/-]sdl(?![\w-])", _vcx_tag(b, "AdditionalOptions") or ""):
+                    c["cl"]["SDLCheck"] = "true"
                 c["std"] = _vcx_tag(b, "LanguageStandard") or c["std"]
                 c["conformance"] = _vcx_tag(b, "ConformanceMode") or c["conformance"]
             for tag in ("Link", "Lib"):
@@ -2758,6 +3277,9 @@ def project_checks(projects):
             if val("WarnAsError") in ("true", "1"):
                 add(pf, name, "경고를 오류로 처리(/WX)", "새 컴파일러의 경고(C4996 등)가 전부 빌드 오류가 된다. 2절의 설정 항목을 "
                     "빠짐없이 적용하거나, 전환이 끝날 때까지 이 옵션을 끈다")
+            if val("SDLCheck") in ("true", "1"):
+                add(pf, name, "SDL 검사(/sdl)", "사용 중단 경고(C4996)가 빌드 오류가 된다. 2절의 전처리기 정의(_CRT_SECURE_NO_WARNINGS 등)를 "
+                    "빠짐없이 적용하거나, 전환이 끝날 때까지 SDL 검사를 끈다")
             if val("TreatWChar_tAsBuiltInType") in ("false", "0"):
                 add(pf, name, "wchar_t 를 내장 형식으로 보지 않음(/Zc:wchar_t-)", "새 MFC, ATL, 표준 라이브러리와 이름이 맞지 않아 "
                     "LNK2019 가 날 수 있다. 가능하면 기본값(예)으로 바꾸고, 함께 링크하는 .lib 도 같은 설정으로 다시 빌드한다")
@@ -2821,6 +3343,12 @@ class Ctx:
         self.rules_off = []                       # 이 환경값에서 꺼진 규칙: (ID, 제목, 이유)
         self.exceptions = {"rules_off": [], "skip": [], "brace_macros": {}}     # 예외 파일(load_exceptions)
         self._docs = OrderedDict()
+        self._aux = {}                            # 파일별 참고 재료(plan_tasks 가 만든다)
+        self._gdecl = self._classes = None        # 파일 범위 선언 색인, 구조체 본문 색인(처음 필요할 때 만든다)
+        self._names = None                        # 패키지에 나오는 이름 전부(새 이름 검사에 쓴다. 처음 필요할 때 만든다)
+        self._calls = None                        # 호출 꼴로 쓰인 이름의 색인(문장 요청의 해석에 쓴다)
+        self._snips = {}                          # 심볼 정의 조각의 기억
+        self.llm_calls = 0                        # 이번 실행에서 실제로 보낸 sLLM 호출 수(--max-calls 예산에 쓴다)
 
     def p(self, *parts):
         return os.path.join(self.run_dir, *parts)
@@ -3524,117 +4052,900 @@ def _resolve_names(ctx, files, names):
     return {k: next(iter(v)) for k, v in found.items() if len(v) == 1}
 
 
-def _array_plan(ctx, ft, files):
-    """배열 -> 구조체 요청의 변경 계약을 만든다(요구사항 E3): 구조체 이름, 요소 타입, 크기, 필드 순서, 정의.
-    돌려주는 값: (계약 dict, "") 또는 (None, 정할 수 없는 이유). 정할 수 없으면 선언은 수동 검토로 남긴다.
-    필드는 인덱스 순서대로 놓고, 매핑에 없는 인덱스는 reserved_번호 로 채워 크기와 배치를 배열과 같게 둔다
-    (요청의 "unmapped": "drop" 이면 채우지 않는다). 필드 타입은 배열의 요소 타입이다(요청의 types 로 바꿀 수 있다)."""
-    target, mapping = ft["target"], ft["mapping"]
-    decl_rx = re.compile(r"(?m)^(?P<indent>[ \t]*)(?P<pre>(?:(?:extern|static|const|volatile)\s+)*)(?P<type>[A-Za-z_][\w \t]*?[\w\*])\s*"
-                         r"\b%s\s*\[\s*(?P<size>[^\]\n]*)\]\s*(?P<init>=[^;]*)?;" % re.escape(target))
-    decls = []
-    for rel in files:
-        for m in decl_rx.finditer(get_doc(ctx, rel).code):
-            if m.group("type").split()[-1] not in _NOT_TYPE_WORDS:
-                decls.append((rel, m.start(), m.end(), m.groupdict()))
-    if not decls:
-        return None, "배열의 선언을 패키지에서 찾지 못함"
-    types = {" ".join(g["type"].split()) for _r, _s, _e, g in decls}
-    if len(types) != 1:
-        return None, "선언마다 요소 타입이 다름(%s)" % ", ".join(sorted(types))
-    elem = types.pop()
-    sizes = {g["size"].strip() for _r, _s, _e, g in decls if g["size"].strip()}
-    is_int = lambda x: re.match(r"^%s$" % _INT_LIT, x) is not None
-    vals = _resolve_names(ctx, files, [k for k in list(mapping) + sorted(sizes) if not is_int(k)])
-    num = lambda x: _to_int(x) if is_int(x) else vals.get(x)
-    size_vals = {num(x) for x in sizes}
-    if len(size_vals) != 1 or None in size_vals:
-        return None, "배열 크기를 정할 수 없음(%s)" % (", ".join(sorted(sizes)) or "크기를 적은 선언이 없음")
-    n = size_vals.pop()
-    if not 0 < n <= 1024:
-        return None, "배열 크기(%d)가 구조체로 옮기기에 맞지 않음" % n
-    idx = {}
-    for k, field in mapping.items():
-        v = num(k)
-        if v is None:
-            return None, "인덱스 이름 %s 의 값을 패키지에서 찾지 못함(#define 이나 enum 이 없음)" % k
-        if v in idx or not 0 <= v < n:
-            return None, "인덱스 %s(%d)가 다른 것과 겹치거나 배열 크기(%d)를 벗어남" % (k, v, n)
-        idx[v] = field
-    sname, ftypes = ft.get("struct_name") or (target.upper() + "_T"), ft.get("types") or {}
-    lines = ["typedef struct %s" % sname, "{"]
-    for i in range(n):
-        if i in idx:
-            lines.append("    %s %s;" % (ftypes.get(idx[i], elem), idx[i]))
-        elif ft.get("unmapped", "reserved") != "drop":
-            lines.append("    %s reserved_%d;" % (elem, i))
-    lines.append("} %s;" % sname)
-    heads = [d for d in decls if os.path.splitext(d[0])[1].lower() in (".h", ".hh", ".hpp", ".hxx")]
-    primary = (heads or decls)[0]
-    return {"struct": sname, "elem": elem, "size": n, "definition": "\n".join(lines), "decls": decls, "primary": primary[:2],
-            "in_header": bool(heads), "n_files": len({d[0] for d in decls})}, ""
+# ---------------------------------------------------------------------------
+# 배열·표 -> 구조체 (0.8.0 에서 다시 씀. 15_구분별_검토현황과_구현명세 4절, 6.2 의 D2, 7.2 의 E5)
+# 순서: _array_scan(선언 찾기, 기호 구분, 사용처 전수 분류) -> _array_gate(적용할지 판정) -> _array_apply(수정 레코드)
+# 원칙: (1) 같은 이름이라도 다른 기호(구조체 멤버, 같은 이름의 지역 변수)는 건드리지 않는다
+#       (2) 이름이 나온 곳을 전부 세고 하나도 남기지 않고 분류한다. 처리 범위 밖 파일도 센다
+#       (3) 기계적으로 못 바꾸는 곳이 있고 정책이 stop 이면 아무것도 적용하지 않는다(선언과 사용처가 어긋나면 컴파일되지 않는다)
+#       (4) 초기화 목록(데이터)은 수정 범위에 넣지 않는다. 선언의 '타입 이름[크기]' 부분만 바꾼다
+# ---------------------------------------------------------------------------
+_ARR_POLICIES = ("stop", "manual", "llm", "cast", "raw_view")
+_COUNTOF_RE = re.compile(r"\b(?:_countof|ARRAYSIZE|_ARRAYSIZE|ARRAY_SIZE|RTL_NUMBER_OF|NELEM|countof|dimof)\s*\(\s*$")
+_ARR_CLASS_LABEL = OrderedDict([
+    ("decl", "선언"), ("const_index", "상수 인덱스"), ("var_index", "변수 인덱스"), ("col_const", "열 상수"), ("col_var", "열 변수"),
+    ("row_bare", "행을 통째로 사용"), ("bare", "이름을 통째로 사용"), ("mem_arg", "메모리·입출력 함수의 인자"), ("addr_name", "이름의 주소(&이름)"),
+    ("decl_odd", "선언(지원하지 않는 꼴)"), ("countof", "요소 수 매크로(_countof 등)"), ("sizeof_name", "sizeof(이름)"), ("sizeof_row", "sizeof(행)"), ("sizeof_elem", "sizeof 안의 요소"),
+    ("other_symbol", "다른 기호(같은 이름)"), ("out_of_scope", "처리 범위 밖 파일")])
 
 
-def _array_contract_text(ft):
-    """배열 -> 구조체 요청의 계약을 sLLM 지침에 붙일 글로(요구사항 E3: 사용처 프롬프트에 고정 사실로 넣는다)."""
-    if not ft.get("_definition"):
-        return ""
-    return (" 배열의 선언은 구조체로 바뀌었다. 새 정의: %s 배열 이름을 통째로 쓰던 곳(함수 인자, 포인터 연산)은 &%s 로 바꾸거나 "
-            "필드별로 고친다." % (" ".join(ft["_definition"].split()), ft["target"]))
+def _array_policy(ft):
+    """요청의 정책을 정한다. 돌려주는 값: {"var", "bare", "on_unresolved", "legacy", "convert"}
+    새 양식: variable_index, bare_use(stop|manual|llm|cast|raw_view), on_unresolved(stop|keep). 기본값은 모두 stop.
+    옛 양식(0.7.1 까지의 llm_variable_index, llm_other_uses, convert_declaration 이 하나라도 있는 요청)은 예전처럼 동작한다:
+    변수 인덱스는 수동(또는 sLLM), 통째 사용은 sLLM(또는 수동), 못 푼 곳이 있어도 나머지를 적용한다."""
+    legacy = any(k in ft for k in ("llm_variable_index", "llm_other_uses", "convert_declaration"))
+    if legacy:
+        var = "llm" if ft.get("llm_variable_index") else "manual"
+        bare = "llm" if ft.get("llm_other_uses", True) else "manual"
+        unres = "keep"
+    else:
+        var = bare = unres = "stop"
+    return {"var": ft.get("variable_index", var), "bare": ft.get("bare_use", bare), "on_unresolved": ft.get("on_unresolved", unres),
+            "legacy": legacy, "convert": bool(ft.get("convert_declaration", True))}
 
 
-def _array_apply_plan(ctx, ft, plan, files):
-    """계약대로 배열 선언을 구조체 선언으로 바꾸고, 배열 이름을 통째로 쓰는 곳을 처리한다. 돌려주는 값: (바꾼 선언 수, 통째로 쓰는 곳의 수)
-      - 선언: 'int g[10];' -> 'G_T g;'. 구조체 정의는 첫 선언(헤더에 선언이 있으면 그 헤더의 것) 앞에 한 번 넣는다
-      - 메모리 함수의 인자: memset(g, ...) -> memset(&g, ...)       - sizeof(g): 그대로 둔다
-      - 그 밖(함수 인자, 포인터 연산 등): 요청의 llm_other_uses 가 참이면(기본) sLLM, 아니면 수동 검토
-    모든 수정은 검토 대상으로 표시한다."""
+def _site_sub(code, ne, shape):
+    """이름 뒤가 옛 접근 꼴인가. 1차원은 이름[..], 2차원은 이름[..][..] 이다. 구조체로 바뀐 뒤에 남으면 컴파일되지 않는 꼴이다."""
+    a = ne
+    while a < len(code) and code[a] in " \t":
+        a += 1
+    if a >= len(code) or code[a] != "[":
+        return False
+    if shape != "2d":
+        return True
+    e1 = _match_fwd(code, a, "[", "]", 4000)
+    if e1 < 0:
+        return False
+    b = e1 + 1
+    while b < len(code) and code[b] in " \t":
+        b += 1
+    return b < len(code) and code[b] == "["
+
+
+def _count_sub(code, target, shape):
+    """본문에서 옛 접근 꼴의 수를 센다(잔여 재탐지용)."""
+    return sum(1 for m in re.finditer(r"\b%s\b" % re.escape(target), code) if _site_sub(code, m.end(), shape))
+
+
+def _bracket_end(code, pos):
+    """pos 의 '[' 와 짝이 되는 ']' 의 위치(없으면 -1)."""
+    return _match_fwd(code, pos, "[", "]", 4000)
+
+
+def _array_decl_rx(target):
+    """'타입 이름[크기]' 또는 '타입 이름[행][열]' 로 시작하는 선언(줄의 처음). 초기화 목록은 잡지 않는다."""
+    return re.compile(r"(?m)^(?P<indent>[ \t]*)(?P<pre>(?:(?:extern|static|const|volatile)\s+)*)(?P<type>[A-Za-z_][\w \t]*?[\w\*])\s*"
+                      r"\b%s\s*\[\s*(?P<d1>[^\]\n]*)\]\s*(?:\[\s*(?P<d2>[^\]\n]*)\]\s*)?(?==|;)" % re.escape(target))
+
+
+def _array_scan(ctx, ft):
+    """배열(표)의 선언을 정하고, 이름이 나온 곳을 전부 분류한다. 돌려주는 값: 계획 dict
+      ok, why          선언과 구조체 정의를 정했는가, 못 정한 이유
+      shape            "1d" 또는 "2d"
+      elem, n, rows    요소 타입, 필드 수(1차원은 요소 수, 2차원은 열 수), 2차원의 행 크기 글자
+      struct, definition, fields   구조체 이름, 정의 본문, {인덱스: 필드 이름}
+      decls            바꿀 선언 목록 [{rel, start, end, indent, pre, d1, in_func, primary}]
+      sites            사용처 목록 [{rel, start, end, line, cls, ...}]. decl 과 other_symbol, out_of_scope 도 들어 있다
+      counts, total    분류별 건수, 이름이 나온 전체 건수(둘의 합이 같아야 한다)
+      warnings         사람이 알아야 할 것(## 매크로, 모양 등)"""
     st, target = ctx.store, ft["target"]
+    plan = {"ok": False, "why": "", "shape": "1d", "sites": [], "decls": [], "counts": OrderedDict(), "total": 0, "warnings": [],
+            "definition": "", "struct": "", "fields": {}, "elem": "", "n": 0, "rows": "", "const": False}
+    files = [(r["path"], r["status"]) for r in st.q("SELECT path, status FROM files WHERE kind='source' ORDER BY path")]
+    name_rx = re.compile(r"\b%s\b" % re.escape(target))
+    decl_rx = _array_decl_rx(target)
+    # ---- 1) 선언 후보를 모으고 종류를 가른다: 파일 범위 / 함수 안 / 구조체 멤버
+    cands = []
+    for rel, status in files:
+        d = get_doc(ctx, rel)
+        if not d.ok or target not in d.code:
+            continue
+        blocks = d.get_blocks()
+        for m in decl_rx.finditer(d.code):
+            if m.group("type").split()[-1] in _NOT_TYPE_WORDS:
+                continue
+            k = block_at(blocks, m.start("type"))
+            while k >= 0 and blocks[k]["kind"] == "container" and re.search(r"\bnamespace\b|\bextern\b", d.struct[blocks[k]["head"]:blocks[k]["open"]]):
+                k = blocks[k]["parent"]                      # namespace, extern "C" 안은 파일 범위로 본다
+            where = "file" if k < 0 else ("member" if blocks[k]["kind"] == "container" else "func")
+            fk = block_at(blocks, m.start("type"), ("func",))
+            dims_end = (m.end("d2") if m.group("d2") is not None else m.end("d1")) + 1
+            cands.append({"rel": rel, "status": status, "start": m.start("pre") if m.group("pre") else m.start("type"), "end": dims_end,
+                          "tail": m.end(),
+                          "line_start": m.start(), "indent": m.group("indent"), "pre": m.group("pre") or "",
+                          "type": " ".join(m.group("type").split()), "d1": m.group("d1").strip(), "d2": m.group("d2"),
+                          "where": where, "extern": "extern" in (m.group("pre") or ""), "static": "static" in (m.group("pre") or ""),
+                          "func": (blocks[fk]["open"], blocks[fk]["close"], blocks[fk]["name"]) if fk >= 0 else None,
+                          "has_init": d.code[m.end():m.end() + 1] == "="})
+    file_decls = [c for c in cands if c["where"] == "file"]
+    func_decls = [c for c in cands if c["where"] == "func"]
+    scope, chosen = "", []
+    if file_decls:
+        defs = [c for c in file_decls if not c["extern"]]
+        if ft.get("defined_in"):
+            want = norm_rel(ft["defined_in"]).lower()
+            defs = [c for c in defs if c["rel"].lower() == want]
+        def_files = sorted({c["rel"] for c in defs})
+        if len(def_files) > 1:
+            plan["why"] = "같은 이름의 정의가 여러 파일에 있음(%s). 요청에 defined_in 을 준다" % ", ".join(def_files[:4])
+            return _array_fill_other(ctx, ft, plan, files, name_rx, cands, [])
+        if defs and all(c["static"] for c in defs):
+            scope, chosen = "file", [c for c in file_decls if c["rel"] == defs[0]["rel"]]
+        else:
+            scope, chosen = "global", file_decls
+    elif func_decls:
+        if ft.get("function"):
+            func_decls = [c for c in func_decls if c["func"] and c["func"][2].split("::")[-1] == ft["function"].split("::")[-1]]
+        if len(func_decls) != 1:
+            plan["why"] = ("함수 안의 선언이 %d곳 있음. 요청에 function(함수 이름)을 준다" % len(func_decls)) if func_decls else "요청의 function 에 그 선언이 없음"
+            return _array_fill_other(ctx, ft, plan, files, name_rx, cands, [])
+        scope, chosen = "function", func_decls
+    else:
+        plan["why"] = "배열의 선언을 패키지에서 찾지 못함"
+        return _array_fill_other(ctx, ft, plan, files, name_rx, cands, [])
+    plan["scope"] = scope
+    # ---- 2) 선언끼리 타입과 크기가 같은지, 1차원인지 2차원인지
+    src_files = [rel for rel, _s in files]
+    types = {c["type"] for c in chosen}
+    is2d = {c["d2"] is not None for c in chosen}
+    why = ""
+    if len(types) != 1:
+        why = "선언마다 요소 타입이 다름(%s)" % ", ".join(sorted(types))
+    elif len(is2d) != 1:
+        why = "선언마다 차원이 다름(1차원과 2차원이 섞여 있음)"
+    elif ft.get("stride"):
+        why = "평면 배열을 레코드 간격으로 나누는 변환(stride)은 이 판에서 지원하지 않음"
+    shape = "2d" if True in is2d else "1d"
+    plan["shape"], plan["elem"] = shape, (sorted(types)[0] if types else "")
+    plan["const"] = any("const" in c["pre"] or re.search(r"\bconst\b", c["type"]) for c in chosen)
+    size_texts = sorted({(c["d2"] if shape == "2d" else c["d1"]).strip() for c in chosen if (c["d2"] if shape == "2d" else c["d1"]).strip()})
+    is_int = lambda x: re.match(r"^%s$" % _INT_LIT, x) is not None
+    mapping = ft["mapping"]
+    need_names = set(k for k in mapping if not is_int(k))
+    for t in size_texts:
+        need_names.update(re.findall(r"[A-Za-z_]\w*", t))
+    vals = _resolve_names(ctx, src_files, sorted(need_names))
+    n = None
+    if not why:
+        sv = {const_value(t, vals) for t in size_texts}
+        if len(sv) != 1 or None in sv:
+            why = "배열 크기를 정할 수 없음(%s)" % (", ".join(size_texts) or "크기를 적은 선언이 없음")
+        else:
+            n = sv.pop()
+            if not 0 < n <= 1024:
+                why = "%s(%d)가 구조체의 필드 수로 맞지 않음(1~1024)" % ("열 수" if shape == "2d" else "배열 크기", n)
+    idx = {}
+    if not why:
+        for k, field in mapping.items():
+            v = _to_int(k) if is_int(k) else vals.get(k)
+            if v is None:
+                why = "인덱스 이름 %s 의 값을 패키지에서 찾지 못함(#define 이나 enum 이 없음)" % k
+                break
+            if v in idx or not 0 <= v < n:
+                why = "인덱스 %s(%d)가 다른 것과 겹치거나 크기(%d)를 벗어남" % (k, v, n)
+                break
+            idx[v] = field
+    policy = _array_policy(ft)
+    if not why:
+        elem = plan["elem"]
+        sname = ft.get("struct_name") or (target.upper() + ("_ROW_T" if shape == "2d" else "_T"))
+        ftypes = ft.get("types") or {}
+        body = []
+        for i in range(n):
+            if i in idx:
+                body.append("%s %s;" % (ftypes.get(idx[i], elem), idx[i]))
+            elif ft.get("unmapped", "reserved") != "drop":
+                idx.setdefault(i, None)
+                body.append("%s reserved_%d;" % (elem, i))
+        if "raw_view" in (policy["var"], policy["bare"]):
+            # 배열 보기 유지: 필드와 배열을 함께 보는 공용체. 이름 없는 구조체는 컴파일러 확장이다(MSVC 는 받는다)
+            lines = ["typedef union %s" % sname, "{", "    struct", "    {"] + ["        " + b for b in body] + ["    };", "    %s raw[%d];" % (elem, n), "} %s;" % sname]
+        else:
+            lines = ["typedef struct %s" % sname, "{"] + ["    " + b for b in body] + ["} %s;" % sname]
+        plan.update(ok=True, n=n, struct=sname, definition="\n".join(lines),
+                    fields={i: (idx[i] if idx.get(i) else "reserved_%d" % i) for i in range(n) if i in idx},
+                    rows=sorted({c["d1"] for c in chosen if c["d1"]})[0] if shape == "2d" and any(c["d1"] for c in chosen) else "")
+        heads = [c for c in chosen if os.path.splitext(c["rel"])[1].lower() in (".h", ".hh", ".hpp", ".hxx")]
+        prim = (heads or [c for c in chosen if not c["extern"]] or chosen)[0]
+        prim_base = os.path.basename(prim["rel"]).lower()
+        seen_files = set()
+        for c in chosen:
+            c["primary"] = c is prim
+            # 이 파일이 정의가 든 파일을 직접 include 하지 않으면, 이 파일의 첫 선언 앞에도 정의를 넣어야 타입이 보인다
+            if c is prim:
+                c["need_def"] = True
+                seen_files.add(c["rel"])
+            elif c["rel"] not in seen_files:
+                seen_files.add(c["rel"])
+                incs = {os.path.basename(norm_rel(r["header"])).lower() for r in st.q("SELECT header FROM includes WHERE path=?", (c["rel"],))}
+                c["need_def"] = c["rel"] != prim["rel"] and prim_base not in incs
+            else:
+                c["need_def"] = False
+        if sum(1 for c in chosen if c.get("need_def")) > 1:  # 정의가 여러 파일에 들어가면 같은 번역 단위에서 두 번 보일 수 있다. 가드로 막는다
+            guard = re.sub(r"\W", "_", sname).upper() + "_DEFINED"
+            plan["definition_guarded"] = "#ifndef %s\n#define %s\n%s\n#endif" % (guard, guard, plan["definition"])
+            plan["warnings"].append("구조체 정의를 %d개 파일에 넣었다(정의가 든 파일을 include 하지 않는 선언이 있음). 중복을 막는 가드(%s)로 감쌌다. 공용 헤더로 모으는 것을 검토한다"
+                                    % (sum(1 for c in chosen if c.get("need_def")), guard))
+        plan["decls"] = chosen
+        # 초기화 목록의 모양(보고용). 데이터는 바꾸지 않으므로 모양이 달라도 변환은 유효하다
+        for c in chosen:
+            if c["has_init"]:
+                d = get_doc(ctx, c["rel"])
+                op = d.struct.find("{", c["tail"])
+                if op >= 0 and not d.struct[c["tail"] + 1:op].strip():
+                    sh = init_shape(d.struct, op)
+                    plan["init"] = {"rel": c["rel"], "chars": (sh["end"] - op) if sh["ok"] else 0, "rows": sh["rows"],
+                                    "row_counts": sh["row_counts"], "flat": sh["flat"], "macro_rows": sh["macro_rows"]}
+                    if shape == "2d" and sh["rows"] == 0 and sh["flat"]:
+                        plan["warnings"].append("초기화 목록에 안쪽 중괄호가 없다(평면으로 적은 표). 구조체 배열에서도 유효하지만 검토한다")
+                    if sh["macro_rows"]:
+                        plan["warnings"].append("초기화 목록의 행이 매크로 호출로 보인다. 요소 수를 확인하지 못했다")
+                    over = [k for k in sh["row_counts"] if shape == "2d" and k > n]
+                    if over:
+                        plan["warnings"].append("요소가 열 수(%d)보다 많은 행이 있다(%s개짜리)" % (n, ", ".join(str(k) for k in over)))
+    plan["why"] = why
+    return _array_fill_other(ctx, ft, plan, files, name_rx, cands, chosen, vals)
+
+
+def _array_fill_other(ctx, ft, plan, files, name_rx, cands, chosen, vals=None):
+    """이름이 나온 곳을 전부 분류해 plan["sites"] 에 채운다(선언을 못 정했어도 건수를 보고하기 위해 항상 한다)."""
+    target, shape, n = ft["target"], plan["shape"], plan["n"]
+    vals = dict(vals or {})
+    scope = plan.get("scope", "")
+    chosen_spans = {(c["rel"], c["start"]): c for c in chosen}
+    cand_spans = [(c["rel"], c["line_start"], c["end"], c) for c in cands]
+    def_func = chosen[0]["func"] if scope == "function" and chosen else None
+    def_file = chosen[0]["rel"] if scope in ("function", "file") and chosen else None
+    decl_rx_any = decl_regex(target)
+    shadow_rx = re.compile(r"[\w\*&\]>]\s*[\s\*&]\s*%s\s*(?:\[|=|;|,|\))" % re.escape(target))
+    sites, pending_idx = [], []
+    for rel, status in files:
+        d = get_doc(ctx, rel)
+        if not d.ok or target not in d.code:
+            continue
+        code, blocks = d.code, None
+        shadow_cache = {}
+        for m in name_rx.finditer(code):
+            pos, ne = m.start(), m.end()
+            plan["total"] += 1
+            before = code[max(0, pos - 240):pos]
+            ls = code.rfind("\n", 0, pos) + 1
+            le = code.find("\n", pos)
+            le = len(code) if le < 0 else le
+            s = {"rel": rel, "start": pos, "end": ne, "name_end": ne, "line": d.line_of(pos), "cls": "", "note": "",
+                 "in_macro": code[ls:le].lstrip().startswith("#"), "text": " ".join(d.text[ls:le].split())[:160],
+                 "sub": _site_sub(code, ne, shape)}
+            sites.append(s)
+            # (가) 선언 후보의 범위 안인가
+            cand = next((c for r0, a, b, c in cand_spans if r0 == rel and a <= pos < b), None)
+            if cand is not None:
+                if (rel, cand["start"]) in chosen_spans:
+                    s.update(cls="decl", end=cand["end"], decl=cand)
+                else:
+                    s.update(cls="other_symbol", note={"member": "구조체 멤버의 선언", "func": "같은 이름의 지역 변수 선언"}.get(cand["where"], "다른 파일의 같은 이름"))
+                continue
+            # (가2) 줄의 처음이 아닌 자리의 선언인가(예: void f() { int g[4]; }). 문장의 처음부터 이름 뒤 [..] 까지를 선언 꼴에 대 본다
+            if blocks is None:
+                blocks = d.get_blocks()
+            bk = block_at(blocks, pos)
+            while bk >= 0 and blocks[bk]["kind"] == "container" and re.search(r"\bnamespace\b|\bextern\b", d.struct[blocks[bk]["head"]:blocks[bk]["open"]]):
+                bk = blocks[bk]["parent"]
+            if bk >= 0 and blocks[bk]["kind"] == "container":
+                s.update(cls="other_symbol", note="구조체나 클래스의 멤버")
+                continue
+            if not s["in_macro"]:
+                q = ne
+                while q < len(code) and code[q] in " \t":
+                    q += 1
+                while q < len(code) and code[q] == "[":
+                    qe = _bracket_end(code, q)
+                    if qe < 0:
+                        break
+                    q = qe + 1
+                if decl_rx_any.match(d.struct[stmt_start_of(d.struct, pos):q]):
+                    if bk >= 0:
+                        s.update(cls="other_symbol", note="같은 이름의 지역 변수 선언")
+                    else:
+                        s.update(cls="decl_odd", note="지원하지 않는 꼴의 선언(한 문장에 여러 변수를 선언했거나 줄의 처음이 아님)")
+                    continue
+            # (나) 범위(scope) 밖이면 다른 기호다
+            if scope == "function" and not (rel == def_file and def_func[0] < pos < def_func[1]):
+                s.update(cls="other_symbol", note="대상 배열이 선언된 함수 밖")
+                continue
+            if scope == "file" and rel != def_file:
+                s.update(cls="other_symbol", note="대상 배열은 다른 파일의 static 이다")
+                continue
+            # (다) 멤버 접근, 이름 공간 지정
+            if re.search(r"(?:\.|->)\s*$", before):
+                s.update(cls="other_symbol", note="다른 것의 멤버(. 또는 ->)")
+                continue
+            if re.search(r"\w\s*::\s*$", before):
+                s.update(cls="other_symbol", note="이름 앞에 범위 지정(::)이 있음")
+                continue
+            # (라) 같은 이름의 지역 변수나 인자가 있는 함수 안인가
+            if scope != "function":
+                fk = block_at(blocks, pos, ("func",))
+                if fk >= 0:
+                    if fk not in shadow_cache:                # 함수마다 한 번: 선언처럼 보이는 꼴이 있는지 먼저 본다(빠른 길)
+                        shadow_cache[fk] = bool(shadow_rx.search(d.struct, blocks[fk]["head"], blocks[fk]["close"]))
+                    if shadow_cache[fk]:
+                        dc = find_decl(d.struct, pos, target, d.inits)
+                        if dc and dc["kind"] in ("local", "param"):
+                            s.update(cls="other_symbol", note="같은 이름의 지역 변수나 인자")
+                            continue
+            # (마) 처리 범위 밖 파일
+            if status != "대상":
+                s.update(cls="out_of_scope", note="이 파일은 처리 범위 밖이다(%s)" % status)
+                continue
+            # (바) 쓰인 꼴
+            in_sizeof = bool(re.search(r"\bsizeof\s*\(?\s*$", before))
+            a = ne
+            while a < len(code) and code[a] in " \t":
+                a += 1
+            if a < len(code) and code[a] == "[":
+                e1 = _bracket_end(code, a)
+                if e1 < 0:
+                    s.update(cls="bare", note="인덱스 괄호의 짝을 찾지 못함")
+                    continue
+                s.update(i1=(a, e1 + 1), end=e1 + 1)
+                if shape == "2d":
+                    b2 = e1 + 1
+                    while b2 < len(code) and code[b2] in " \t":
+                        b2 += 1
+                    if b2 < len(code) and code[b2] == "[":
+                        e2 = _bracket_end(code, b2)
+                        if e2 > 0:
+                            s.update(i2=(b2, e2 + 1), end=e2 + 1, cls="sizeof_elem" if in_sizeof else "col?")
+                            pending_idx.append((s, code[b2 + 1:e2]))
+                            continue
+                    s["cls"] = "sizeof_row" if in_sizeof else "row_bare"
+                else:
+                    s["cls"] = "sizeof_elem" if in_sizeof else "idx?"
+                    if not in_sizeof:
+                        pending_idx.append((s, code[a + 1:e1]))
+                continue
+            cm = _COUNTOF_RE.search(before)
+            close = code.find(")", ne) if cm else -1
+            if cm and close >= 0 and not code[ne:close].strip():
+                # _countof(이름): 1차원 배열이 구조체가 되면 배열이 아니다. 호출 전체를 sizeof 식으로 바꾼다. 2차원 표는 여전히 배열이라 그대로 둔다
+                s.update(cls="countof", call=(pos - (len(before) - cm.start()), close + 1))
+            elif in_sizeof:
+                s["cls"] = "sizeof_name"
+            elif before.rstrip().endswith("&") and not before.rstrip().endswith("&&"):
+                s["cls"] = "addr_name"
+            elif re.search(r"\b(?:%s)\s*\((?:[^;()]|\([^()]*\))*$" % _MEM_CALLS, before) and re.search(r"[(,]\s*$", before):
+                s["cls"] = "mem_arg"
+            else:
+                s["cls"] = "bare"
+    # 인덱스 식의 값: 식에 나온 이름을 한 번에 찾는다
+    need = set()
+    for _s, expr in pending_idx:
+        need.update(x for x in re.findall(r"[A-Za-z_]\w*", expr) if x not in vals)
+    if need and len(need) <= 4000:
+        vals.update(_resolve_names(ctx, [rel for rel, _st in files], sorted(need)))
+    for s, expr in pending_idx:
+        v = const_value(expr, vals)
+        in_range = v is not None and (n == 0 or 0 <= v < n)
+        if s["cls"] == "idx?":
+            s["cls"] = "const_index" if in_range else "var_index"
+        elif s["cls"] == "col?":
+            s["cls"] = "col_const" if in_range else "col_var"
+        if in_range:
+            s["value"] = v
+        elif v is not None:
+            s["note"] = "인덱스 값 %d 이(가) 크기를 벗어남" % v
+    if ft.get("unmapped", "reserved") == "drop" and plan["ok"]:
+        for s in sites:
+            if s["cls"] in ("const_index", "col_const") and s.get("value") not in plan["fields"]:
+                s.update(cls="var_index" if s["cls"] == "const_index" else "col_var", note="매핑에 없는 인덱스(unmapped: drop)")
+    for s in sites:
+        plan["counts"][s["cls"]] = plan["counts"].get(s["cls"], 0) + 1
+    plan["sites"] = sites
+    # 이름을 만들어 내는 매크로(##)는 글자 검색으로 사용처를 찾지 못한다. 그런 매크로가 있으면 알린다
+    for rel, _status in files:
+        d = get_doc(ctx, rel)
+        if d.ok and "##" in d.code:
+            for mm in re.finditer(r"(?m)^[ \t]*#[ \t]*define[^\n]*?(\w*)[ \t]*##[ \t]*(\w*)[^\n]*$", d.code):
+                a, b = mm.group(1), mm.group(2)
+                if (len(a) >= 2 and target.startswith(a) and a != target) or (len(b) >= 2 and target.endswith(b) and b != target):
+                    plan["warnings"].append("이름을 만들어 내는 매크로가 있다(%s %d줄: %s). 이 매크로로 만든 접근은 찾지 못한다"
+                                            % (rel, d.line_of(mm.start()), " ".join(mm.group(0).split())[:90]))
+    return plan
+
+
+def _array_gate(ft, plan, policy):
+    """요청을 적용할지 판정한다(원자성). 돌려주는 값: (적용 여부, 적용하지 않는 사유 목록)
+    하나라도 걸리면 선언도 사용처도 바꾸지 않는다. 일부만 바꾼 결과는 컴파일되지 않기 때문이다."""
+    c, why = plan["counts"], []
+    if not plan["ok"] and policy["convert"]:
+        why.append("선언을 구조체로 바꿀 수 없음: %s" % plan["why"])
+    if c.get("out_of_scope") and not ft.get("allow_out_of_scope"):
+        why.append("처리 범위 밖 파일에 사용처 %d곳이 있음(범위를 넓히거나 요청에 allow_out_of_scope 를 준다)" % c["out_of_scope"])
+    if c.get("decl_odd"):
+        why.append("지원하지 않는 꼴의 선언 %d곳이 있음(사용처 목록의 '선언(지원하지 않는 꼴)'을 본다)" % c["decl_odd"])
+    n_var = c.get("var_index", 0) + c.get("col_var", 0)
+    n_bare = c.get("bare", 0) + c.get("row_bare", 0)
+    if n_var and policy["var"] == "stop":
+        why.append("인덱스가 변수인 접근 %d곳의 처리 방법이 정해지지 않음(variable_index: manual, llm, cast, raw_view 중 하나)" % n_var)
+    if n_bare and policy["bare"] == "stop":
+        why.append("이름이나 행을 통째로 쓰는 곳 %d곳의 처리 방법이 정해지지 않음(bare_use: manual, llm, cast 중 하나)" % n_bare)
+    if policy["var"] in ("cast",) or policy["bare"] in ("cast",):
+        if ft.get("types"):
+            why.append("필드 타입을 따로 준 요청(types)에는 cast 정책을 쓸 수 없음(크기와 배치가 달라진다)")
+    return (not why), why
+
+
+def _array_apply(ctx, ft, plan, policy):
+    """분류 결과대로 이슈와 수정 레코드를 만든다. 돌려주는 값: {처리 이름: 건수}
+    기계적으로 바꾸는 것은 수정 레코드(검토 표시), sLLM 에 맡길 것은 llm=1 이슈, 사람이 볼 것은 수동 이슈로 남긴다."""
+    st, target, shape = ctx.store, ft["target"], plan["shape"]
     sql_i = ("INSERT INTO issues(path,start,end,line,source,rule_id,tier,llm,title,detail,after,review,status,note) "
              "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
     sql_e = ("INSERT INTO edits(path,base,start,end,before,after,origin,ref,issue_ids,review,status,note) "
              "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)")
     title = "요청사항: 배열 %s 를 구조체 필드로" % target
-    bare_rx = re.compile(r"(?<![\w.])%s\b(?!\s*\[)" % re.escape(target))
-    n_conv = n_bare = 0
-    for rel in files:
-        d = get_doc(ctx, rel)
-        if target not in d.code:
+    elem = plan["elem"]
+    ptr = ("const " if plan["const"] and "const" not in elem else "") + elem + "*"
+    raw = "raw_view" in (policy["var"], policy["bare"])
+    done = OrderedDict()
+    taken = {}
+
+    def bump(k):
+        done[k] = done.get(k, 0) + 1
+
+    def manual(s, d, what, note):
+        cur = st.x(sql_i, (s["rel"], s["start"], s["end"], s["line"], "request", ft["id"], "T3", 0, "%s(%s)" % (title, what),
+                           d.text[s["start"]:s["end"]][:160], None, 0, "manual", note))
+        s["issue_id"] = cur.lastrowid
+        bump(what + "(수동)")
+
+    def to_llm(s, d, what, note):
+        cur = st.x(sql_i, (s["rel"], s["start"], s["end"], s["line"], "request", ft["id"], "T3", 1, "%s(%s)" % (title, what),
+                           s["text"], None, 0, "open", note))
+        s["issue_id"] = cur.lastrowid
+        bump(what + "(sLLM)")
+
+    def put(s, d, a, b, after, what):
+        """a~b 를 after 로 바꾸는 수정 레코드. 다른 수정과 겹치면 수동으로 남긴다."""
+        tk = taken.setdefault(s["rel"], [(e["start"], e["end"]) for e in st.q(
+            "SELECT start, end FROM edits WHERE path=? AND status='accepted'", (s["rel"],))])
+        if any(x < b and a < y for x, y in tk):
+            manual(s, d, what, "다른 수정과 범위가 겹쳐 바꾸지 못함")
+            return
+        cur = st.x(sql_i, (s["rel"], a, b, s["line"], "request", ft["id"], "T1", 0, "%s(%s)" % (title, what), d.text[a:b][:160],
+                           after[:4000], 0, "open", "매크로 본문" if s.get("in_macro") else ""))
+        st.x(sql_e, (s["rel"], "snapshot", a, b, d.text[a:b], after, "request", ft["id"], str(cur.lastrowid), 1, "accepted", ""))
+        s["issue_id"] = cur.lastrowid
+        tk.append((a, b))
+        bump(what)
+
+    def by_policy(s, d, pol, what, cast_text, raw_text, note_manual, note_llm):
+        if pol == "llm":
+            to_llm(s, d, what, note_llm)
+        elif pol == "cast" and cast_text:
+            put(s, d, cast_text[0], cast_text[1], cast_text[2], what + " -> 형 변환")
+        elif pol == "raw_view" and raw_text:
+            put(s, d, raw_text[0], raw_text[1], raw_text[2], what + " -> raw")
+        else:
+            manual(s, d, what, note_manual)
+
+    for s in plan["sites"]:
+        cls = s["cls"]
+        if cls in ("other_symbol", "sizeof_name", "sizeof_row", "addr_name", "decl_odd"):
+            continue                                           # 건드리지 않는다(건수만 보고)
+        d = get_doc(ctx, s["rel"])
+        if cls == "out_of_scope":
+            manual(s, d, "범위 밖 파일의 사용처", s["note"] + ". 이 파일은 고치지 않았다")
             continue
-        taken = [(e["start"], e["end"]) for e in st.q("SELECT start, end FROM edits WHERE path=? AND status='accepted'", (rel,))]
-
-        def put(s, e, after, what, note_manual):
-            if any(a < e and s < b for a, b in taken):
-                st.x(sql_i, (rel, s, e, d.line_of(s), "request", ft["id"], "T3", 0, "%s(%s)" % (title, what), d.text[s:e][:160], None, 0,
-                             "manual", note_manual))
-                return False
-            cur = st.x(sql_i, (rel, s, e, d.line_of(s), "request", ft["id"], "T1", 0, "%s(%s)" % (title, what), d.text[s:e][:160], after,
-                               0, "open", ""))
-            st.x(sql_e, (rel, "snapshot", s, e, d.text[s:e], after, "request", ft["id"], str(cur.lastrowid), 1, "accepted", ""))
-            taken.append((s, e))
-            return True
-
-        spans = [(s, e, g) for r, s, e, g in plan["decls"] if r == rel]
-        for s, e, g in spans:
-            new = "%s%s%s %s%s;" % (g["indent"], g["pre"] or "", plan["struct"], target, (" " + g["init"].strip()) if g["init"] else "")
-            if (rel, s) == tuple(plan["primary"]):
-                new = plan["definition"] + "\n" + new
-            n_conv += 1 if put(s, e, new, "선언 교체", "배열 선언. 다른 수정과 범위가 겹쳐 바꾸지 못함") else 0
-        for m in bare_rx.finditer(d.code):
-            p = m.start()
-            before = d.code[max(0, p - 240):p]
-            if any(s <= p < e for s, e, _g in spans) or re.search(r"(?:->|::)\s*$", before) or re.search(r"\bsizeof\s*\(?\s*$", before):
+        a0, ne = s["start"], s["name_end"]
+        txt = lambda x, y: d.text[x:y]
+        if cls == "decl":
+            c = s["decl"]
+            if not (plan["ok"] and policy["convert"]):
+                manual(s, d, "배열 선언", "배열 선언. 구조체 정의로 교체 필요(변경 계약): %s" % (plan["why"] or "요청에서 선언 교체를 끔"))
                 continue
-            n_bare += 1
-            if re.search(r"\b(?:%s)\s*\((?:[^;()]|\([^()]*\))*$" % _MEM_CALLS, before) and re.search(r"[(,]\s*$", before):
-                if put(p, m.end(), "&" + target, "주소 연산자", "배열 이름을 통째로 쓰는 곳. 다른 수정과 범위가 겹쳐 바꾸지 못함"):
+            new = "%s%s %s%s" % (c["pre"], plan["struct"], target, ("[%s]" % c["d1"]) if shape == "2d" else "")
+            if c.get("need_def"):                              # 구조체 정의는 첫 선언(헤더가 있으면 헤더) 앞에 넣는다. 정의가 안 보이는 다른 파일에도 넣는다
+                if plan.get("definition_guarded"):
+                    new = plan["definition_guarded"] + "\n" + c["indent"] + new
+                else:
+                    new = plan["definition"].replace("\n", "\n" + c["indent"]) + "\n" + c["indent"] + new
+            put(s, d, c["start"], c["end"], new, "선언 교체")
+        elif cls == "const_index":
+            put(s, d, a0, s["end"], "%s.%s" % (target, plan["fields"].get(s["value"], "reserved_%d" % s["value"])), "필드 치환")
+        elif cls == "col_const":
+            put(s, d, s["i2"][0], s["i2"][1], ".%s" % plan["fields"].get(s["value"], "reserved_%d" % s["value"]), "필드 치환")
+        elif cls == "sizeof_elem":
+            put(s, d, a0, s["end"], elem, "sizeof 안의 요소 -> 타입")
+        elif cls == "mem_arg":
+            if shape == "1d":
+                put(s, d, a0, ne, "&" + target, "주소 연산자")
+        elif cls == "countof":
+            if shape == "1d":
+                put(s, d, s["call"][0], s["call"][1], "(sizeof(%s) / sizeof(%s))" % (target, elem), "요소 수 매크로 -> sizeof 식")
+        elif cls == "var_index":
+            by_policy(s, d, policy["var"], "변수 인덱스", (a0, ne, "((%s)&%s)" % (ptr, target)), (a0, ne, target + ".raw"),
+                      "변수 인덱스 접근. 매핑표로 결정할 수 없음", "변수 인덱스 접근. sLLM 에 맡김(검토 필요)")
+        elif cls == "col_var":
+            row = txt(a0, s["i1"][1])
+            by_policy(s, d, policy["var"], "열 변수", (a0, s["i1"][1], "((%s)&%s)" % (ptr, row)), (a0, s["i1"][1], row + ".raw"),
+                      "열이 변수인 접근. 매핑표로 결정할 수 없음", "열이 변수인 접근. sLLM 에 맡김(검토 필요)")
+        elif cls == "row_bare":
+            row = txt(a0, s["end"])
+            by_policy(s, d, policy["bare"], "배열 전체 사용", (a0, s["end"], "((%s)&%s)" % (ptr, row)), (a0, s["end"], row + ".raw") if raw else None,
+                      "행을 통째로 쓰는 곳. 구조체에서는 & 를 붙이거나 필드별로 고쳐야 함", "행을 통째로 쓰는 곳. sLLM 에 맡김(검토 필요)")
+        elif cls == "bare":
+            if shape == "1d":
+                cast = (a0, ne, "((%s)&%s)" % (ptr, target))
+                rawt = (a0, ne, target + ".raw") if raw else None
+            else:
+                cast = (a0, ne, "((%s (*)[%d])%s)" % (("const " if plan["const"] and "const" not in elem else "") + elem, plan["n"], target))
+                rawt = None
+            by_policy(s, d, policy["bare"], "배열 전체 사용", cast, rawt,
+                      "배열 이름을 통째로 쓰는 곳. 구조체에서는 & 를 붙이거나 필드별로 고쳐야 함", "배열 이름을 통째로 쓰는 곳. sLLM 에 맡김(검토 필요)")
+    return done
+
+
+def _array_sites_report(ctx, ft, plan, applied, reasons):
+    """요청 하나의 사용처 전수 목록을 out/request_<id>_sites.md 로 쓴다(적용했든 안 했든 쓴다)."""
+    L = ["# 요청 %s: 배열 `%s` 의 사용처 목록" % (ft["id"], ft["target"]), "",
+         "- 이름이 나온 곳 %d곳, 분류한 곳 %d곳" % (plan["total"], sum(plan["counts"].values())),
+         "- 적용: %s" % ("함" if applied else "하지 않음"), ""]
+    if reasons:
+        L += ["## 적용하지 않은 이유", ""] + ["- " + r for r in reasons] + [""]
+    if plan["warnings"]:
+        L += ["## 알아 둘 것", ""] + ["- " + w for w in plan["warnings"]] + [""]
+    L += ["## 분류별 건수", ""] + _table(["분류", "건수"], [(_ARR_CLASS_LABEL.get(k, k), v) for k, v in plan["counts"].items()]) + [""]
+    for cls, label in _ARR_CLASS_LABEL.items():
+        rows = [s for s in plan["sites"] if s["cls"] == cls]
+        if not rows:
+            continue
+        L += ["## %s (%d곳)" % (label, len(rows)), ""]
+        L += _table(["파일", "줄", "내용", "비고"], [(s["rel"], s["line"], "`%s`" % s["text"][:110].replace("|", "\\|"),
+                                                (s["note"] + (" [매크로 본문]" if s.get("in_macro") else "")).strip()) for s in rows[:2000]])
+        if len(rows) > 2000:
+            L.append("- 그 밖 %d곳은 생략" % (len(rows) - 2000))
+        L.append("")
+    os.makedirs(ctx.p("out"), exist_ok=True)
+    write_text(ctx.p("out", "request_%s_sites.md" % re.sub(r"[^\w\-]", "_", ft["id"])), "\n".join(L))
+
+
+def _array_request(ctx, ft):
+    """배열(표) -> 구조체 요청 하나를 처리한다. 돌려주는 값: 변경 계약 dict(보고서에 실린다)."""
+    policy = _array_policy(ft)
+    plan = _array_scan(ctx, ft)
+    total, classified = plan["total"], sum(plan["counts"].values())
+    labels = ", ".join("%s %d" % (_ARR_CLASS_LABEL.get(k, k), v) for k, v in plan["counts"].items())
+    LOG5.info("요청 %s (배열 %s): 이름이 나온 곳 %d곳을 분류함(%s)" % (ft["id"], ft["target"], total, labels or "없음"))
+    apply_ok, reasons = _array_gate(ft, plan, policy)
+    if total != classified:                                    # 일어나면 안 되는 일. 어긋나면 적용하지 않는다
+        apply_ok, reasons = False, reasons + ["분류한 수(%d)가 이름이 나온 수(%d)와 다름" % (classified, total)]
+    for w in plan["warnings"]:
+        LOG5.warn("요청 %s: %s" % (ft["id"], w))
+    done = OrderedDict()
+    if apply_ok:
+        if plan["ok"] and policy["convert"]:
+            ft["_definition"], ft["_fields"], ft["_n"], ft["_elem"], ft["_shape"] = plan["definition"], plan["fields"], plan["n"], plan["elem"], plan["shape"]
+        done = _array_apply(ctx, ft, plan, policy)
+        LOG5.info("요청 %s: 적용함(%s)" % (ft["id"], ", ".join("%s %d곳" % kv for kv in done.items()) or "바꿀 곳 없음"))
+        if plan.get("init"):
+            LOG5.info("요청 %s: 초기화 목록 %d자는 그대로 둠(행 %d개, 행마다 요소 수 %s)"
+                      % (ft["id"], plan["init"]["chars"], plan["init"]["rows"], plan["init"]["row_counts"] or plan["init"]["flat"]))
+    else:
+        for r in reasons:
+            LOG5.warn("요청 %s 을(를) 적용하지 않습니다: %s" % (ft["id"], r))
+        ctx.store.x("INSERT INTO issues(path,start,end,line,source,rule_id,tier,llm,title,detail,review,status,note) "
+                    "VALUES('',0,0,0,'request',?,'T3',0,?,?,0,'manual',?)",
+                    (ft["id"], "요청사항: 배열 %s 를 구조체로(적용하지 않음)" % ft["target"], labels[:300],
+                     "적용하지 않은 이유: " + " / ".join(reasons)[:600]))
+    _array_sites_report(ctx, ft, plan, apply_ok, reasons)
+    note = []
+    if apply_ok and plan["ok"] and policy["convert"]:
+        prim = next((c for c in plan["decls"] if c.get("primary")), None)
+        note.append("구조체 정의를 %s 의 선언 앞에 넣었다." % (prim["rel"] if prim else "첫 선언"))
+        note.append("빈 자리는 reserved_번호 로 채워 크기와 배치를 배열과 같게 두었다." if any(v.startswith("reserved_") for v in plan["fields"].values()) else "필드의 타입과 순서는 배열과 같다.")
+        if plan.get("init"):
+            note.append("초기화 목록 %d자는 바꾸지 않았다." % plan["init"]["chars"])
+    elif apply_ok:
+        note.append("배열 선언은 바꾸지 않았다(%s). 선언과 구조체 정의는 사람이 한다." % (plan["why"] or "요청에서 선언 교체를 끔"))
+    note.append("사용처 전체 목록: out/request_%s_sites.md" % re.sub(r"[^\w\-]", "_", ft["id"]))
+    counts = OrderedDict((_ARR_CLASS_LABEL.get(k, k), v) for k, v in plan["counts"].items())
+    subs = {}                                               # 파일별: 옛 접근 꼴로 남아도 되는 수(다른 기호)와, 고쳐져야 하는 이슈 번호
+    for x in plan["sites"]:
+        if x.get("sub"):
+            e = subs.setdefault(x["rel"], {"other": 0, "issues": []})
+            if apply_ok and x.get("issue_id"):
+                e["issues"].append(x["issue_id"])
+            else:
+                e["other"] += 1
+    return {"id": ft["id"], "type": "array_to_struct", "subs": subs, "target": ft["target"], "rename": {}, "counts": counts,
+            "definition_after": plan["definition"] if (apply_ok and plan["ok"] and policy["convert"]) else "",
+            "note": " ".join(note), "applied": apply_ok, "reasons": reasons, "done": done, "warnings": plan["warnings"],
+            "on_unresolved": policy["on_unresolved"], "shape": plan["shape"],
+            "expect_left": sum(v for k, v in done.items() if k.endswith("(수동)") or k.endswith("(sLLM)"))}
+
+
+def _contract_excerpt(ft, near_text):
+    """배열 -> 구조체 계약 가운데 이 조각에 필요한 부분만 지침 글로 만든다(요구사항 B6, E3).
+    구조체 정의 전체를 넣지 않는다. 조각에 나온 인덱스 이름과 필드만 넣고 나머지는 한 줄로 줄인다."""
+    if not ft.get("_definition"):
+        return ""
+    names = set(re.findall(r"[A-Za-z_]\w*", near_text or ""))
+    pairs = []
+    for k, field in list(ft["mapping"].items()):
+        if k in names or field in names:
+            pairs.append("%s -> .%s" % (k, field))
+    shown = ", ".join(pairs[:24]) if pairs else "(이 조각에 나온 인덱스 이름 없음)"
+    kind = "행 구조체의 배열" if ft.get("_shape") == "2d" else "구조체"
+    return (" 배열의 선언은 %s(으)로 바뀌었다(필드 %d개, 순서는 인덱스와 같음, 필드 타입 %s). 이 조각에 관련된 대응: %s. "
+            "이름을 통째로 쓰던 곳은 주소(&)나 필드별 접근으로 고친다." % (kind, ft.get("_n", 0), ft.get("_elem", ""), shown))
+
+
+# ---- 문장 요청의 해석(0.8.0) ---------------------------------------------------------------------------
+# 목적: "if 문 안에서 로그를 남기는 함수를 찾아 줘"처럼 대상 이름이 없는 문장을, 대상 이름이 적힌 명시형 요청으로 바꾼다.
+# 순서: (1) 문장에 패키지의 이름이 있으면 그것이 대상이다(모델을 쓰지 않는다)
+#       (2) 없으면 모델에게 문장만 보내 "동작, 위치, 이름에 들어갈 영어 낱말"을 받는다(코드는 보내지 않는다)
+#       (3) 그 낱말이 낱말 단위로 든 이름을 패키지의 호출 이름 색인에서 고른다(모델을 쓰지 않는다)
+#       (4) 고른 이름을 번호 목록으로 보내 요청에 맞는 번호만 받는다
+# 원칙: 모델이 내는 것은 낱말과 번호뿐이다. 대상 이름은 도구의 색인에서만 나오므로 없는 이름이 대상이 되지 않는다.
+# 산출: out/request_resolved.json (명시형. 다음 실행에서 --request 로 주면 해석을 다시 하지 않는다. 사람이 고쳐도 된다)
+# 한계: (2), (4)의 프롬프트는 모의 모델로만 시험했다. 실제 sLLM 이 낱말과 번호를 쓸 만하게 내는지는 확인하지 못했다.
+_ASK_WHERE = ("any", "if", "for", "while", "loop", "switch", "string", "comment")
+_WHERE_KO = {"any": "", "if": "if 문 안", "for": "for 문 안", "while": "while 문 안", "loop": "반복문 안", "switch": "switch 문 안",
+             "string": "문자열 안", "comment": "주석 안"}
+_WHERE_PATTERNS = [("if", r"(?<![A-Za-z_0-9])if(?![A-Za-z_0-9])|조건문"), ("for", r"(?<![A-Za-z_0-9])for(?![A-Za-z_0-9])"),
+                   ("while", r"(?<![A-Za-z_0-9])while(?![A-Za-z_0-9])"), ("switch", r"(?<![A-Za-z_0-9])switch(?![A-Za-z_0-9])|스위치"),
+                   ("loop", r"반복문|루프"), ("string", r"문자열"), ("comment", r"주석")]
+_FIND_WORDS = ("찾아", "찾기", "찾는", "목록", "나열", "어디", "보여", "알려", "검색")
+_MODIFY_WORDS = ("바꿔", "바꾸", "바꾼", "변경", "고쳐", "고치", "고친", "수정", "교체", "추가", "삭제", "제거", "없애", "치환", "넣어", "감싸")
+_CALL_SKIP = frozenset("if for while switch return sizeof catch defined else do case new delete throw operator typeid "
+                       "static_cast dynamic_cast const_cast reinterpret_cast alignof decltype".split())
+INTERPRET_SYSTEM = "너는 C/C++ 코드 수정 도구의 요청 해석기다. 사용자의 요청 문장을 읽고 JSON 한 줄만 출력한다. 설명은 쓰지 않는다."
+INTERPRET_USER = """[요청 문장]
+{text}
+
+[출력 형식] 아래 꼴의 JSON 한 줄만 쓴다.
+{{"action": "find", "where": "any", "words": ["log", "trace"]}}
+
+- action: 찾아서 보여 달라는 요청이면 find, 고쳐 달라는 요청이면 modify.
+- where: 요청이 특정 구문 안으로 한정하면 그 구문을 쓴다. if, for, while, loop(반복문 전체), switch, string(문자열 안), comment(주석 안) 중 하나. 한정하지 않으면 any.
+- words: 찾을 함수나 변수의 이름에 들어갈 만한 영어 낱말을 12개까지 쓴다(예: 로그를 남기는 함수 -> log, trace, debug, print, write). 3글자 이상의 영어 낱말만 쓴다. 문장이나 설명은 쓰지 않는다.
+{feedback}"""
+PRUNE_SYSTEM = "너는 C/C++ 코드 수정 도구의 후보 선별기다. 요청에 해당하는 이름의 번호만 고른다. 설명은 쓰지 않는다."
+PRUNE_USER = """[요청 문장]
+{text}
+
+[후보] 번호. 이름 (쓰인 횟수) 예: 쓰인 줄
+{cands}
+
+[출력 형식] 요청에 해당하는 후보의 번호를 아래 꼴의 한 줄로 쓴다. 해당하는 것이 없으면 KEEP: 0 을 쓴다.
+KEEP: 1, 4, 7
+{feedback}"""
+
+
+def _call_index(ctx):
+    """패키지에서 호출 꼴(이름 뒤에 여는 괄호)로 쓰인 이름의 색인. {이름: [횟수, 예로 쓸 줄]}. 처음 필요할 때 한 번 만든다."""
+    if ctx._calls is None:
+        idx = {}
+        for r in ctx.store.q("SELECT path FROM files WHERE kind='source' AND status IN ('대상','읽기전용') ORDER BY path"):
+            d = get_doc(ctx, r["path"])
+            for m in re.finditer(r"(?<![\w#])([A-Za-z_]\w*)\s*\(", d.struct):
+                n = m.group(1)
+                if n in _CALL_SKIP or n in _CPP_WORDS:
                     continue
-            a, b = d.line_span(d.line_of(p))
-            llm = 1 if ft.get("llm_other_uses", True) else 0
-            st.x(sql_i, (rel, p, m.end(), d.line_of(p), "request", ft["id"], "T3", llm, "%s(배열 전체 사용)" % title, d.text[a:b].strip()[:160],
-                         None, 0, "open" if llm else "manual",
-                         "배열 이름을 통째로 쓰는 곳. sLLM 에 맡김(검토 필요)" if llm else "배열 이름을 통째로 쓰는 곳. 구조체에서는 & 를 붙이거나 필드별로 고쳐야 함"))
-    return n_conv, n_bare
+                e = idx.get(n)
+                if e is None:
+                    la, lb = d.line_span(d.line_of(m.start()))
+                    idx[n] = [1, " ".join(d.text[la:lb].split())[:70]]
+                else:
+                    e[0] += 1
+        ctx._calls = idx
+    return ctx._calls
+
+
+def names_in_sentence(ctx, text):
+    """문장에서 위치 조건, 동작, 대상 이름을 모델 없이 뽑는다. 돌려주는 값: (where, action, 대상 이름 목록, 버린 이름 목록)
+    대상은 문장의 영문 이름 가운데 패키지에 실제로 있는 것이다. 이름 바로 뒤에 '로/으로'가 오면 바꾼 결과로 보고 뺀다."""
+    where, at = "any", len(text) + 1
+    for w, pat in _WHERE_PATTERNS:
+        m = re.search(pat, text)
+        if m and m.start() < at:
+            where, at = w, m.start()
+    action = "modify" if any(w in text for w in _MODIFY_WORDS) else ("find" if any(w in text for w in _FIND_WORDS) else "modify")
+    known, targets, dropped = _package_names(ctx), [], []
+    for m in re.finditer(r"[A-Za-z_][A-Za-z0-9_]*", text):     # \w 는 한글도 받으므로 쓰지 않는다("WriteLog를"이 한 낱말이 된다)
+        n = m.group()
+        if n in _CPP_WORDS or n in targets or n in dropped:
+            continue
+        if re.match(r"\s*`?\s*(?:으로|로)(?![가-힣])", text[m.end():]) or n not in known:
+            dropped.append(n)
+        else:
+            targets.append(n)
+    return where, action, targets, dropped
+
+
+def _ask_model(ctx, system, user, tag):
+    """해석용 호출 한 번. 같은 물음은 캐시에서 답한다. 요청과 응답은 logs/llm/resolve_<tag>.txt 에 남긴다. 돌려주는 값: (성공, 본문)"""
+    st, llm = ctx.store, ctx.cfg["llm"]
+    key = sha256_bytes((llm["model"] + "\0" + system + "\0" + user).encode("utf-8"))
+    hit = st.one("SELECT response FROM llm_cache WHERE key=?", (key,))
+    if hit is not None:
+        return True, hit
+    ok, content, ms, _info = llm_chat(llm, system, user)
+    ctx.llm_calls += 1
+    write_text(ctx.p("logs", "llm", "resolve_%s.txt" % tag),
+               "[SYSTEM]\n%s\n\n[USER]\n%s\n\n[RESPONSE ok=%s %dms]\n%s\n" % (system, user, ok, ms, content))
+    if ok:
+        st.x("INSERT OR REPLACE INTO llm_cache(key,response) VALUES(?,?)", (key, content))
+        st.commit()
+    return ok, content
+
+
+def interpret_request(ctx, sent):
+    """문장을 모델에 보내 동작, 위치, 낱말을 받는다. 형식이 어긋나면 사유를 붙여 한 번 다시 묻는다.
+    돌려주는 값: ({"action", "where", "words"} 또는 None, 실패 사유)"""
+    feedback, why = "", ""
+    for attempt in (1, 2):
+        ok, content = _ask_model(ctx, INTERPRET_SYSTEM, INTERPRET_USER.format(text=sent["text"], feedback=feedback),
+                                 "%s_interpret_%d" % (sent["id"], attempt))
+        if not ok:
+            return None, "해석 호출 실패: %s" % str(content)[:160]
+        obj = None
+        for cand in reversed(re.findall(r"\{[^{}]*\}", content)):
+            try:
+                o = json.loads(cand)
+            except ValueError:
+                continue
+            if isinstance(o, dict) and "words" in o:
+                obj = o
+                break
+        if obj is None:
+            why = "JSON 한 줄이 아님"
+        else:
+            words = [w.lower() for w in (obj.get("words") or []) if isinstance(w, str) and re.match(r"^[A-Za-z]{3,}$", w)][:12]
+            action, where = str(obj.get("action") or "").lower(), str(obj.get("where") or "any").lower()
+            if action not in ("find", "modify"):
+                why = "action 이 find, modify 가 아님"
+            elif where not in _ASK_WHERE:
+                why = "where 가 정해진 값이 아님"
+            elif not words:
+                why = "words 에 3글자 이상의 영어 낱말이 없음"
+            else:
+                return {"action": action, "where": where, "words": words}, ""
+        feedback = "\n[다시] 앞의 답은 쓸 수 없었다(%s). 형식을 지켜 JSON 한 줄만 쓴다.\n" % why
+    return None, "모델의 답을 해석하지 못함(%s)" % why
+
+
+def expand_words(ctx, words):
+    """낱말이 '낱말 단위로' 든 호출 이름을 고른다(글자 포함으로 맞추지 않는다. log 로 Dialog 를 잡지 않기 위한 것이다).
+    돌려주는 값: [(이름, 횟수, 예로 쓸 줄)] (횟수가 많은 순서)"""
+    suf = [str(x) for x in (ctx.cfg["limits"].get("word_suffixes") or ["s", "er", "ger", "ing", "ging", "ed", "ged"])]
+    forms = set()
+    for w in words:
+        forms.add(w)
+        forms.update(w + s for s in suf)
+    out = [(n, e[0], e[1]) for n, e in _call_index(ctx).items() if forms & set(word_parts(n))]
+    return sorted(out, key=lambda x: (-x[1], x[0]))
+
+
+def prune_names(ctx, sent, cands):
+    """후보 이름을 번호 목록으로 보내 요청에 맞는 번호를 받는다. 150개씩 나눠 묻는다.
+    돌려주는 값: (남긴 이름 목록, 알아 둘 것 목록). 범위 밖 번호는 버린다. 두 번 물어도 형식이 어긋난 묶음은 하나도 남기지 않는다."""
+    keep, warns, size = [], [], 150
+    chunks = [cands[i:i + size] for i in range(0, len(cands), size)]
+    for ci, chunk in enumerate(chunks, 1):
+        listing = "\n".join("%d. %s (%d) 예: %s" % (i, n, c, ex) for i, (n, c, ex) in enumerate(chunk, 1))
+        feedback, done = "", False
+        for attempt in (1, 2):
+            ok, content = _ask_model(ctx, PRUNE_SYSTEM, PRUNE_USER.format(text=sent["text"], cands=listing, feedback=feedback),
+                                     "%s_prune_%d_%d" % (sent["id"], ci, attempt))
+            if not ok:
+                warns.append("후보 추리기 호출 실패(묶음 %d/%d): %s" % (ci, len(chunks), str(content)[:120]))
+                break
+            m = re.findall(r"KEEP\s*:\s*([\d,\s]*)", content)
+            if m:
+                nums = sorted({int(x) for x in re.findall(r"\d+", m[-1])})
+                keep += [chunk[i - 1][0] for i in nums if 1 <= i <= len(chunk)]
+                done = True
+                break
+            feedback = "\n[다시] 앞의 답은 쓸 수 없었다. 'KEEP: 번호, 번호' 한 줄만 쓴다.\n"
+        if not done and not (warns and "호출 실패" in warns[-1]):
+            warns.append("후보 추리기의 답이 형식에 맞지 않음(묶음 %d/%d). 이 묶음의 후보는 대상에 넣지 않음" % (ci, len(chunks)))
+    return keep, warns
+
+
+def _resolve_sentences(ctx):
+    """문장 요청(--say, 요청 파일의 sentences)을 명시형 요청으로 바꿔 ctx.request['asks'] 에 넣는다(S5 의 처음에 부른다).
+    해석하지 못한 문장은 수동 검토로 남긴다. 결과는 out/request_resolved.json 에 쓴다. 돌려주는 값: 변경 계약 요약 목록(못 푼 문장)"""
+    st = ctx.store
+    ctx.request["asks"] = [a for a in ctx.request.get("asks") or [] if a.get("from") not in ("sentence", "model")]
+    sents = ctx.request.get("sentences") or []
+    if not sents:
+        st.set_meta("resolved_asks", [])
+        return []
+    can_llm = (not ctx.opts.get("no_llm")) and bool(ctx.cfg["llm"].get("endpoint"))
+    max_c = int(ctx.cfg["limits"].get("say_max_candidates", 600) or 600)
+    resolved, records, contracts = [], [], []
+    for s in sents:
+        where, action, targets, dropped = names_in_sentence(ctx, s["text"])
+        src, why, warns, words = "sentence", "", [], []
+        if not targets:
+            if not can_llm:
+                why = "문장에 패키지의 이름이 없고 sLLM 을 쓸 수 없어 해석하지 못함(--no-llm 이거나 주소 미설정). 대상 이름을 적은 명시형으로 준다"
+            else:
+                r, why = interpret_request(ctx, s)
+                if r:
+                    src, action, words = "model", r["action"], r["words"]
+                    where = r["where"] if r["where"] != "any" else where
+                    cands = expand_words(ctx, words)
+                    if len(cands) > max_c:
+                        warns.append("후보가 %d개여서 많이 쓰인 %d개만 봄" % (len(cands), max_c))
+                        cands = cands[:max_c]
+                    if not cands:
+                        why = "낱말(%s)이 든 이름을 패키지의 호출 이름에서 찾지 못함" % ", ".join(words)
+                    else:
+                        targets, w2 = prune_names(ctx, s, cands)
+                        warns += w2
+                        dropped = [c[0] for c in cands if c[0] not in targets]
+                        if not targets:
+                            why = "후보 %d개 가운데 요청에 맞는 이름을 고르지 못함" % len(cands)
+        rec = {"id": s["id"], "action": action, "where": where, "targets": targets, "dropped": dropped[:300], "text": s["text"],
+               "files": s.get("files") or "", "from": src}
+        if words:
+            rec["words"] = words
+        if warns:
+            rec["warnings"] = warns
+        if targets:
+            resolved.append({"id": s["id"], "targets": targets, "text": s["text"], "files": s.get("files") or "",
+                             "where": where, "action": action, "from": src})
+            LOG5.info("문장 요청 %s: 대상 %d개(%s)%s, 동작 %s, 방법 %s%s" % (
+                s["id"], len(targets), ", ".join(targets[:8]) + (" ..." if len(targets) > 8 else ""),
+                (", 위치 " + _WHERE_KO[where]) if where != "any" else "", "찾기" if action == "find" else "수정",
+                "문장의 이름" if src == "sentence" else "모델 해석(낱말 %s)" % ", ".join(words), ("; " + "; ".join(warns)) if warns else ""))
+        else:
+            rec["unresolved"] = why
+            LOG5.warn("문장 요청 %s 을(를) 해석하지 못했습니다: %s" % (s["id"], why))
+            st.x("INSERT INTO issues(path,start,end,line,source,rule_id,tier,llm,title,detail,review,status,note) "
+                 "VALUES('',0,0,0,'request',?,'T3',0,?,?,0,'manual',?)",
+                 (s["id"], "문장 요청을 해석하지 못함", s["text"][:300], why[:300]))
+            contracts.append({"id": s["id"], "type": "문장 요청", "target": "(해석하지 못함)", "rename": {}, "counts": {},
+                              "note": "요청문: %s / 이유: %s" % (s["text"], why)})
+        records.append(rec)
+    ctx.request["asks"] += resolved
+    st.set_meta("resolved_asks", resolved)
+    write_text(ctx.p("out", "request_resolved.json"), json.dumps(
+        {"_설명": "문장 요청을 해석한 결과다. 이 파일을 --request 로 주면 해석을 다시 하지 않는다. targets 를 사람이 고쳐도 된다.",
+         "asks": [r for r in records if r["targets"]], "unresolved": [r for r in records if not r["targets"]]},
+        ensure_ascii=False, indent=2))
+    LOG5.info("문장 요청 %d건 가운데 %d건을 해석함. 결과: %s" % (len(sents), len(resolved), ctx.p("out", "request_resolved.json")))
+    return contracts
+
+
+def _where_filter(d, where):
+    """위치 조건에 맞는 구간을 합쳐서 돌려준다. 돌려주는 값: (시작 목록, 끝 목록) 또는 None(조건 없음)"""
+    if where in ("", "any", None):
+        return None
+    if where == "string":
+        spans = [tuple(x) for x in mask_code(d.text)[1]]
+    elif where == "comment":
+        spans = comment_spans(d.text)
+    else:
+        spans = [(r["start"], r["end"]) for r in ctrl_ranges(d.struct, kinds=(where,))[0]]
+    merged = []
+    for a, b in sorted(spans):
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return [m[0] for m in merged], [m[1] for m in merged]
+
+
+def _in_spans(flt, pos):
+    if flt is None:
+        return True
+    i = bisect.bisect_right(flt[0], pos) - 1
+    return i >= 0 and pos < flt[1][i]
 
 
 def _user_asks(ctx, files):
@@ -3644,25 +4955,33 @@ def _user_asks(ctx, files):
     한 요청이 다루는 줄 수에는 상한(limits.ask_max_sites)이 있다. 넘는 곳은 수동 검토로 보낸다.
     돌려주는 값: 변경 계약 요약 목록(보고서의 "변경 계약"에 실린다)."""
     st, out = ctx.store, []
-    cap = max(1, int(ctx.cfg["limits"].get("ask_max_sites", 300)))
+    cap = max(0, int(ctx.cfg["limits"].get("ask_max_sites", 0) or 0))   # 0 이면 상한 없음
     sql = ("INSERT INTO issues(path,start,end,line,source,rule_id,tier,llm,title,detail,after,review,status,note) "
            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
     for a in ctx.request.get("asks") or []:
         rxs = [re.compile(t[1:-1]) if t.startswith("/") else re.compile(r"(?<!\w)%s\b" % re.escape(t)) for t in a["targets"]]
         n_llm = n_over = n_files = 0
+        where, find_only, found = a.get("where") or "any", a.get("action") == "find", []
         for rel in files:
             pat = a.get("files") or ""
             if pat and not (fnmatch.fnmatch(rel.lower(), pat) or rel.lower().startswith(pat.rstrip("*").rstrip("/") + "/")):
                 continue
             d = get_doc(ctx, rel)
             lines_done = set()
+            flt = _where_filter(d, where)             # 위치 조건(if 문 안 등)에 맞는 구간. 조건이 없으면 None
+            body = d.text if where in ("string", "comment") else d.code   # 문자열·주석 안은 가리지 않은 본문에서 찾는다
             for rx in rxs:
-                for m in rx.finditer(d.code):
+                for m in rx.finditer(body):
                     line = d.line_of(m.start())
-                    if m.end() == m.start() or line in lines_done:
+                    if m.end() == m.start() or line in lines_done or not _in_spans(flt, m.start()):
                         continue
                     lines_done.add(line)
-                    over = n_llm >= cap
+                    if find_only:                     # 찾기 전용: 이슈로 올리지 않고 목록에만 넣는다
+                        la, lb = d.line_span(line)
+                        found.append((rel, line, m.group()[:40], " ".join(d.text[la:lb].split())[:140]))
+                        n_llm += 1
+                        continue
+                    over = bool(cap) and n_llm >= cap
                     la, lb = d.line_span(line)
                     st.x(sql, (rel, m.start(), m.end(), line, "request", a["id"], "T3", 0 if over else 1,
                                "사용자 요청: %s" % a["text"][:140], d.text[la:lb].strip()[:160], None, 0, "manual" if over else "open",
@@ -3671,11 +4990,26 @@ def _user_asks(ctx, files):
                     n_over += 1 if over else 0
                     n_llm += 0 if over else 1
             n_files += 1 if lines_done else 0
-        LOG5.info("요청 %s (%s): 대상이 쓰인 줄 %d곳(파일 %d개)을 sLLM 에 맡김, 상한을 넘어 수동 검토로 보낸 곳 %d곳"
-                  % (a["id"], ", ".join(a["targets"]), n_llm, n_files, n_over))
+        tg_txt = ", ".join(a["targets"][:12]) + (" 외 %d개" % (len(a["targets"]) - 12) if len(a["targets"]) > 12 else "")
+        cond = (" [%s]" % _WHERE_KO.get(where, where)) if where != "any" else ""
+        if find_only:
+            L = ["# 요청 %s: 찾은 곳" % a["id"], "", "- 요청문: %s" % a["text"], "- 대상: %s" % ", ".join(a["targets"]),
+                 "- 위치 조건: %s" % (_WHERE_KO.get(where) or "없음"), "- 찾은 곳: %d곳(파일 %d개)" % (len(found), n_files),
+                 "- 이 요청은 찾기 전용이다. 코드를 고치지 않았고 sLLM 에 보내지 않았다.", ""]
+            L += _table(["파일", "줄", "이름", "코드"], found[:5000]) if found else ["찾은 곳이 없다."]
+            if len(found) > 5000:
+                L += ["", "(5,000곳까지만 실었다. 전체 %d곳)" % len(found)]
+            write_text(ctx.p("out", "found_%s.md" % a["id"]), "\n".join(L) + "\n")
+            LOG5.info("요청 %s (%s)%s: 찾기 전용. %d곳(파일 %d개)을 out/found_%s.md 에 적음" % (a["id"], tg_txt, cond, len(found), n_files, a["id"]))
+            out.append({"id": a["id"], "type": "사용자 요청문(찾기)", "target": tg_txt + cond, "rename": {},
+                        "counts": {"찾은 곳": len(found)}, "note": "요청문: %s / 목록: found_%s.md" % (a["text"], a["id"])})
+            continue
+        LOG5.info("요청 %s (%s)%s: 대상이 쓰인 줄 %d곳(파일 %d개)을 sLLM 에 맡김, 상한을 넘어 수동 검토로 보낸 곳 %d곳"
+                  % (a["id"], tg_txt, cond, n_llm, n_files, n_over))
         if not n_llm:
-            LOG5.warn("요청 %s: 대상 %s 을(를) 패키지에서 찾지 못했습니다. 이름과 파일 범위를 확인하세요" % (a["id"], ", ".join(a["targets"])))
-        out.append({"id": a["id"], "type": "사용자 요청문", "target": ", ".join(a["targets"]), "rename": {},
+            LOG5.warn("요청 %s: 대상 %s 을(를) 패키지에서 찾지 못했습니다. 이름과 파일 범위%s를 확인하세요"
+                      % (a["id"], tg_txt, ", 위치 조건" if where != "any" else ""))
+        out.append({"id": a["id"], "type": "사용자 요청문", "target": tg_txt + cond, "rename": {},
                     "counts": {"sLLM 대상": n_llm, "상한 초과(수동)": n_over}, "note": "요청문: " + a["text"]})
     return out
 
@@ -3697,66 +5031,8 @@ def s5_impact(ctx):
                  "VALUES('',0,0,0,'request',?,'T3',0,?,?,0,'manual','이 판에서 지원하지 않는 요청 유형')",
                  (ft["id"], "요청사항 %s" % ft["type"], json.dumps(ft, ensure_ascii=False)[:300]))
             continue
-        target, mapping = ft["target"], ft["mapping"]
-        rx = re.compile(r"\b%s\s*\[\s*([A-Za-z_]\w*|\d*)\s*\]" % re.escape(target))
-        n_fix = n_var = n_decl = n_llm = n_conv = n_bare = 0
-        plan, why = _array_plan(ctx, ft, files) if ft.get("convert_declaration", True) else (None, "요청에서 선언 교체를 끔")
-        if plan:
-            ft["_definition"] = plan["definition"]
-        else:
-            LOG5.info("요청 %s: 배열 선언은 수동 검토로 남깁니다(%s)" % (ft["id"], why))
-        for rel in files:
-            d = get_doc(ctx, rel)
-            taken = [(e["start"], e["end"]) for e in st.q(
-                "SELECT start, end FROM edits WHERE path=? AND status='accepted'", (rel,))]
-            for m in rx.finditer(d.code):
-                key = m.group(1)
-                pre = d.code[max(0, m.start() - 80):m.start()]
-                pm = re.search(r"([A-Za-z_]\w*)[\s\*&]+$", pre)
-                is_decl = bool(pm) and pm.group(1) not in _NOT_TYPE_WORDS
-                line = d.line_of(m.start())
-                detail = d.text[m.start():m.end()]
-                if is_decl:
-                    if plan and any(x[0] == rel and x[1] <= m.start() < x[2] for x in plan["decls"]):
-                        continue                      # 이 선언은 아래의 _array_apply_plan 이 통째로 바꾼다
-                    tier, status, note, after = "T3", "manual", "배열 선언. 구조체 정의로 교체 필요(변경 계약): %s" % why, None
-                    n_decl += 1
-                elif key in mapping:
-                    tier, status, note, after = "T1", "open", "", "%s.%s" % (target, mapping[key])
-                    if any(s < m.end() and m.start() < e for s, e in taken):
-                        status, note, after = "manual", "다른 수정과 범위가 겹침", None
-                    n_fix += 1 if after else 0
-                elif ft.get("llm_variable_index"):
-                    tier, status, note, after = "T3", "open", "변수 인덱스 접근. sLLM 에 맡김(검토 필요)", None
-                    n_llm += 1
-                else:
-                    tier, status, note, after = "T3", "manual", "변수 인덱스 접근. 매핑표로 결정할 수 없음", None
-                    n_var += 1
-                cur = st.x("INSERT INTO issues(path,start,end,line,source,rule_id,tier,llm,title,detail,after,review,status,note) "
-                           "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                           (rel, m.start(), m.end(), line, "request", ft["id"], tier,
-                            1 if (tier == "T3" and status == "open") else 0,
-                            "요청사항: 배열 %s 를 구조체 필드로" % target, detail, after, 0, status, note))
-                if after:
-                    st.x("INSERT INTO edits(path,base,start,end,before,after,origin,ref,issue_ids,review,status,note) "
-                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                         (rel, "snapshot", m.start(), m.end(), detail, after, "request", ft["id"],
-                          str(cur.lastrowid), 1, "accepted", ""))
-                    taken.append((m.start(), m.end()))
-        if plan:
-            n_conv, n_bare = _array_apply_plan(ctx, ft, plan, files)
-            LOG5.info("요청 %s: 배열 선언 %d곳을 구조체 %s 로 바꿈(크기 %d, 요소 타입 %s). 배열 이름을 통째로 쓰는 곳 %d곳"
-                      % (ft["id"], n_conv, plan["struct"], plan["size"], plan["elem"], n_bare))
-        LOG5.info("요청 %s (배열 %s): 필드 치환 %d곳, 변수 인덱스 %d곳(수동) %d곳(sLLM), 선언 %d곳(수동)"
-                  % (ft["id"], target, n_fix, n_var, n_llm, n_decl))
-        contracts.append({"id": ft["id"], "type": "array_to_struct", "target": target, "rename": {},
-                          "counts": {"필드 치환": n_fix, "변수 인덱스(수동)": n_var, "변수 인덱스(sLLM)": n_llm, "선언(수동)": n_decl,
-                                     "선언 교체": n_conv, "배열 전체 사용": n_bare},
-                          "definition_after": plan["definition"] if plan else "",
-                          "note": (("구조체 정의를 %s 의 선언 앞에 넣었다. " % plan["primary"][0]) + ("" if plan["in_header"] or plan["n_files"] == 1
-                                    else "선언이 여러 파일에 있는데 헤더가 아니다. 정의를 공용 헤더로 옮겨야 한다. ")
-                                   + "매핑에 없는 인덱스는 reserved_번호 로 채워 크기와 배치를 배열과 같게 두었다") if plan
-                                  else "배열 선언을 자동으로 바꾸지 못했다(%s). 선언과 구조체 정의는 사람이 한다" % why})
+        contracts.append(_array_request(ctx, ft))
+    contracts += _resolve_sentences(ctx)                   # 문장 요청을 명시형으로 푼다(풀린 것은 아래 _user_asks 가 처리한다)
     contracts += _user_asks(ctx, files)
     st.set_meta("contracts", contracts)
     deps = {}
@@ -3819,6 +5095,115 @@ def reject_edits(ctx, ids_reasons):
         if row and row[0]["issue_ids"]:
             for iid in row[0]["issue_ids"].split(","):
                 st.x("UPDATE issues SET status='manual', note=? WHERE id=?", ("수정 기각: " + reason, int(iid)))
+
+
+# ---------------------------------------------------------------------------
+# 계약 요청(배열 -> 구조체)의 마무리. 선언과 사용처가 같이 바뀌어야 하므로 요청 단위로 본다(15_구분별... 7.2 의 E5, E7)
+# ---------------------------------------------------------------------------
+def _request_rollback(ctx, c, why):
+    """요청 하나에서 나온 수정(규칙 적용분과 sLLM 수정분)을 전부 기각한다. 돌려주는 값: 기각한 수정 수"""
+    st = ctx.store
+    ids = {r["id"] for r in st.q("SELECT id FROM issues WHERE source='request' AND rule_id=?", (c["id"],))}
+    rej = [(e["id"], why) for e in st.q("SELECT id FROM edits WHERE origin='request' AND ref=? AND status IN (?,?,?)", (c["id"],) + _LIVE)]
+    for e in st.q("SELECT id, issue_ids FROM edits WHERE origin='llm' AND status IN (?,?,?)", _LIVE):
+        if ids & {int(x) for x in str(e["issue_ids"] or "").split(",") if x.strip().isdigit()}:
+            rej.append((e["id"], why))
+    reject_edits(ctx, rej)
+    st.x("UPDATE issues SET status='manual', note=? WHERE source='request' AND rule_id=? AND status IN ('open','pending','fixed')",
+         ("요청을 되돌림: " + why, c["id"]))
+    c["applied"] = False
+    c["definition_after"] = ""
+    c.setdefault("reasons", []).append(why)
+    return len(rej)
+
+
+def _requests_finalize(ctx):
+    """병합(S7) 앞에서 부른다. sLLM 에 맡긴 사용처 가운데 못 고친 것이 있으면 요청의 on_unresolved 대로 처리한다.
+    stop(기본): 그 요청의 수정을 전부 되돌린다(일부만 바뀐 결과는 컴파일되지 않는다).  keep: 남기고 '미완료'로 표시한다."""
+    st = ctx.store
+    cons = st.get_meta("contracts", []) or []
+    touched = False
+    for c in cons:
+        if c.get("type") != "array_to_struct" or not c.get("applied"):
+            continue
+        if c.pop("held", None) is not None:
+            touched = True
+        left = st.one("SELECT COUNT(*) FROM issues WHERE source='request' AND rule_id=? AND tier='T3' AND llm=1 "
+                      "AND status IN ('manual','pending')", (c["id"],)) or 0
+        if not left:
+            continue
+        touched = True
+        n_fail = st.one("SELECT COUNT(*) FROM issues WHERE source='request' AND rule_id=? AND tier='T3' AND llm=1 "
+                        "AND status='manual'", (c["id"],)) or 0
+        if not n_fail:
+            # 실패한 곳은 없고 아직 보내지 못한 곳만 있다. 되돌리지 않는다. 일부만 바뀐 결과가 나가지 않게
+            # 이 요청의 수정을 이번 결과에서만 빼 두고(held), 이어서 실행할 때 다시 넣는다
+            ids = {r["id"] for r in st.q("SELECT id FROM issues WHERE source='request' AND rule_id=?", (c["id"],))}
+            st.x("UPDATE edits SET status='held' WHERE origin='request' AND ref=? AND status IN (?,?,?)", (c["id"],) + _LIVE)
+            for e in st.q("SELECT id, issue_ids FROM edits WHERE origin='llm' AND status IN (?,?,?)", _LIVE):
+                if ids & {int(x) for x in str(e["issue_ids"] or "").split(",") if x.strip().isdigit()}:
+                    st.x("UPDATE edits SET status='held' WHERE id=?", (e["id"],))
+            st.x("UPDATE issues SET status='pending', note='같은 요청의 다른 사용처가 sLLM 대기 중' "
+                 "WHERE source='request' AND rule_id=? AND status IN ('open','fixed')", (c["id"],))
+            c["held"] = left
+            LOG7.warn("요청 %s: sLLM 에 보내지 못한 사용처 %d곳이 대기 중입니다. 일부만 바뀐 결과를 내지 않도록 "
+                      "이 요청의 수정은 이번 결과에 넣지 않습니다(이어서 실행하면 다시 넣습니다)" % (c["id"], left))
+            continue
+        if c.get("on_unresolved", "stop") == "stop":
+            n = _request_rollback(ctx, c, "sLLM 에 맡긴 사용처 %d곳을 고치지 못함(on_unresolved: stop)" % left)
+            LOG7.warn("요청 %s: sLLM 에 맡긴 사용처 %d곳을 고치지 못해 이 요청의 수정 %d건을 모두 되돌립니다" % (c["id"], left, n))
+        else:
+            c["incomplete"] = left
+            LOG7.warn("요청 %s: 못 고친 사용처 %d곳이 남았습니다. 이 상태로는 컴파일되지 않습니다(on_unresolved: keep)" % (c["id"], left))
+    if touched:
+        st.set_meta("contracts", cons)
+        st.commit()
+
+
+def _requests_check(ctx):
+    """검증(S8) 끝에서 부른다. 적용한 계약 요청마다 두 가지를 본다(요구사항 E4).
+      (1) 병합이나 검증에서 빠진 수정이 있는가  (2) 옛 접근 꼴(이름[..])이 예상보다 많이 남았는가
+    어긋나면 자동으로 되돌리지 않는다. 보고서 첫머리와 수동 검토 목록에 경고를 남긴다."""
+    st = ctx.store
+    cons = st.get_meta("contracts", []) or []
+    touched = False
+    for c in cons:
+        if c.get("type") != "array_to_struct" or not c.get("applied") or c.get("held"):
+            continue                              # 대기 중이라 결과에서 빼 둔 요청은 확인할 것이 없다
+        problems = []
+        dropped = st.one("SELECT COUNT(*) FROM edits WHERE origin='request' AND ref=? AND status='rejected'", (c["id"],)) or 0
+        if dropped:
+            problems.append("이 요청의 수정 %d건이 병합이나 검증에서 빠짐" % dropped)
+        over = []
+        for rel, e in sorted((c.get("subs") or {}).items()):
+            row = st.q("SELECT status FROM files WHERE path=?", (rel,))
+            if not row or row[0]["status"] in ("범위제외", "제외"):
+                continue
+            _d, text, _bad = build_merged(ctx, rel)
+            actual = _count_sub(mask_code(text)[0], c["target"], c.get("shape", "1d"))
+            not_fixed = 0
+            for iid in e.get("issues") or []:
+                if (st.one("SELECT status FROM issues WHERE id=?", (iid,)) or "") != "fixed":
+                    not_fixed += 1
+            expected = e.get("other", 0) + not_fixed
+            if actual > expected:
+                over.append("%s(남은 것 %d, 예상 %d)" % (rel, actual, expected))
+        if over:
+            problems.append("옛 접근 꼴이 예상보다 많이 남음: " + ", ".join(over[:8]))
+        st.x("INSERT INTO verifications(path,level,result,detail) VALUES(?,?,?,?)",
+             ("(요청 %s)" % c["id"], "E4", "불합격" if problems else "통과", "; ".join(problems) or "남은 옛 접근 꼴이 예상과 같음"))
+        if problems:
+            touched = True
+            c["broken"] = "; ".join(problems)
+            LOG8.error("요청 %s 의 결과가 어긋납니다: %s. 결과물이 컴파일되지 않을 수 있습니다" % (c["id"], c["broken"]))
+            st.x("INSERT INTO issues(path,start,end,line,source,rule_id,tier,llm,title,detail,review,status,note) "
+                 "VALUES('',0,0,0,'request',?,'T3',0,?,?,0,'manual',?)",
+                 (c["id"], "요청사항: 배열 %s 의 변환 결과가 어긋남" % c["target"], c["broken"][:300], "사용처 목록과 diff 를 보고 사람이 맞춘다"))
+        else:
+            LOG8.info("요청 %s: 잔여 재탐지 통과(옛 접근 꼴이 예상과 같음)" % c["id"])
+    if touched:
+        st.set_meta("contracts", cons)
+    st.commit()
 
 
 # ============================================================================
@@ -4006,20 +5391,23 @@ def _mark_manual(ctx, issue_ids, note):
         ctx.store.x("UPDATE issues SET status='manual', note=? WHERE id=?", (note, iid))
 
 
-def _request_guidance(ctx, rid):
+def _request_guidance(ctx, rid, near_text=""):
     """요청사항 이슈에 붙일 수정 지침(매핑표 포함). 규칙 카탈로그에 없는 ID 일 때 쓴다."""
     for a in ctx.request.get("asks") or []:
         if a["id"] == rid:                       # 사용자 요청문: 요청문을 그대로 지침으로 준다
+            names = set(re.findall(r"[A-Za-z_]\w*", near_text or ""))
+            tg = [t for t in a["targets"] if t in names] or a["targets"]      # 대상이 많으면 이 조각에 나온 것만 적는다
             return ("사용자 요청: %s 대상은 %s 이다. 이 조각에서 대상이 쓰인 줄을 요청대로 고친다. 요청과 관계없는 줄이거나 "
                     "고칠 필요가 없으면 그 줄은 그대로 둔다. 고칠 줄이 하나도 없으면 NO_CHANGE 를 쓴다."
-                    % (a["text"] if a["text"].endswith((".", "다", "요")) else a["text"] + ".", ", ".join(a["targets"])))
+                    % (a["text"] if a["text"].endswith((".", "다", "요")) else a["text"] + ".", ", ".join(tg[:20])))
     for ft in ctx.request.get("features", []):
         if ft.get("id") == rid and ft.get("type") == "array_to_struct":
-            pairs = ", ".join("%s[%s] -> %s.%s" % (ft["target"], k, ft["target"], v)
-                              for k, v in list(ft["mapping"].items())[:40])
+            names = set(re.findall(r"[A-Za-z_]\w*", near_text or ""))
+            near = [(k, v) for k, v in ft["mapping"].items() if k in names or v in names] or list(ft["mapping"].items())[:12]
+            pairs = ", ".join("%s[%s] -> %s.%s" % (ft["target"], k, ft["target"], v) for k, v in near[:24])
             return ("배열 %s 은(는) 구조체로 바뀐다. 대응: %s. 상수 인덱스 접근은 이미 필드로 바꿨다. "
                     "변수 인덱스로 접근하는 줄을 인덱스가 가리키는 요소의 필드 접근으로 고친다. "
-                    "어느 필드인지 정할 수 없으면 NO_CHANGE 를 쓴다." % (ft["target"], pairs)) + _array_contract_text(ft)
+                    "어느 필드인지 정할 수 없으면 NO_CHANGE 를 쓴다." % (ft["target"], pairs)) + _contract_excerpt(ft, near_text)
         if ft.get("id") == rid and ft.get("type") == "struct_change":
             pairs = ", ".join("%s -> %s" % kv for kv in list((ft.get("rename") or {}).items())[:40])
             return ("구조체 %s 의 필드 이름이 바뀐다: %s. 이 줄의 멤버 접근이 그 구조체의 것이면 새 이름으로 고친다. "
@@ -4035,9 +5423,233 @@ def _common_guidance(ctx):
     return ["", "[공통 요청] 이 작업의 모든 수정에 적용한다."] + ["- " + x for x in items]
 
 
-def _make_task(rel, d, text1, ls1, big, members, la, lb, fn, guidance, env_txt, note_ctx=""):
+# ---------------------------------------------------------------------------
+# 참고 영역: 조각 밖에 있는 선언과 감싼 구문의 머리 (0.8.0. 15_구분별_검토현황과_구현명세 6.2 의 D3, D4, D5)
+# 조각은 대상 줄 주변만 담으므로, 대상 줄에 쓰인 변수가 어떻게 선언됐는지는 조각에 없을 수 있다.
+# 그러면 모델이 sizeof(포인터) 같은 "문법은 맞고 값이 틀린" 수정을 낸다. 선언을 찾아 [참고]로 붙인다.
+# [참고]는 [코드 조각] 밖에 있으므로 SEARCH 에 일치하지 않는다. 모델이 고칠 수 없는 읽기 전용 정보다.
+# ---------------------------------------------------------------------------
+_REF_SKIP = {"if", "else", "for", "while", "do", "switch", "case", "default", "break", "continue", "return", "goto", "sizeof",
+             "new", "delete", "this", "true", "false", "NULL", "nullptr", "const", "static", "extern", "struct", "class", "union",
+             "enum", "typedef", "void", "int", "char", "short", "long", "unsigned", "signed", "float", "double", "bool", "wchar_t",
+             "auto", "register", "volatile", "inline", "public", "private", "protected", "virtual", "template", "typename",
+             "namespace", "using", "try", "catch", "throw", "operator", "TRUE", "FALSE", "BOOL", "DWORD", "WORD", "BYTE",
+             "UINT", "LONG", "ULONG", "LPCSTR", "LPSTR", "LPCTSTR", "LPTSTR", "TCHAR", "WCHAR", "CHAR", "INT", "VOID", "HANDLE",
+             "size_t", "std", "stdin", "stdout", "stderr"}
+_MEMBER_DECL = (r"(?m)^[ \t]*(?:(?:static|mutable|const|unsigned|signed|struct|volatile|constexpr|inline)\s+)*"
+                r"[A-Za-z_][\w:<>, \t\*&]*?[\s\*&]%s[ \t]*((?:\[[^\]\n]*\])*)[ \t]*(?:=[^;]*|\{[^;]*\})?;")
+
+
+def _snippet_cached(ctx, name):
+    """find_symbol_snippet 의 결과를 이름별로 기억해 둔다(같은 이름을 작업마다 다시 찾지 않게)."""
+    c = ctx._snips
+    if name not in c:
+        c[name] = find_symbol_snippet(ctx, name)
+    return c[name]
+
+
+def _global_index(ctx):
+    """파일 범위(어느 블록에도 들지 않은 자리)의 변수 선언 색인. {이름: [(파일, 선언 글, 배열인가, 포인터인가)]}
+    처음 필요할 때 한 번 만든다. 줄의 처음에서 시작하는 선언만 본다(들여쓴 선언, 한 문장에 여러 변수를 둔 선언은 빠질 수 있다)."""
+    if ctx._gdecl is not None:
+        return ctx._gdecl
+    idx = {}
+    rx = re.compile(r"(?m)^(?:(?:extern|static|const|volatile|unsigned|signed|struct)\s+)*[A-Za-z_][\w:]*(?:[ \t]*<[^;{}()\n]*>)?"
+                    r"[ \t\*&]+([A-Za-z_]\w*)[ \t]*((?:\[[^\]\n]*\])*)[ \t]*(?==|;)")
+    for r in ctx.store.q("SELECT path FROM files WHERE kind='source' ORDER BY path"):
+        d = get_doc(ctx, r["path"])
+        if not d.ok:
+            continue
+        blocks = None
+        for m in rx.finditer(d.struct):
+            if m.group(0).split()[0] in _NOT_DECL_WORDS:
+                continue
+            if blocks is None:
+                blocks = d.get_blocks()
+            k = block_at(blocks, m.start(1))
+            while k >= 0 and blocks[k]["kind"] == "container" and re.search(r"\bnamespace\b|\bextern\b", d.struct[blocks[k]["head"]:blocks[k]["open"]]):
+                k = blocks[k]["parent"]
+            if k >= 0:
+                continue                                     # 함수나 구조체 안: 파일 범위가 아니다
+            head = m.group(0)
+            idx.setdefault(m.group(1), []).append((r["path"], " ".join(head.split()), bool(m.group(2)),
+                                                   "*" in head[:m.start(1) - m.start()] and not m.group(2)))
+    ctx._gdecl = idx
+    return idx
+
+
+def _class_index(ctx):
+    """이름 있는 구조체·클래스 본문의 위치. {이름: [(파일, 여는 위치, 닫는 위치)]}. 처음 필요할 때 한 번 만든다."""
+    if ctx._classes is not None:
+        return ctx._classes
+    idx = {}
+    for r in ctx.store.q("SELECT path FROM files WHERE kind='source' ORDER BY path"):
+        d = get_doc(ctx, r["path"])
+        if not d.ok or not re.search(r"\b(?:class|struct|union)\b", d.struct):
+            continue
+        for b in d.get_blocks():
+            if b["kind"] != "container":
+                continue
+            names = [b["name"]] if b["name"] else []
+            if re.match(r"\s*typedef\b", d.struct[b["head"]:b["open"]]):     # typedef struct { ... } 이름; 의 이름도 같은 본문을 가리킨다
+                sc = d.struct.find(";", b["close"])
+                if 0 <= sc - b["close"] < 200:
+                    names += re.findall(r"[A-Za-z_]\w*", d.struct[b["close"]:sc])
+            for nm in names:
+                idx.setdefault(nm, []).append((r["path"], b["open"], b["close"], b["head"]))
+    ctx._classes = idx
+    return idx
+
+
+def lookup_decl(ctx, rel, struct, pos, name, big=()):
+    """이름의 선언을 찾는다: 지역 -> 인자 -> (함수가 Class::method 면) 클래스 멤버 -> 파일 범위.
+    돌려주는 값: {"kind": local|param|member|global|candidates, "text", "is_array", "is_pointer", "certain"} 또는 None
+    struct 는 pos 가 속한 본문(전처리기까지 가린 것)이다. 규칙 수정을 반영한 본문을 줘도 된다."""
+    r = find_decl(struct, pos, name, big)
+    if r is None:
+        return None
+    if r["kind"] in ("local", "param"):
+        return r
+    cm = re.search(r"([A-Za-z_]\w*)\s*::\s*~?\w+\s*\(", r.get("head") or "")
+    if cm:
+        rx = re.compile(_MEMBER_DECL % re.escape(name))
+        for crel, a, b, _h in _class_index(ctx).get(cm.group(1), []):
+            m = rx.search(get_doc(ctx, crel).struct, a, b)
+            if m:
+                txt = " ".join(m.group(0).split())
+                return {"kind": "member", "text": "%s (클래스 %s 의 멤버)" % (txt[:180], cm.group(1)), "is_array": bool(m.group(1)),
+                        "is_pointer": "*" in txt.split(name)[0] and not m.group(1), "certain": True}
+    cands = _global_index(ctx).get(name) or []
+    same = [c for c in cands if c[0] == rel]
+    pick = same[0] if same else (cands[0] if len(cands) == 1 else None)
+    if pick:
+        return {"kind": "global", "text": "%s (%s 의 파일 범위 선언)" % (pick[1][:180], pick[0]), "is_array": pick[2],
+                "is_pointer": pick[3], "certain": True}
+    if cands:
+        return {"kind": "candidates", "text": "%s (%s 외 %d곳. 확정 아님)" % (cands[0][1][:160], cands[0][0], len(cands) - 1),
+                "is_array": cands[0][2], "is_pointer": cands[0][3], "certain": False}
+    return None
+
+
+def _decl_refs(ctx, rel, struct1, text1, ls1, big, members, a, b, limit):
+    """대상 줄에 쓰인 이름의 선언 가운데 조각(a~b) 밖에 있는 것을 [참고: 선언]의 줄 목록으로 만든다.
+    변수는 선언 문장을, 함수는 머리글 한 줄을, 타입·매크로는 정의 앞부분을 붙인다. 합계 limit 글자까지만 넣는다."""
+    out, seen, used = [], set(), 0
+    kind_ko = {"local": "지역 변수", "param": "함수 인자", "member": "멤버", "global": "전역", "candidates": "후보"}
+
+    def add(line):
+        nonlocal used
+        if used + len(line) > limit:
+            return False
+        out.append(line)
+        used += len(line)
+        return True
+
+    def type_ref(decl_text, name):
+        """선언의 타입 이름이 구조체나 typedef 면 그 정의의 앞부분도 붙인다(멤버의 크기를 알 수 있게)."""
+        m = re.match(r"(?:(?:const|static|unsigned|signed|struct|volatile|extern)\s+)*([A-Za-z_]\w*)", decl_text)
+        tname = m.group(1) if m else ""
+        if tname and tname not in _REF_SKIP and tname != name and tname not in seen:
+            seen.add(tname)
+            hit = (_class_index(ctx).get(tname) or [None])[0]
+            if hit:                                            # 구조체 본문을 그대로(300자까지)
+                dd = get_doc(ctx, hit[0])
+                sc = dd.struct.find(";", hit[2])
+                add("- %s 의 정의: %s" % (tname, " ".join(dd.text[hit[3]:(sc + 1 if 0 <= sc - hit[2] < 200 else hit[2])].split())[:300]))
+            else:
+                snip = _snippet_cached(ctx, tname)
+                body = " ".join(snip.split("\n", 1)[-1].split())[:300] if snip else ""
+                if re.search(r"\b(?:struct|class|union|typedef|enum)\b", body):
+                    add("- %s 의 정의: %s" % (tname, body))
+
+    for line, _i in members:
+        ps = ls1[line - 1]
+        pe = ls1[line] if line < len(ls1) else len(text1)
+        for m in re.finditer(r"[A-Za-z_]\w*", struct1[ps:pe]):
+            name = m.group(0)
+            if name in _REF_SKIP or name in seen or len(seen) >= 14:
+                continue
+            seen.add(name)
+            pos = ps + m.start()
+            if re.match(r"\s*\(", struct1[ps + m.end():ps + m.end() + 4]):       # 함수 호출: 머리글 한 줄
+                row = ctx.store.q("SELECT path, sig_start, body_start FROM functions WHERE name=? OR name LIKE ? LIMIT 1", (name, "%::" + name))
+                if row:
+                    add("- %s (함수): %s" % (name, " ".join(get_doc(ctx, row[0]["path"]).text[row[0]["sig_start"]:row[0]["body_start"]].split())[:200]))
+                continue
+            dc = lookup_decl(ctx, rel, struct1, pos, name, big)
+            if dc is None:
+                if name.isupper() or name.endswith(("_T", "_t")):                 # 매크로 상수나 타입 이름
+                    snip = _snippet_cached(ctx, name)
+                    if snip:
+                        add("- %s: %s" % (name, " ".join(snip.split("\n", 1)[-1].split())[:200]))
+                continue
+            dpos = dc.get("pos", -1)
+            if dc["kind"] in ("local", "param") and a <= dpos < b:
+                continue                                       # 선언이 조각 안에 있다. 다시 붙이지 않는다
+            if not add("- %s: %s  (%s%s)" % (name, dc["text"], kind_ko.get(dc["kind"], dc["kind"]), "" if dc.get("certain") else ", 확정 아님")):
+                return out
+            type_ref(dc["text"], name)
+            if dc["kind"] == "local" and "=" in dc["text"]:    # 초기값에 쓰인 이름을 한 단계 따라간다(char* p = user->name 에서 user)
+                for n2 in re.findall(r"[A-Za-z_]\w*", dc["text"].split("=", 1)[1])[:3]:
+                    if n2 in _REF_SKIP or n2 in seen:
+                        continue
+                    seen.add(n2)
+                    d2 = lookup_decl(ctx, rel, struct1, dpos, n2, big)
+                    if d2 and not (d2["kind"] in ("local", "param") and a <= d2.get("pos", -1) < b):
+                        add("- %s: %s  (%s)" % (n2, d2["text"], kind_ko.get(d2["kind"], d2["kind"])))
+                        type_ref(d2["text"], n2)
+    return out
+
+
+def _enclosing_refs(text1, blocks1, ls1, pos, la):
+    """대상 위치를 감싼 제어문 가운데 머리 줄이 조각보다 위에 있는 것을 [참고: 감싼 구문]의 줄 목록으로 만든다(안쪽 3개까지)."""
+    chain = []
+    k = block_at(blocks1, pos)
+    while k >= 0:
+        b = blocks1[k]
+        if b["kind"] in ("if", "for", "while", "switch", "else", "do", "try", "catch"):
+            hl = bisect.bisect_right(ls1, b["head"])
+            if hl < la:
+                chain.append("- %d줄: %s" % (hl, " ".join(text1[b["head"]:b["open"]].split())[:160]))
+        k = b["parent"]
+    return list(reversed(chain[:3]))
+
+
+def _snap_big(struct1, ls1, big, la, lb):
+    """조각의 시작이나 끝이 큰 초기화 목록 안에 떨어지면, 그 목록이 속한 문장의 처음(선언 머리)과 끝(;)까지 넓힌다.
+    넓히지 않으면 조각 첫 줄이 '{ /*생략*/ };' 만 남아 무엇의 초기값인지 알 수 없다. 생략 구간은 표식 한 줄이라 크기는 늘지 않는다."""
+    a = ls1[la - 1]
+    b = ls1[lb] - 1 if lb < len(ls1) else len(struct1)
+    for s2, e2 in big:
+        if s2 < a <= e2:
+            la = min(la, bisect.bisect_right(ls1, stmt_start_of(struct1, s2)))
+        if s2 <= b < e2:
+            sc = struct1.find(";", e2)
+            lb = max(lb, bisect.bisect_right(ls1, sc if sc >= 0 else e2))
+    return la, min(lb, len(ls1))
+
+
+def _issue_coupled(ctx, issue):
+    """이 이슈가 '결합 수정'인가. 결합 수정은 함수 전체에서 일관돼야 하는 변경이라 한 구간으로 묶어 차례로 처리한다.
+    규칙이나 요청에 "coupling": "coupled" 라고 적은 것만 결합이다. 적지 않으면 독립 수정이다."""
+    rule = ctx.rule_by_id.get(issue["rule_id"])
+    if rule is not None:
+        return rule.get("coupling") == "coupled"
+    for ft in ctx.request.get("features", []):
+        if ft.get("id") == issue["rule_id"]:
+            return ft.get("coupling") == "coupled"
+    for a in ctx.request.get("asks") or []:
+        if a.get("id") == issue["rule_id"]:
+            return a.get("coupling") == "coupled"
+    return False
+
+
+def _make_task(rel, d, text1, ls1, big, members, la, lb, fn, guidance, env_txt, note_ctx="", aux=None):
     """본문 text1 의 la~lb 줄을 조각으로 하는 작업 하나를 만든다. members 는 (줄 번호, 이슈) 목록.
-    plan 에는 이 작업을 더 작게 다시 만들 때(_replan) 필요한 재료를 넣어 둔다."""
+    plan 에는 이 작업을 더 작게 다시 만들 때(_replan) 필요한 재료를 넣어 둔다.
+    aux: 참고 영역을 만들 재료({"ctx", "struct1", "blocks1", "limit"}). 주면 감싼 구문의 머리와 선언을 [참고]로 붙인다."""
+    if aux:
+        la, lb = _snap_big(aux["struct1"], ls1, big, la, lb)
     a = ls1[la - 1]
     b = ls1[lb] - 1 if lb < len(ls1) else len(text1)
     view, segs = build_view(text1, a, b, big)
@@ -4058,11 +5670,24 @@ def _make_task(rel, d, text1, ls1, big, members, la, lb, fn, guidance, env_txt, 
     context = note_ctx
     if fn and fn[0]["start_line"] < la:
         context += "\n[참고: 이 조각이 속한 함수]\n%s\n" % d.text[fn[0]["sig_start"]:fn[0]["body_start"]].strip()[:600]
-    return {"path": rel, "issue_ids": [i["id"] for _l, i in members], "text1": text1, "ls1": ls1, "segs": segs,
+    refs_text = ""
+    if aux and aux.get("limit", 0) > 0:
+        enc = _enclosing_refs(text1, aux["blocks1"], ls1, ls1[members[0][0] - 1] + 1, la)
+        if enc:
+            refs_text += "\n[참고: 감싼 구문] 조각보다 위에 있어 보이지 않는 머리 줄이다. 고칠 수 없다.\n%s\n" % "\n".join(enc)
+        try:
+            decls = _decl_refs(aux["ctx"], rel, aux["struct1"], text1, ls1, big, members, a, b, aux["limit"])
+        except Exception as e:                                # 참고는 보조 정보다. 찾다가 실패해도 작업은 계속한다
+            LOG6.debug("%s %d줄: 선언 찾기 실패(%s)" % (rel, members[0][0], e))
+            decls = []
+        if decls:
+            refs_text += "\n[참고: 선언] 대상 줄에 쓰인 이름의 선언이다. 조각 밖에 있으므로 고칠 수 없다.\n%s\n" % "\n".join(decls)
+        context += refs_text
+    return {"path": rel, "refs_text": refs_text, "issue_ids": [i["id"] for _l, i in members], "text1": text1, "ls1": ls1, "segs": segs,
             "view": view, "codec": d.codec, "t_first": members[0][0], "t_last": members[-1][0], "la": la, "lb": lb,
             "fmt": {"env": env_txt, "guidance": "\n".join(guidance), "targets": "\n".join(targets),
                     "context": context, "path": rel, "start_line": la, "end_line": lb, "code": view},
-            "plan": {"d": d, "big": big, "fn": fn, "guidance": guidance, "env": env_txt, "members": list(members)},
+            "plan": {"d": d, "big": big, "fn": fn, "guidance": guidance, "env": env_txt, "members": list(members), "aux": aux},
             "extra": "", "feedback": "", "attempts": 0, "ctx_rounds": 0, "over": 0}
 
 
@@ -4169,7 +5794,7 @@ def plan_chunks(ctx, rel, d, text1, ls1, big, cl, fn, guidance, env_txt, max_tar
                 if head and la > head[0]:
                     note += ("\n[참고: 함수 앞부분(수정 전 원본). 지역 변수 선언을 보기 위한 것이며 고치지 않는다]\n%s\n"
                              % head[1])
-            t = _make_task(rel, d, text1, ls1, big, mem, la, lb, fn, guidance, env_txt, note)
+            t = _make_task(rel, d, text1, ls1, big, mem, la, lb, fn, guidance, env_txt, note, aux=ctx._aux.get(rel))
             need = count_tokens(llm, ctx.system_prompt + ctx.user_template.format(extra="", feedback="", **t["fmt"]))
             if not fits_limit(llm, need + reserve - 400):
                 fits = False
@@ -4270,12 +5895,35 @@ def plan_tasks(ctx):
                 clusters[-1].append((line, i))
             else:
                 clusters.append([(line, i)])
+        # 참고 영역의 재료(규칙 수정을 반영한 본문 기준). 선언 찾기와 블록 판단에 쓴다
+        struct1 = mask_preprocessor(mask_code(text1)[0])
+        aux = {"ctx": ctx, "struct1": struct1, "blocks1": block_tree(_apply_brace_macros(struct1))[0],
+               "limit": int(lim.get("ref_chars", 1500) or 0) if lim.get("ref_decl", True) else 0}
+        ctx._aux[rel] = aux
+        # 독립 수정은 작업 하나의 크기에 상한을 둔다. 한 번의 실패가 미치는 범위를 줄이기 위한 것이다(14_확인... 2절)
+        max_t, max_l = int(lim.get("task_max_targets", 8) or 0), int(lim.get("task_max_lines", 150) or 0)
+        packs = []
         for cl in clusters:
+            if (not max_t and not max_l) or any(_issue_coupled(ctx, i) for _l, i in cl):
+                packs.append(cl)                             # 결합 수정(또는 상한을 끈 경우): 구간을 통째로 둔다
+                continue
+            cur = []
+            for item in cl:
+                if cur and ((max_t and len(cur) >= max_t) or (max_l and item[0] - cur[0][0] >= max_l)):
+                    packs.append(cur)
+                    cur = []
+                cur.append(item)
+            if cur:
+                packs.append(cur)
+        if len(packs) > len(clusters):
+            LOG6.info("%s: 수정 지점 %d곳을 작업 %d건으로 나눔(작업당 지점 %d곳, %d줄 이내)" % (rel, len(located), len(packs), max_t, max_l))
+        for cl in packs:
             t_first, t_last = cl[0][0], cl[-1][0]
             ids = [i["id"] for _l, i in cl]
             guidance = []
+            near_text = text1[ls1[max(0, t_first - 26)]:(ls1[t_last + 25] if t_last + 25 < len(ls1) else len(text1))]   # 계약 발췌에 쓴다
             for _l, i in cl:
-                g = (ctx.rule_by_id.get(i["rule_id"], {}).get("guidance", "") or _request_guidance(ctx, i["rule_id"])
+                g = (ctx.rule_by_id.get(i["rule_id"], {}).get("guidance", "") or _request_guidance(ctx, i["rule_id"], near_text)
                      or _build_guidance(i))
                 item = "- [%s] %s: %s" % (i["rule_id"], i["title"], g)
                 if item not in guidance:
@@ -4287,7 +5935,7 @@ def plan_tasks(ctx):
             ctx_lines = lim["slice_context_lines"]
             for attempt_ctx in (ctx_lines, ctx_lines // 2, 5, 0):     # 주변 줄을 줄여 가며 한도에 맞춘다
                 la, lb = max(1, t_first - attempt_ctx), min(len(ls1), t_last + attempt_ctx)
-                task = _make_task(rel, d, text1, ls1, big, cl, la, lb, fn, guidance, env_txt)
+                task = _make_task(rel, d, text1, ls1, big, cl, la, lb, fn, guidance, env_txt, aux=aux)
                 need = count_tokens(llm, ctx.system_prompt + ctx.user_template.format(extra="", feedback="", **task["fmt"]))
                 if fits_limit(llm, need):
                     task["est_in"] = need
@@ -4347,7 +5995,7 @@ def _replan(ctx, t, groups, why, split=False):
             if lb - la >= t["lb"] - t["la"]:
                 continue                           # 지금보다 작아지지 않는 범위는 건너뛴다
             nt = _make_task(t["path"], P["d"], t["text1"], t["ls1"], P["big"], members, la, lb, P["fn"],
-                            P["guidance"], P["env"])
+                            P["guidance"], P["env"], aux=P.get("aux"))
             nt["extra"], nt["ctx_rounds"] = t["extra"], t["ctx_rounds"]      # 보강해 둔 정의는 가져간다
             need = count_tokens(llm, ctx.system_prompt + _task_prompt(ctx, nt))
             if fits_limit(llm, need) and _est_out(nt) <= llm["max_output_tokens"] * 0.8:
@@ -4383,6 +6031,16 @@ def s6_llm(ctx):
     st.x("DELETE FROM edits WHERE origin='llm'")
     ctx.system_prompt = _load_prompt("system.txt", SYSTEM_PROMPT)
     ctx.user_template = _load_prompt("user.txt", USER_TEMPLATE)
+    # 이어서 실행: 이 단계는 sLLM 수정 레코드를 지우고 처음부터 다시 만든다. 지난번에 받은 응답은 캐시(llm_cache)에
+    # 남아 있어 다시 보내지 않는다. 그래서 대기 이슈뿐 아니라 지난번에 sLLM 수정으로 '고침'이 된 이슈도 함께 다시 연다
+    n_back = st.one("SELECT COUNT(*) FROM issues WHERE tier='T3' AND llm=1 AND status='pending'") or 0
+    n_redo = st.one("SELECT COUNT(*) FROM issues WHERE tier='T3' AND llm=1 AND status='fixed'") or 0
+    st.x("UPDATE issues SET status='open', note='' WHERE status='pending'")
+    st.x("UPDATE issues SET status='open' WHERE tier='T3' AND llm=1 AND status='fixed'")
+    st.x("UPDATE edits SET status='accepted' WHERE status='held'")   # 대기 때문에 빼 두었던 요청의 수정을 다시 넣는다(조각의 기준 본문이 병합 때와 같아야 한다)
+    if n_back or n_redo:
+        LOG6.info("이어서 실행: 대기로 남은 이슈 %d건을 보냅니다. 지난번에 고친 %d건은 받아 둔 응답을 다시 씁니다(호출하지 않음)" % (n_back, n_redo))
+    st.set_meta("llm_pending", 0)
     n_open = st.one("SELECT COUNT(*) FROM issues WHERE tier='T3' AND llm=1 AND status='open'")
     if not n_open:
         LOG6.info("sLLM 대상 이슈가 없습니다")
@@ -4422,12 +6080,31 @@ def s6_llm(ctx):
         a, b = _refit_tokens(llm)
         llm["_ratio"], llm["_overhead"] = round(a, 4), int(b)
 
+    # 이어서 실행할 때는 처음 계획할 때의 추정값으로 나눈다. 분할 순차의 조각 경계가 지난번과 같아야 받아 둔 응답을
+    # 캐시에서 다시 쓸 수 있다(경계가 달라지면 요청문이 달라져 다시 보내게 된다). 계획이 끝나면 배운 보정값으로 되돌린다
+    learned = (llm.get("_ratio"), llm.get("_overhead"))
+    pc = st.get_meta("plan_calib", None) if (n_back or n_redo) else None
+    if pc and pc.get("model") == llm["model"]:
+        for k, v in (("_ratio", pc.get("ratio")), ("_overhead", pc.get("overhead"))):
+            if v is None:
+                llm.pop(k, None)
+            else:
+                llm[k] = v
+    else:
+        pc = None
+        st.set_meta("plan_calib", {"model": llm["model"], "ratio": learned[0], "overhead": learned[1]})
     tasks = plan_tasks(ctx)
+    if pc:
+        for k, v in (("_ratio", learned[0]), ("_overhead", learned[1])):
+            if v is not None:
+                llm[k] = v
     LOG6.info("sLLM 작업 %d건 (이슈 %d건), 동시 요청 %d, 한도 %d토큰(출력 상한 %d, 서버 몫 %d)"
               % (len(tasks), n_open, llm["max_parallel"], llm["max_total_tokens"], llm["max_output_tokens"],
                  overhead_tokens(llm)))
     os.makedirs(ctx.p("logs", "llm"), exist_ok=True)
     pending, conn_fail, any_ok, n_replan, n_reject = tasks, 0, False, 0, 0
+    max_calls = int(ctx.opts.get("max_calls") or 0)        # 이번 실행에서 보낼 호출 수의 예산(0 이면 제한 없음)
+    waiting, busy_streak, stop_why = [], 0, ""            # 대기로 남길 작업, 연속 과부하 횟수, 보내기를 멈춘 이유
     groups = {}                                   # 분할 묶음: 묶음 번호 -> 조각 작업 목록
     for t in tasks:
         if t.get("group"):
@@ -4484,8 +6161,20 @@ def s6_llm(ctx):
             send.append(t)
             if t["cached"] is None:
                 jobs.append(t)
+        held = []
+        if max_calls:
+            room = max_calls - ctx.llm_calls
+            if room < len(jobs):                  # 예산이 모자란다. 넘치는 작업은 이번에 보내지 않는다
+                held = jobs[max(0, room):]
+                jobs = jobs[:max(0, room)]
+                hold_ids = {t["id"] for t in held}
+                send = [t for t in send if t["id"] not in hold_ids]
+                for t in held:
+                    t["attempts"] -= 1            # 보내지 않았으므로 시도 횟수에서 뺀다
+                stop_why = "호출 예산(--max-calls %d)을 다 씀" % max_calls
         LOG6.info("%d차 요청: 작업 %d건 (캐시 재사용 %d건, 다음 차례를 기다리는 작업 %d건)"
                   % (round_no, len(send), len(send) - len(jobs), len(pending) - len(ready)))
+        ctx.llm_calls += len(jobs)
         results = {}
         if jobs:
             with ThreadPoolExecutor(max_workers=max(1, int(llm["max_parallel"]))) as ex:
@@ -4520,6 +6209,14 @@ def s6_llm(ctx):
                 continue
             if ok:
                 learn_tokens(llm, raw, info.get("in"))
+                busy_streak = 0
+            if not ok and kind == "busy":
+                # 서버가 끝까지 바쁘다고 답했다(일일 한도 소진 포함). 이 작업은 실패가 아니라 대기다
+                record(t, rfile, ms, False, "서버 과부하로 보내지 못함(대기)", info, "busy")
+                t["attempts"] -= 1
+                waiting.append(t)
+                busy_streak += 1
+                continue
             if ok and info.get("finish") == "length":
                 # 응답이 출력 상한에서 잘렸다. 같은 요청을 다시 보내도 또 잘리므로 수정 지점을 나눠 다시 계획한다
                 any_ok = True
@@ -4577,14 +6274,21 @@ def s6_llm(ctx):
         st.commit()
         st.set_meta("llm_tokens", {"model": llm["model"], "hist": llm.get("_tok_hist") or [],
                                    "floor": llm.get("_tok_floor") or []})
+        wait_ids = {t["id"] for t in waiting}
         rest = []
         for t in pending:
             if t["id"] in swap:
                 rest.extend(swap[t["id"]])        # 다시 계획한 작업이 옛 작업의 자리를 잇는다
-            elif t["id"] in drop or t.get("group") in cancelled:
+            elif t["id"] in drop or t.get("group") in cancelled or t["id"] in wait_ids:
                 continue
-            elif t["id"] in retry_ids or t["id"] not in ready_ids:
+            elif t["id"] in retry_ids or t["id"] not in ready_ids or t in held:
                 rest.append(t)
+        if busy_streak >= 3 and not stop_why:
+            stop_why = "서버가 계속 바쁘다고 답함(과부하 또는 사용 한도)"
+        if stop_why:
+            # 더 보내지 않는다. 남은 작업은 대기로 저장해 다음 실행(--resume)이 이어서 보내게 한다
+            waiting.extend(rest)
+            rest = []
         if conn_fail >= 3 and not any_ok:
             LOG6.error("sLLM 서버 호출이 연속으로 실패했습니다. 주소와 서버 상태를 확인하세요: %s" % llm["endpoint"])
             for t in rest:
@@ -4593,6 +6297,31 @@ def s6_llm(ctx):
             st.commit()
             break
         pending = rest
+    if waiting:
+        n_wait_issues = 0
+        for t in waiting:
+            st.x("UPDATE tasks SET status='waiting', note=? WHERE id=?", (stop_why or "대기", t["id"]))
+            for iid in t["issue_ids"]:
+                st.x("UPDATE issues SET status='pending', note=? WHERE id=? AND status='open'", ("sLLM 에 보내지 못함(대기): " + (stop_why or ""), iid))
+                n_wait_issues += 1
+        # 분할 순차 구간의 뒤 조각이 대기로 남았으면, 이미 수용한 앞 조각의 수정도 이번 결과에서 뺀다.
+        # 한 구간이 반만 바뀐 결과를 내지 않기 위한 것이다. 응답은 캐시에 남아 있어 이어서 실행할 때 호출 없이 되살아난다
+        wait_ids = {t["id"] for t in waiting}
+        for g in sorted({t["group"] for t in waiting if t.get("group")}):
+            done_parts = [x for x in (groups.get(g) or []) if x["id"] not in wait_ids]
+            if not done_parts:
+                continue
+            refs = ["task%d" % x["id"] for x in done_parts]
+            st.x("DELETE FROM edits WHERE origin='llm' AND status='accepted' AND ref IN (%s)" % ",".join("?" * len(refs)), refs)
+            for x in done_parts:
+                for iid in x["issue_ids"]:
+                    st.x("UPDATE issues SET status='pending', note='같은 구간의 뒤 조각이 sLLM 대기 중' WHERE id=? AND status='open'", (iid,))
+                    n_wait_issues += 1
+            LOG6.info("%s: 분할 구간의 뒤 조각이 대기 중이어서 앞 조각 %d개의 수정을 이번 결과에 넣지 않습니다" % (done_parts[0]["path"], len(done_parts)))
+        st.commit()
+        st.set_meta("llm_pending", n_wait_issues)
+        LOG6.warn("%s. 작업 %d건(이슈 %d건)을 대기로 남깁니다. --resume \"%s\" 로 이어서 보낼 수 있습니다"
+                  % (stop_why or "보내지 못한 작업이 있음", len(waiting), n_wait_issues, ctx.run_dir))
     st.set_meta("chunk_groups", {"total": len(seen_groups), "cancelled": len(cancelled),
                                  "parts": st.one("SELECT COUNT(*) FROM tasks WHERE grp>0 AND status!='replanned'") or 0})
     st.set_meta("llm_stats", {"ratio": round(float(llm.get("_ratio", 1.0)), 3), "overhead": overhead_tokens(llm),
@@ -4603,6 +6332,209 @@ def s6_llm(ctx):
               % (ts.get("done", 0), ts.get("manual", 0), ts.get("cancelled", 0), len(seen_groups), len(cancelled)))
     LOG6.info("토큰 한도 대응: 서버 거절 %d회, 다시 계획 %d회, 추정 보정 비율 %.2f, 서버 몫 %d토큰, 적용 한도 %d"
               % (n_reject, n_replan, float(llm.get("_ratio", 1.0)), overhead_tokens(llm), llm["max_total_tokens"]))
+
+
+# ---- 수용 검사 추가(0.8.0): 새 이름, 선언 변화, 크기 인자, 변경 범위, 중복 선언 ------------------------
+# 목적: 수정 블록이 형식과 위치는 맞아도 "조각 밖"을 깨뜨리는 경우를 컴파일러 없이 잡는다(15_구분별... 7절 E2~E4, E8, E9).
+#   새 이름   : REPLACE 에 조각, 참고, 지침, 패키지 어디에도 없는 이름이 생겼는가(기본은 기각하지 않고 검토 메모만 남긴다)
+#   선언 변화 : 선언을 없앴는데 그 이름이 다른 곳에서 쓰이는가 / 새 선언의 이름이 이미 선언돼 있는가(기각)
+#   크기 인자 : 새로 쓴 sizeof(이름), _countof(이름) 의 이름이 포인터인가(확정이면 기각, 불확실하면 메모)
+#   변경 범위 : ① 함수 안  ② 파일 안(static)  ③ 파일 밖에 영향(헤더, 전역, 외부 함수 머리). 기록만 한다
+#   중복 선언 : 병합 직전에, 수정으로 생긴 선언이 같은 블록에서 두 번 선언되는지 본다(뒤 수정을 기각)
+# 한계: 글자 기준의 근사다. 타입 이름과 변수 이름을 완전히 가르지 못한다. 실제 모델의 응답으로는 확인하지 못했다.
+_CPP_WORDS = frozenset("""alignas alignof and asm auto bool break case catch char char16_t char32_t class const constexpr
+const_cast continue decltype default delete do double dynamic_cast else enum explicit export extern false float for friend
+goto if inline int long mutable namespace new noexcept not nullptr operator or private protected public register
+reinterpret_cast return short signed sizeof static static_assert static_cast struct switch template this thread_local throw
+true try typedef typeid typename union unsigned using virtual void volatile wchar_t while xor override final
+__int8 __int16 __int32 __int64 __cdecl __stdcall __fastcall __declspec __inline __forceinline""".split())
+_STD_NAMES = frozenset("""NULL TRUE FALSE BOOL BYTE WORD DWORD UINT INT LONG ULONG LPSTR LPCSTR LPWSTR LPCWSTR LPTSTR LPCTSTR TCHAR
+WCHAR CHAR HANDLE HWND HRESULT LPVOID VOID SIZE_T size_t ssize_t ptrdiff_t errno_t rsize_t intptr_t uintptr_t INT_PTR UINT_PTR
+LONG_PTR ULONG_PTR DWORD_PTR int8_t int16_t int32_t int64_t uint8_t uint16_t uint32_t uint64_t std string wstring
+stdin stdout stderr errno EOF _TRUNCATE _countof ARRAYSIZE _T TEXT L strlen wcslen strnlen memset memcpy memmove memcmp
+c_str size length data begin end empty npos
+printf fprintf sprintf snprintf _snprintf vsnprintf _vsnprintf sprintf_s _snprintf_s vsprintf_s _vsnprintf_s swprintf_s
+scanf sscanf scanf_s sscanf_s fscanf fscanf_s fgets fputs puts gets_s fopen fopen_s _wfopen_s fclose fread fwrite
+strcpy strcpy_s strncpy strncpy_s strcat strcat_s strncat strncat_s strtok strtok_s strcmp strncmp _stricmp _strnicmp
+strchr strrchr strstr _strdup wcscpy_s wcsncpy_s wcscat_s wcsncat_s _wcsdup memcpy_s memmove_s
+_itoa_s _ltoa_s _ultoa_s _i64toa_s _ui64toa_s _itow_s _ltow_s _strlwr_s _strupr_s _wcslwr_s _wcsupr_s _mktemp_s
+_ecvt_s _fcvt_s _gcvt_s atoi atol atof strtol strtoul strtod malloc calloc realloc free
+localtime_s gmtime_s ctime_s asctime_s _localtime64_s getenv_s _dupenv_s
+inet_ntop inet_pton InetNtop InetPton getaddrinfo freeaddrinfo addrinfo AF_INET AF_INET6 INET_ADDRSTRLEN
+VerifyVersionInfo VerSetConditionMask OSVERSIONINFOEX IsWindowsVersionOrGreater IsWindows7OrGreater IsWindows8OrGreater
+IsWindows10OrGreater""".split())
+_HEADER_EXT = (".h", ".hpp", ".hxx", ".hh", ".inl")
+_SIZE_OF_RE = re.compile(r"\b(?:sizeof|_countof|ARRAYSIZE|_ARRAYSIZE)\s*\(\s*([A-Za-z_]\w*)\s*\)")
+_GRADE_TAG = {1: "범위① 함수 안", 2: "범위② 파일 안(static)", 3: "범위③ 파일 밖에 영향"}
+
+
+def _decl_names(code):
+    """마스킹한 코드 조각에서 선언된 이름을 뽑는다. 돌려주는 값: {이름: 이름 뒤의 [..] 글자}
+    문장 단위(; { } 로 나눔)로 선언 정규식(decl_regex)을 맞춰 본다. for 의 머리 안 선언은 보지 않는다."""
+    out = {}
+    for stmt in re.split(r"[;{}]", code):
+        if not stmt.strip():
+            continue
+        for n in set(re.findall(r"[A-Za-z_]\w*", stmt)):
+            if n in _CPP_WORDS or n in out:
+                continue
+            m = decl_regex(n).match(stmt)
+            if m:
+                out[n] = m.group(1) or ""
+    return out
+
+
+def _package_names(ctx):
+    """패키지의 소스에 나오는 이름 전부와 규칙 지침에 나오는 이름. 처음 필요할 때 한 번 만든다."""
+    if ctx._names is None:
+        s = set()
+        for r in ctx.store.q("SELECT path FROM files WHERE kind='source' ORDER BY path"):
+            try:
+                s.update(re.findall(r"[A-Za-z_]\w*", get_doc(ctx, r["path"]).code))
+            except Exception:                              # 읽지 못한 파일은 건너뛴다(이 색인은 보조 정보다)
+                continue
+        for r in ctx.rule_by_id.values():
+            s.update(re.findall(r"[A-Za-z_]\w*", "%s %s" % (r.get("guidance") or "", r.get("title") or "")))
+        for line in ctx.request.get("common") or []:
+            s.update(re.findall(r"[A-Za-z_]\w*", str(line)))
+        ctx._names = s
+    return ctx._names
+
+
+def _edit_grade(rel, blocks1, e):
+    """수정 하나가 미치는 범위의 등급(요구사항 E2). 1: 함수 본문 안, 2: 파일 안(static 선언·static 함수 머리), 3: 파일 밖에 영향"""
+    if rel.lower().endswith(_HEADER_EXT):
+        return 3
+    fi = block_at(blocks1, e["start"], kinds=("func",))
+    if fi >= 0 and e["end"] <= blocks1[fi]["close"]:
+        return 1
+    return 2 if re.match(r"\s*static\b", e["before"]) else 3
+
+
+def _edit_checks(ctx, t, edits):
+    """수정 블록들의 추가 검사. 돌려주는 값: (기각 사유 목록, {수정의 순번: 메모 목록})
+    기각 사유가 있으면 부르는 쪽이 그 사유를 붙여 다시 요청한다. 메모는 수정 레코드에 남아 보고서의 검토 목록에 나온다."""
+    aux = (t.get("plan") or {}).get("aux")
+    reasons, notes = [], {}
+    if not aux:
+        return reasons, notes
+    lim = ctx.cfg["limits"]
+    mode = str(lim.get("new_name_check", "mark"))
+    struct1, blocks1, big, rel = aux["struct1"], aux["blocks1"], (t["plan"].get("big") or ()), t["path"]
+    allowed = None
+    for k, e in enumerate(edits):
+        memo = []
+        nb, na = mask_code(e["before"])[0], mask_code(e["after"])[0]
+        db, da = _decl_names(nb), _decl_names(na)
+        fi = block_at(blocks1, e["start"], kinds=("func",))
+        ids_a = set(re.findall(r"[A-Za-z_]\w*", na))
+        if fi >= 0 and lim.get("decl_change_check", True):
+            fb = blocks1[fi]
+            for n in sorted(set(db) - set(da)):           # 없어졌거나 이름이 바뀐 선언
+                rx = re.compile(r"\b%s\b" % re.escape(n))
+                if n in ids_a or rx.search(struct1, fb["open"], e["start"]) or rx.search(struct1, e["end"], fb["close"]):
+                    reasons.append("선언을 없앤 이름 %s 이(가) 다른 줄에서 쓰인다. 선언을 지우거나 이름을 바꾸지 않는다" % n)
+            for n in sorted(set(da) - set(db)):           # 새로 생긴 선언
+                r = find_decl(struct1, e["start"], n, big)
+                if r and r["kind"] in ("local", "param"):
+                    reasons.append("새로 선언한 이름 %s 은(는) 이 함수에 이미 선언돼 있다(%s). 있는 변수를 쓰거나 다른 이름을 쓴다"
+                                   % (n, " ".join(r["text"].split())[:60]))
+        if lim.get("size_arg_check", True):
+            fresh = collections.Counter(_SIZE_OF_RE.findall(na)) - collections.Counter(_SIZE_OF_RE.findall(nb))
+            for n in sorted(fresh):
+                if n in _CPP_WORDS or n in _STD_NAMES:
+                    continue
+                if n in da:                               # 이 수정 안에서 새로 선언한 이름
+                    if not da[n] and re.search(r"\*\s*(?:const\s+)?%s\b" % re.escape(n), na):
+                        reasons.append("sizeof(%s) 를 크기로 썼는데 %s 은(는) 포인터다. 버퍼의 실제 크기를 쓴다" % (n, n))
+                    continue
+                r = lookup_decl(ctx, rel, struct1, e["end"], n, big) if fi >= 0 else None
+                if not r:
+                    if n not in _class_index(ctx):         # 타입 이름이면 sizeof(타입)이다. 볼 것이 없다
+                        memo.append("sizeof(%s): 선언을 찾지 못해 배열인지 확인하지 못함" % n)
+                    continue
+                ptr = bool(r.get("is_pointer")) or (r["kind"] == "param" and bool(r.get("is_array")))
+                if ptr and r.get("certain"):
+                    reasons.append("sizeof(%s) 를 크기로 썼는데 %s 은(는) 포인터다(%s). 포인터의 크기는 버퍼의 크기가 아니다. "
+                                   "버퍼 크기를 알 수 없으면 NO_CHANGE 를 쓴다" % (n, n, " ".join(str(r.get("text") or "").split())[:60]))
+                elif ptr or not r.get("certain"):
+                    memo.append("sizeof(%s): 배열인지 확정하지 못함(%s)" % (n, r["kind"]))
+        if mode != "off":
+            cand = ids_a - set(re.findall(r"[A-Za-z_]\w*", nb)) - set(da)
+            if cand:
+                if allowed is None:
+                    allowed = set(_package_names(ctx))
+                    for txt in (t["view"], t["fmt"].get("context", ""), t["fmt"].get("guidance", ""), t["fmt"].get("targets", ""), t.get("extra", "")):
+                        allowed.update(re.findall(r"[A-Za-z_]\w*", txt or ""))
+                    allowed.update(str(x) for x in (lim.get("known_names") or []))
+                new = sorted(n for n in cand if n not in allowed and n not in _CPP_WORDS and n not in _STD_NAMES)
+                if new and mode == "reject":
+                    reasons.append("조각과 패키지 어디에도 없는 이름을 썼다: %s. 있는 이름만 쓴다" % ", ".join(new[:6]))
+                elif new:
+                    memo.append("조각과 패키지에 없던 이름: %s" % ", ".join(new[:6]))
+        memo.insert(0, _GRADE_TAG[_edit_grade(rel, blocks1, e)])
+        notes[k] = memo
+    return reasons, notes
+
+
+def _dup_decl_check(ctx):
+    """병합(S7) 직전에 부른다. sLLM 수정으로 새로 생긴 선언이 같은 블록에서 두 번 선언되면 그 수정을 기각한다(요구사항 E8).
+    원래 코드의 선언과 겹치면 그 수정을, 두 수정이 같은 이름을 선언하면 뒤 수정을 기각한다. 돌려주는 값: 기각한 수정 수"""
+    st, n_rej = ctx.store, 0
+    for row in st.q("SELECT DISTINCT path FROM edits WHERE origin='llm' AND base='post_rule' AND status IN (?,?,?) ORDER BY path", _LIVE):
+        rel = row["path"]
+        _d, text1, bad = build_merged(ctx, rel, use_llm=False)
+        if bad:
+            continue                                      # 규칙 수정이 어긋난 파일은 병합 단계가 따로 처리한다
+        out, last, placed = [], 0, []
+        for e in live_edits(ctx, rel, "post_rule"):
+            if e["start"] < last or text1[e["start"]:e["end"]] != e["before"]:
+                continue                                  # 겹치거나 원문이 다른 수정은 병합 단계가 기각한다
+            added = set(_decl_names(mask_code(e["after"])[0])) - set(_decl_names(mask_code(e["before"])[0]))
+            out.append(text1[last:e["start"]])
+            pos2 = sum(len(x) for x in out)
+            out.append(e["after"])
+            last = e["end"]
+            if added:
+                placed.append((e["id"], pos2, e["after"], added))
+        if not placed:
+            continue
+        out.append(text1[last:])
+        text2 = "".join(out)
+        struct2 = mask_preprocessor(mask_code(text2)[0])
+        blocks2 = block_tree(_apply_brace_macros(struct2))[0]
+        groups = {}                                       # (블록 번호, 이름) -> 그 이름을 선언한 수정 번호들(위치 순서)
+        for eid, pos2, after, added in placed:
+            for n in sorted(added):
+                m = re.search(r"\b%s\b" % re.escape(n), mask_code(after)[0])
+                bi = block_at(blocks2, pos2 + (m.start() if m else 0))
+                groups.setdefault((bi, n), []).append(eid)
+        rej = {}
+        for (bi, n), eids in sorted(groups.items()):
+            if bi < 0:
+                continue
+            b = blocks2[bi]
+            inner = list(struct2[b["open"] + 1:b["close"]])
+            for c in blocks2:                             # 안쪽 블록의 내용은 가린다(다른 범위다)
+                if c["parent"] == bi and c["close"] > c["open"]:
+                    for i in range(c["open"] + 1 - b["open"] - 1, c["close"] - b["open"] - 1):
+                        if 0 <= i < len(inner) and inner[i] != "\n":
+                            inner[i] = " "
+            rx = decl_regex(n)
+            total = sum(1 for stmt in re.split(r"[;{}]", "".join(inner)) if stmt.strip() and rx.match(stmt))
+            if total < 2:
+                continue
+            existing = total - len(eids)
+            for eid in (eids if existing >= 1 else eids[1:]):
+                rej.setdefault(eid, "같은 블록에 %s 이(가) 두 번 선언됨(중복 선언)" % n)
+        if rej:
+            reject_edits(ctx, sorted(rej.items()))
+            n_rej += len(rej)
+            for eid, why in sorted(rej.items()):
+                LOG7.warn("%s: 수정 레코드 %d 제외(%s)" % (rel, eid, why))
+    if n_rej:
+        st.commit()
+    return n_rej
 
 
 def _handle_response(ctx, t, ok, content, kind=""):
@@ -4647,6 +6579,14 @@ def _handle_response(ctx, t, ok, content, kind=""):
         if b["start"] < a["end"]:
             t["feedback"] = "- 수정 블록끼리 범위가 겹친다."
             return "재요청", "수정 블록끼리 겹침"
+    try:
+        more, memos = _edit_checks(ctx, t, edits)
+    except Exception as e:                        # 추가 검사는 보조 수단이다. 검사 자체가 실패하면 기록하고 넘어간다
+        LOG6.warn("%s: 추가 수용 검사를 하지 못함(%s). 이 수정은 기본 검사만 거쳤습니다" % (t["path"], e))
+        more, memos = [], {}
+    if more:
+        t["feedback"] = "\n".join("- " + r for r in more)
+        return "재요청", "수정 블록 기각: " + "; ".join(more)
     # 수정 대상 줄마다 그 줄을 실제로 바꾼 수정 블록이 있는지 본다. 없는 지점은 "수정됨"으로 치지 않는다
     spans = [(bisect.bisect_right(t["ls1"], e["start"]), bisect.bisect_right(t["ls1"], max(e["start"], e["end"] - 1)))
              for e in edits]
@@ -4657,11 +6597,12 @@ def _handle_response(ctx, t, ok, content, kind=""):
     if missed:
         _mark_manual(ctx, missed, "sLLM 응답에 이 지점의 수정이 없음. 사람이 확인해야 함")
     ids = ",".join(str(x) for x in t["issue_ids"] if x not in missed)
-    for e in edits:
+    for k, e in enumerate(edits):
+        memo = ([("분할 순차 %d/%d" % (t["part"], t["parts"]))] if t.get("group") else []) + list(memos.get(k) or [])
         st.x("INSERT INTO edits(path,base,start,end,before,after,origin,ref,issue_ids,review,status,note) "
              "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
              (t["path"], "post_rule", e["start"], e["end"], e["before"], e["after"], "llm", "task%d" % t["id"],
-              ids, 1, "accepted", ("분할 순차 %d/%d" % (t["part"], t["parts"])) if t.get("group") else ""))
+              ids, 1, "accepted", "; ".join(memo)))
     return "수용", "수정 블록 %d개%s" % (len(edits), (", 고치지 않은 지점 %d곳은 수동 검토로" % len(missed)) if missed else "")
 
 
@@ -4708,6 +6649,18 @@ def write_merged(ctx, rel, d, text):
 
 def s7_merge(ctx):
     st = ctx.store
+    # 이어서 실행할 때 이 단계에 다시 들어온다. 지난번에 정한 결과 상태를 처음 값(대상, 읽기전용)으로 돌려놓고 다시 정한다
+    st.x("UPDATE files SET status=CASE WHEN roundtrip=1 THEN '대상' ELSE '읽기전용' END, verify_level='' "
+         "WHERE kind='source' AND status IN ('병합됨','변경됨','부분수정','수동검토','변경없음','변경없음(읽기전용)')")
+    st.x("UPDATE edits SET status='accepted' WHERE status IN ('applied','verified','held')")   # 기각된 것은 그대로 둔다
+    _requests_finalize(ctx)                                 # 계약 요청: sLLM 에 맡긴 사용처가 실패했으면 여기서 정리한다
+    try:
+        n_dup = _dup_decl_check(ctx)                        # sLLM 수정끼리, 또는 원래 코드와 같은 이름을 두 번 선언하는지 본다
+    except Exception as e:
+        LOG7.warn("중복 선언 검사를 하지 못함(%s)" % e)
+        n_dup = 0
+    if n_dup:
+        LOG7.warn("중복 선언으로 sLLM 수정 %d건을 뺐습니다(해당 이슈는 수동 검토)" % n_dup)
     for sub in (("out", "changed"), ("work", "merged")):
         shutil.rmtree(ctx.p(*sub), ignore_errors=True)
     if ctx.grade == "나":
@@ -4953,6 +6906,7 @@ def s8_verify(ctx):
     st.commit()
     LOG8.info("검증 결과: 변경됨 %d, 부분수정 %d, 수정 취소 %d (검증 수준: %s)"
               % (n_pass, n_partial, n_revert, "L0~L3" if use_cl else "L0~L2"))
+    _requests_check(ctx)                                    # 계약 요청의 잔여 재탐지(E4)
 
 
 # ============================================================================
@@ -4994,6 +6948,17 @@ def _extra_report_lines(ctx):
                 L.append("  - 이름 대응: " + ", ".join("`%s` → `%s`" % kv for kv in list(c["rename"].items())[:30]))
             if c.get("aliases"):
                 L.append("  - 같은 타입으로 본 별칭: " + ", ".join("`%s`" % a for a in c["aliases"]))
+            if c.get("applied") is False:
+                L.append("  - **적용하지 않음**. 이유: " + " / ".join(c.get("reasons") or ["(기록 없음)"]))
+            elif c.get("held"):
+                L.append("  - **대기 중**: sLLM 에 보내지 못한 사용처 %d곳이 남아, 이 요청의 수정은 이번 결과에 넣지 않았다. "
+                         "이어서 실행하면 다시 넣는다" % c["held"])
+            elif c.get("type") == "array_to_struct" and left:
+                L.append("  - **미완료**: 사용처 %d곳이 옛 꼴로 남았다. 그곳을 고치기 전에는 컴파일되지 않는다" % left)
+            if c.get("broken"):
+                L.append("  - **결과가 어긋남**: %s. 결과물이 컴파일되지 않을 수 있다" % c["broken"])
+            for w in c.get("warnings") or []:
+                L.append("  - 알아 둘 것: " + w)
             if c.get("note"):
                 L.append("  - " + c["note"])
             if c.get("definition_after"):
@@ -5143,8 +7108,12 @@ def s9_report(ctx):
     R = ["# 버전 업데이트 처리 보고서", "",
          "- 패키지: `%s`" % ctx.package, "- 실행 폴더: `%s`" % ctx.run_dir,
          "- 작성 시각: %s" % time.strftime("%Y-%m-%d %H:%M:%S"), "- 도구 버전: %s %s" % (APP, VERSION),
-         "- 수행한 단계: %s%s" % (", ".join(done + (["S9"] if "S9" not in done else [])), " (탐지만 수행)" if ctx.dry_run else ""),
-         "", "## 1. 적용한 환경값", ""] + ["- " + s for s in env_summary_lines(env)]
+         "- 수행한 단계: %s%s" % (", ".join(done + (["S9"] if "S9" not in done else [])), " (탐지만 수행)" if ctx.dry_run else "")]
+    n_wait = st.one("SELECT COUNT(*) FROM issues WHERE status='pending'") or 0
+    if n_wait:
+        R += ["", "> **아직 끝나지 않은 실행이다.** sLLM 에 보내지 못한 이슈 %d건이 대기로 남았다(호출 예산 또는 서버 한도). "
+              "이 보고서와 결과 파일은 지금까지 받은 응답만 반영한다. 이어서 실행: `run --resume \"%s\"`" % (n_wait, ctx.run_dir)]
+    R += ["", "## 1. 적용한 환경값", ""] + ["- " + s for s in env_summary_lines(env)]
     R += ["", "실행 옵션:", ""] + ["- " + s for s in opt_lines]
     if ctx.request.get("common"):
         R += ["", "공통 요청(sLLM 에 보내는 모든 조각에 붙였다. 규칙 수정에는 영향이 없다):", ""] + [
@@ -5179,10 +7148,16 @@ def s9_report(ctx):
           "- 요청과 응답 원문: `logs/llm/`", "", "## 7. 변경 파일", ""]
     R += _table(["파일", "상태", "검증 수준", "적용된 수정"], [
         (r["path"], r["status"], r["verify_level"] or "-", n_edit.get(r["path"], 0)) for r in changed]) if changed else ["없음."]
-    review = st.q("SELECT e.path, e.origin, e.ref, e.before, e.after FROM edits e WHERE e.status='verified' AND e.review=1 ORDER BY e.path, e.start")
+    review = st.q("SELECT e.path, e.origin, e.ref, e.before, e.after, e.note FROM edits e WHERE e.status='verified' AND e.review=1 ORDER BY e.path, e.start")
     if review:
-        R += ["", "### 적용했지만 사람이 확인해야 하는 수정", ""] + _table(["파일", "출처", "근거", "변경 전", "변경 후"], [
-            (r["path"], r["origin"], r["ref"], r["before"][:70], r["after"][:70]) for r in review])
+        g3 = sum(1 for r in review if r["origin"] == "llm" and "범위③" in (r["note"] or ""))
+        g2 = sum(1 for r in review if r["origin"] == "llm" and "범위②" in (r["note"] or ""))
+        g1 = sum(1 for r in review if r["origin"] == "llm" and "범위①" in (r["note"] or ""))
+        R += ["", "### 적용했지만 사람이 확인해야 하는 수정", "",
+              "sLLM 수정의 변경 범위: 함수 안 %d건, 파일 안(static) %d건, 파일 밖에 영향(헤더·전역·외부 함수 머리) %d건. "
+              "범위③은 다른 파일의 빌드에 영향을 줄 수 있으므로 먼저 본다." % (g1, g2, g3), ""] + _table(
+                  ["파일", "출처", "근거", "변경 전", "변경 후", "확인할 점"], [
+            (r["path"], r["origin"], r["ref"], r["before"][:70], r["after"][:70], r["note"] or "") for r in review])
     n_manual = st.one("SELECT COUNT(*) FROM issues WHERE status IN ('manual','open') AND tier!='T0'")
     R += _extra_report_lines(ctx)
     R += ["", "## 8. 남은 일", "", "- 수동 검토 %d건: `manual_review.md`" % n_manual,
@@ -5191,7 +7166,8 @@ def s9_report(ctx):
           "", "## 9. 이 버전(%s)이 하지 않는 것" % VERSION, "",
           "- 프로젝트 변환과 전체 빌드, .rc/.idl/.def 의 규칙 탐지",
           "- DB, HMI 도구에 따른 내장 규칙(값은 프롬프트와 보고서에 전달된다)",
-          "- 컴파일러 수준의 영향범위 분석(구조체 변경 요청은 글자 기준의 근사다). 배열 선언을 구조체로 바꾸는 일",
+          "- 컴파일러 수준의 영향범위 분석(구조체 변경, 배열·표 변환의 사용처 분류는 글자 기준의 근사다)",
+          "- 평면 배열(레코드 간격)의 구조체 변환, 열 타입을 바꿀 때의 값 범위 검사",
           "- 링크 오류와 프로젝트 설정 오류의 수정(--build-log 는 컴파일 오류만 sLLM 에 맡긴다)",
           "- 토큰 수를 보내기 전에 정확히 세는 것(추정한 뒤 서버의 실제 값으로 보정한다)", ""]
     write_text(os.path.join(out, "report.md"), "\n".join(R))
@@ -5246,6 +7222,10 @@ def run_pipeline(ctx, plan, resume=False):
         job_report(llm_cfg, "job_progress", {"job_id": llm_cfg.get("_job_id", ""), "run_id": llm_cfg.get("_run_id", ""), "stage": sid})
     n_manual = st.one("SELECT COUNT(*) FROM issues WHERE status IN ('manual','open') AND tier!='T0'") or 0
     n_changed = st.one("SELECT COUNT(*) FROM files WHERE status IN ('변경됨','부분수정')") or 0
+    n_pending = st.one("SELECT COUNT(*) FROM issues WHERE status='pending'") or 0
+    if n_pending:
+        # 보내지 못한 작업이 있다. sLLM 단계부터 다시 돌 수 있게 그 뒤 단계를 '끝난 단계'에서 뺀다
+        st.set_meta("stages_done", [x for x in done if x not in ("S6", "S7", "S8", "S9")])
     if ctx.dry_run:
         LOGM.info("탐지만 수행했습니다 (%.1f초): 처리 대상 이슈 %d건. 건수는 out/report.md 4절 참조"
                   % (time.time() - t_all, n_manual))
@@ -5253,9 +7233,14 @@ def run_pipeline(ctx, plan, resume=False):
         return EXIT_OK
     job_report(llm_cfg, "job_close", {"job_id": llm_cfg.get("_job_id", ""), "run_id": llm_cfg.get("_run_id", ""),
                                      "changed": n_changed, "manual": n_manual})
-    LOGM.info("전체 완료 (%.1f초): 변경 파일 %d개, 수동 검토 %d건" % (time.time() - t_all, n_changed, n_manual))
+    LOGM.info("전체 완료 (%.1f초): 변경 파일 %d개, 수동 검토 %d건%s" % (time.time() - t_all, n_changed, n_manual,
+                                                           (", 대기 %d건" % n_pending) if n_pending else ""))
     LOGM.info("산출물: %s" % ctx.p("out"))
     LOGM.info("로그: %s" % ctx.p("logs", "run.log"))
+    if n_pending:
+        LOGM.warn("sLLM 에 보내지 못한 이슈 %d건이 대기로 남았습니다. 지금의 결과는 받은 응답까지만 반영한 것입니다. "
+                  "이어서 실행: --resume \"%s\"" % (n_pending, ctx.run_dir))
+        return EXIT_PENDING
     return EXIT_REVIEW if n_manual else EXIT_OK
 
 
@@ -5825,6 +7810,7 @@ def cmd_llmcheck(args):
 # [M11 명령줄]  run / preflight / status / rules / selftest (llmcheck, buildlog 는 M12)
 # 목적: 사용자가 부르는 진입점. 인자를 검증해 실행 문맥(ctx)을 만들고 실행기를 부른다.
 # 종료 코드: 0 완료(수동 검토 없음) / 1 완료(수동 검토 있음) / 2 단계 실패 / 3 입력 오류
+#            4 sLLM 에 보내지 못한 작업이 대기로 남음(호출 예산, 서버 한도). run --resume 으로 이어서 보낸다
 # ============================================================================
 LOGA = Log("M11.명령줄")
 
@@ -5846,6 +7832,7 @@ def _make_ctx(args, need_env=True):
         ctx.package, ctx.env, ctx.request = info["package"], info["env"], info["request"]
         ctx.dry_run = bool(info.get("dry_run"))
         saved_opts = info.get("opts") or {}
+        saved_ep = str(((info.get("config") or {}).get("llm") or {}).get("endpoint") or "")
     else:
         if not args.package:
             raise UserInputError("--package 로 대상 패키지 폴더를 지정하세요.")
@@ -5876,10 +7863,11 @@ def _make_ctx(args, need_env=True):
     ctx.cfg = load_server_config(getattr(args, "server_config", None))
     llm, lim = ctx.cfg["llm"], ctx.cfg["limits"]
     ep_arg = getattr(args, "llm_endpoint", None)
-    ep = ep_arg or os.environ.get(ENV_LLM_ENDPOINT, "").strip()
+    ep_env = os.environ.get(ENV_LLM_ENDPOINT, "").strip()
+    ep = ep_arg or ep_env or (saved_ep if resume else "")
     if ep:
         llm["endpoint"] = ep
-        LOGA.info("sLLM 주소: %s (%s)" % (ep, "--llm-endpoint" if ep_arg else "환경변수 " + ENV_LLM_ENDPOINT))
+        LOGA.info("sLLM 주소: %s (%s)" % (ep, "--llm-endpoint" if ep_arg else ("환경변수 " + ENV_LLM_ENDPOINT) if ep_env else "처음 실행의 값"))
     allowed, want = max(1, int(llm["max_parallel"])), ctx.opts["max_parallel"]
     if want > allowed:
         LOGA.warn("--max-parallel %d 은(는) 서버 설정의 허용 동시 수 %d 을(를) 넘어 %d(으)로 낮춥니다. "
@@ -5918,6 +7906,9 @@ def _make_ctx(args, need_env=True):
     for rid, _title, why in ctx.rules_off:
         LOGA.debug("꺼진 규칙 %s: %s" % (rid, why))
     ctx.store = Store(ctx.p("state.db"))
+    if resume:                                    # 문장 요청을 푼 결과는 실행 폴더에 있다. 이어서 실행할 때 다시 싣는다
+        have = {a["id"] for a in ctx.request.get("asks") or []}
+        ctx.request.setdefault("asks", []).extend(a for a in (ctx.store.get_meta("resolved_asks", []) or []) if a["id"] not in have)
     if not resume:
         safe_cfg = json.loads(json.dumps(ctx.cfg))
         safe_cfg["llm"]["api_key"] = "***" if safe_cfg["llm"].get("api_key") else ""
@@ -5983,6 +7974,8 @@ def cmd_status(args):
                                       st.q("SELECT tier, status, COUNT(*) AS n FROM issues GROUP BY tier, status")))
         print("수정 상태 : " + ", ".join("%s/%s %d" % (r["origin"], r["status"], r["n"]) for r in
                                       st.q("SELECT origin, status, COUNT(*) AS n FROM edits GROUP BY origin, status")))
+        n_wait = st.one("SELECT COUNT(*) FROM issues WHERE status='pending'") or 0
+        print("대기 이슈 : %d건%s" % (n_wait, ("  (이어서 보내기: vupdate run --resume \"%s\")" % run_dir) if n_wait else ""))
     finally:
         st.close()
     return EXIT_OK
@@ -6195,7 +8188,7 @@ def _selftest_llm_defaults(ctx, **over):
                           calibrate_first=True, max_total_tokens=24000, max_output_tokens=3000)
     ctx.cfg["llm"].update(over)
     ctx.cfg["limits"].update(big_init_chars=2000, slice_context_lines=25, cluster_gap_lines=30, chunk_enabled=True,
-                             chunk_ledger_chars=1500, chunk_head_lines=25)
+                             chunk_ledger_chars=1500, chunk_head_lines=25, task_max_targets=0, task_max_lines=0, ref_decl=False)
 
 
 def _selftest_chunk(work, check):
@@ -6563,7 +8556,8 @@ def cmd_selftest(args):
     table = _selftest_make_package(pkg)
     req = os.path.join(work, "request.json")
     write_text(req, json.dumps({"features": [{"id": "REQ-001", "type": "array_to_struct", "target": "g_data",
-                                              "mapping": {"IDX_TEMP": "temp", "IDX_COUNT": "count"}}]}, ensure_ascii=False))
+                                              "mapping": {"IDX_TEMP": "temp", "IDX_COUNT": "count"},
+                                              "variable_index": "manual"}]}, ensure_ascii=False))   # 변수 인덱스는 수동으로 남기고 나머지를 적용
     prof = os.path.join(work, "profile.json")
     write_text(prof, json.dumps({"from": {"vs": 2008}, "to": {"vs": 2022}, "policy": {"deprecated_warnings": "fix"}}))
     srv = _selftest_mock_server()
@@ -6653,6 +8647,11 @@ def build_parser():
                    help="사용자 요청문. 대상 이름이 쓰인 곳을 찾아 요청문대로 고치게 sLLM 에 맡긴다. 여러 번 줄 수 있다. "
                         "대상 없이 문장만 주면 공통 요청이다")
     r.add_argument("--ask-file", dest="ask_file", help="요청문 파일. 한 줄에 요청 하나(형식은 --ask 와 같다. # 은 주석)")
+    r.add_argument("--say", action="append", metavar="\"문장\"",
+                   help="문장 요청. 대상 이름을 적지 않아도 된다(예: \"if 문 안에서 로그를 남기는 함수를 찾아 줘\"). "
+                        "문장에 패키지의 이름이 있으면 그것을 대상으로 하고, 없으면 sLLM 에 문장을 보내 대상을 정한다. "
+                        "결과는 out/request_resolved.json 에 명시형으로 남는다. 여러 번 쓸 수 있다")
+    r.add_argument("--say-file", dest="say_file", help="문장 요청 파일. 한 줄에 문장 하나(# 은 주석, @경로 로 파일 범위)")
     r.add_argument("--from-cpp-standard", dest="from_cpp_standard",
                    help="원본 쪽 C++ 언어 표준(예: c++17). 주면 원본에서 이미 겪은 언어 표준 규칙을 끈다")
     r.add_argument("--exceptions", help="예외 파일(끌 규칙, 제외할 파일과 줄, 고유 매크로). 예: config/EXAMPLE_exceptions.json")
@@ -6669,6 +8668,8 @@ def build_parser():
                    help="sLLM 주소. 없으면 환경변수 VUPDATE_LLM_ENDPOINT, 그다음 서버 설정의 값")
     r.add_argument("--max-parallel", dest="max_parallel", type=int,
                    help="sLLM 동시 요청 수. 서버 설정의 허용 동시 수(llm.max_parallel) 이하로만 적용된다")
+    r.add_argument("--max-calls", dest="max_calls", type=int,
+                   help="이번 실행에서 sLLM 에 보낼 호출 수의 상한. 다 쓰면 남은 작업을 대기로 두고 끝낸다(종료 코드 4). --resume 으로 이어서 보낸다")
     r.add_argument("--caller", help="호출자 표시(서버 기록용). 기본은 PC 이름\\계정")
     r.add_argument("--out", help="실행 폴더를 만들 위치. 기본 ./runs")
     r.add_argument("--dry-run", dest="dry_run", action="store_true", help="탐지까지만 수행(S0~S2)하고 보고")

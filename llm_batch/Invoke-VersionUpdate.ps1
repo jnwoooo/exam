@@ -5,6 +5,7 @@
   같은 폴더의 vupdate.exe (없으면 python vupdate.py) 를 호출한다.
   처리는 전부 vupdate 가 한다. 이 스크립트는 인자를 넘기고 종료 코드를 돌려줄 뿐이다.
   종료 코드: 0 완료 / 1 완료(수동 검토 있음) / 2 단계 실패 / 3 입력 오류
+             4 sLLM 에 보내지 못한 작업이 대기로 남음(-MaxCalls 를 다 썼거나 서버가 계속 바쁨). -Resume 으로 이어서 보낸다
 
   sLLM(또는 중계 서버) 주소는 이 스크립트에 적지 않는다. 다음 순서로 정해진다.
     1) -LlmEndpoint  2) 환경변수 VUPDATE_LLM_ENDPOINT  3) config\server.json 의 llm.endpoint
@@ -24,6 +25,12 @@
   (빌드한 소스 트리와 그 빌드의 로그를 주면 컴파일 오류가 난 줄을 sLLM 단계에서 고친다)
 .EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Resume D:\work\runs\PKG_A\20261124_101500
+.EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -MaxCalls 200
+  (sLLM 호출을 200회까지만 한다. 남은 작업이 있으면 종료 코드 4 로 끝나고, -Resume 으로 이어서 보낸다)
+.EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -Only "Src/Net/*" -UntilStage S5 -Say "if 문 안에서 로그를 남기는 함수를 찾아 줘"
+  (문장 요청. 대상 판정까지만 돌려 out\request_resolved.json 과 out\found_SAY-1.md 로 결과를 먼저 본다)
 #>
 param(
     [string]$Package,
@@ -39,6 +46,8 @@ param(
     [string]$Request,
     [string[]]$Ask,
     [string]$AskFile,
+    [string[]]$Say,
+    [string]$SayFile,
     [string]$FromCppStandard,
     [string]$Exceptions,
     [string[]]$DisableRule,
@@ -48,6 +57,7 @@ param(
     [string]$LlmEndpoint,
     [int]$MaxParallel = 0,
     [int]$CompileParallel = -1,
+    [int]$MaxCalls = 0,
     [string]$VsPath,
     [string]$SdkPath,
     [string]$Caller,
@@ -75,6 +85,8 @@ if ($Resume) {
 if ($EnvProfile)  { $a += @("--profile", $EnvProfile) }
 if ($Ask)     { foreach ($x in $Ask) { $a += @("--ask", $x) } }
 if ($AskFile) { $a += @("--ask-file", $AskFile) }
+if ($Say)     { foreach ($x in $Say) { $a += @("--say", $x) } }
+if ($SayFile) { $a += @("--say-file", $SayFile) }
 if ($FromCppStandard) { $a += @("--from-cpp-standard", $FromCppStandard) }
 if ($Exceptions)  { $a += @("--exceptions", $Exceptions) }
 if ($DisableRule) { $a += @("--disable-rule", ($DisableRule -join ",")) }
@@ -93,6 +105,7 @@ foreach ($p in $Exclude) { if ($p) { $a += @("--exclude", $p) } }
 if ($LlmEndpoint) { $a += @("--llm-endpoint", $LlmEndpoint) }
 if ($MaxParallel -gt 0) { $a += @("--max-parallel", "$MaxParallel") }
 if ($CompileParallel -ge 0) { $a += @("--compile-parallel", "$CompileParallel") }
+if ($MaxCalls -gt 0) { $a += @("--max-calls", "$MaxCalls") }
 if ($VsPath)      { $a += @("--vs-path", $VsPath) }
 if ($SdkPath)     { $a += @("--sdk-path", $SdkPath) }
 if ($Caller)      { $a += @("--caller", $Caller) }

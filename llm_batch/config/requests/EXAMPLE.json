@@ -1,4 +1,12 @@
 {
+  "_설명": [
+    "요청 파일의 예. --request 로 준다. 필요한 항목만 남기고 지운다.",
+    "array_to_struct 의 variable_index, bare_use: 기계적으로 못 바꾸는 사용처(변수 인덱스, 통째 사용)를 어떻게 할지 정한다.",
+    "  stop(기본) 아무것도 적용하지 않고 사용처 목록만 낸다 / manual 그 사용처만 수동 검토로 남긴다(결과는 컴파일되지 않는다)",
+    "  llm sLLM 에 맡긴다 / cast ((타입*)&이름)[i] 로 바꾼다 / raw_view 공용체로 배열 보기(.raw)를 함께 둔다",
+    "on_unresolved: llm 에 맡긴 사용처가 실패했을 때. stop(기본) 요청 전체를 되돌린다 / keep 남기고 미완료로 표시한다",
+    "0.7.1 까지의 키(llm_variable_index, llm_other_uses, convert_declaration)가 하나라도 있으면 예전처럼 동작한다."
+  ],
   "common": [
     "주석의 문구는 바꾸지 않는다",
     "사내 타입 이름(INT32, UINT8 등)은 그대로 둔다"
@@ -8,17 +16,31 @@
       "id": "REQ-001",
       "type": "array_to_struct",
       "target": "g_data",
+      "struct_name": "G_DATA_T",
       "mapping": {
         "IDX_TEMP": "temp",
         "IDX_COUNT": "count"
       },
-      "llm_variable_index": false,
-      "struct_name": "G_DATA_T",
       "unmapped": "reserved",
-      "llm_other_uses": true
+      "variable_index": "stop",
+      "bare_use": "stop",
+      "on_unresolved": "stop"
     },
     {
       "id": "REQ-002",
+      "type": "array_to_struct",
+      "target": "LIMIT_TBL",
+      "struct_name": "LIMIT_ROW_T",
+      "mapping": {
+        "COL_ID": "id",
+        "COL_MIN": "min",
+        "COL_MAX": "max"
+      },
+      "variable_index": "cast",
+      "bare_use": "cast"
+    },
+    {
+      "id": "REQ-003",
       "type": "struct_change",
       "target": "MSG_HEADER",
       "rename": {
@@ -35,6 +57,18 @@
       "target": "MSG_HEADER",
       "files": "Src/Ipc/*",
       "text": "필드 nLen 의 이름이 nLength 로 바뀌었다"
+    },
+    {
+      "targets": [
+        "WriteLog",
+        "TraceMsg"
+      ],
+      "where": "if",
+      "action": "find",
+      "text": "if 문 안의 로그 호출 목록"
     }
+  ],
+  "sentences": [
+    "if 문 안에서 로그를 남기는 함수를 찾아 줘"
   ]
 }
