@@ -1,14 +1,15 @@
-"""0.8.0 에서 더한 기능의 시험.
+"""0.9.0 의 시험. 0.8.0 의 시험 가운데 남은 기능(구조 분석, 배열 변환, 참고 영역, 작업 나누기, 호출 예산, 수용 검사)도 여기에 있다.
 
-사용: python test_v080.py <vupdate.py 가 있는 폴더> <작업 폴더>
+사용: python test_v090.py <vupdate.py 가 있는 폴더> <작업 폴더>
 
-확인하는 것(번호는 15_구분별_검토현황과_구현명세.md 8절의 시나리오)
+확인하는 것
   1. 구조 분석: 블록 트리, 제어문 범위, 선언 찾기
-  2. 배열·표 -> 구조체: 사용처 전수 분류, 못 바꾸는 곳이 있으면 아무것도 적용하지 않음(V1), 정책으로 바꿈(V2), 큰 표(V3)
-  3. 참고 영역과 작업 나누기(V5, V7, V8)
-  4. 호출 예산, 대기, 이어서 실행(V11)
-  5. 수용 검사 추가: 새 이름, 선언 변화, 크기 인자, 중복 선언
-  6. 문장 요청의 해석(V10)
+  2. 배열·표 -> 구조체: 사용처 전수 분류, 기계적으로 못 바꾸는 곳은 sLLM 에, 실패하면 요청 전체를 되돌림, 큰 표
+  3. 참고 영역과 작업 나누기
+  4. 호출 예산, 대기, 이어서 실행
+  5. 수용 검사: 새 이름, 선언 변화, 크기 인자, 중복 선언
+  6. 요청문(--ask): 원문을 sLLM 이 의도별로 나누고, 도구가 대상을 찾아 의도별로 수정 요청을 보냄
+  7. 환경 호환성 항목의 sLLM 호출(--compat-llm. 기본 꺼짐)
 모델은 이 파일 안의 모의 서버다. 실제 sLLM 의 응답 품질은 이 시험으로 확인되지 않는다.
 """
 import json, os, re, shutil, subprocess, sys, threading
@@ -118,7 +119,7 @@ def line_with(user, text):
 def fix_gets(user, how=None):
     """대상 줄의 gets(이름); 을 고친 수정 블록. how(이름, 줄) 이 있으면 그 결과를 REPLACE 로 쓴다."""
     out = []
-    for n in gets_targets(user):
+    for n in dict.fromkeys(gets_targets(user)):
         line = line_with(user, "gets(%s);" % n)
         if line is None:
             continue
@@ -128,6 +129,7 @@ def fix_gets(user, how=None):
 
 
 BASE = ["run", "--from-vs", "2008", "--to-vs", "2022", "--no-compile"]
+BASEC = BASE + ["--compat-llm"]                   # 규칙의 sLLM 대상(gets 등)을 보내야 하는 시험에 쓴다
 
 # ------------------------------------------------------------------ 1. 구조 분석
 code1 = "\n".join([
@@ -162,21 +164,36 @@ ft = {"id": "REQ-G", "type": "array_to_struct", "target": "g_data", "struct_name
 with open(req, "w", encoding="utf-8") as fh:
     json.dump({"features": [ft]}, fh)
 code, text = cli(*BASE, "--package", pkg, "--request", req, "--no-llm", "--out", os.path.join(work, "a1"))
-sites, manual = out_of(os.path.join(work, "a1"), "request_REQ-G_sites.md"), out_of(os.path.join(work, "a1"), "manual_review.md")
-check("배열(V1): 기계적으로 못 바꾸는 사용처(변수 인덱스, 통째 사용)가 있으면 아무것도 적용하지 않음",
+sites, manual, report = out_of(os.path.join(work, "a1"), "request_REQ-G_sites.md"), out_of(os.path.join(work, "a1"), "manual_review.md"), out_of(os.path.join(work, "a1"), "report.md")
+check("배열: sLLM 을 쓸 수 없으면 기계적으로 못 바꾸는 사용처가 남으므로 요청 전체를 적용하지 않음",
       not out_of(os.path.join(work, "a1"), "changed", "Src", "Data.cpp") and not out_of(os.path.join(work, "a1"), "changed", "Inc", "Data.h")
-      and "적용: 하지 않음" in sites and "적용하지 않음" in manual)
-check("배열(V1): 사용처를 전수 분류해 목록으로 냄(같은 이름의 멤버·지역 변수는 다른 기호로 가름)",
+      and "적용하지 않음" in report)
+check("배열: 사용처를 전수 분류해 목록으로 냄(같은 이름의 멤버·지역 변수는 다른 기호로 가름)",
       "변수 인덱스" in sites and "다른 기호" in sites and re.search(r"이름이 나온 곳 (\d+)곳, 분류한 곳 \1곳", sites) is not None)
-ft2 = dict(ft, variable_index="cast", bare_use="cast")
-with open(req, "w", encoding="utf-8") as fh:
-    json.dump({"features": [ft2]}, fh)
-code, text = cli(*BASE, "--package", pkg, "--request", req, "--no-llm", "--out", os.path.join(work, "a2"))
+
+
+def arr_responder(user):
+    """배열 요청에서 맡은 사용처: 변수 인덱스는 요소 포인터로, 통째로 넘기는 곳은 주소로 바꾼다."""
+    out = []
+    for x in re.finditer(r"- \d+번째 줄 \[[^\]]+\]: (.+)", user):
+        line = line_with(user, x.group(1).strip())
+        if not line:
+            continue
+        new = line.replace("g_data[i]", "((int*)&g_data)[i]").replace("Send(g_data)", "Send((int*)&g_data)")
+        if new != line and not any(line in b for b in out):
+            out.append(block(line, new))
+    return "\n".join(out) or "NO_CHANGE"
+
+
+m = Mock(arr_responder)
+code, text = cli(*BASE, "--package", pkg, "--request", req, "--llm-endpoint", m.url, "--out", os.path.join(work, "a2"))
+m.close()
 src, hdr, report = out_of(os.path.join(work, "a2"), "changed", "Src", "Data.cpp"), out_of(os.path.join(work, "a2"), "changed", "Inc", "Data.h"), out_of(os.path.join(work, "a2"), "report.md")
-check("배열(V2): 정책 cast 면 선언(헤더의 extern 포함)과 사용처를 함께 바꿈",
+check("배열: 선언(헤더의 extern 포함)과 상수 인덱스는 규칙으로, 변수 인덱스와 통째 사용은 sLLM 이 고침",
       "G_DATA_T g_data = {0};" in src and "extern G_DATA_T g_data;" in hdr and "g_data.temp = 20;" in src and "g_data.count + ((int*)&g_data)[i]" in src
-      and "Send(((int*)&g_data));" in src and "memset(&g_data, 0, sizeof(g_data));" in src)
-check("배열(V2): 같은 이름의 멤버와 지역 변수는 건드리지 않고, 잔여 재탐지를 통과",
+      and "Send((int*)&g_data);" in src and "memset(&g_data, 0, sizeof(g_data));" in src and m.calls >= 1)
+check("배열: sLLM 에 보낸 지침에 대응표와 바꾸는 꼴이 들어감", any("g_data[IDX_COUNT] -> g_data.count" in p and "((int*)&g_data)[인덱스]" in p for p in m.prompts))
+check("배열: 같은 이름의 멤버와 지역 변수는 건드리지 않고, 잔여 재탐지를 통과",
       "struct Dev { int g_data; };" in src and "int g_data = 3; return g_data + 1;" in src and "d->g_data;" in src and "결과가 어긋남" not in report)
 if shutil.which("g++"):
     tree = os.path.join(work, "a2_tree")
@@ -184,9 +201,14 @@ if shutil.which("g++"):
     for rel in ("Src/Data.cpp", "Inc/Data.h"):
         V.write_bytes(os.path.join(tree, *rel.split("/")), out_of(os.path.join(work, "a2"), "changed", *rel.split("/")).encode("cp949"))
     r = subprocess.run(["g++", "-fsyntax-only", "-x", "c++", os.path.join(tree, "Src", "Data.cpp")], capture_output=True)
-    check("배열(V2): 바꾼 결과가 g++ 문법 검사를 통과(g++ 가 있을 때만 확인)", r.returncode == 0)
+    check("배열: 바꾼 결과가 g++ 문법 검사를 통과(g++ 가 있을 때만 확인)", r.returncode == 0)
 else:
     print("[건너뜀] g++ 가 없어 바꾼 결과의 문법 검사는 하지 않음")
+m = Mock(lambda user: "잘 모르겠습니다.")
+code, text = cli(*BASE, "--package", pkg, "--request", req, "--llm-endpoint", m.url, "--out", os.path.join(work, "a2f"))
+m.close()
+check("배열(원자성): sLLM 에 맡긴 사용처가 실패하면 그 요청의 수정을 전부 되돌림",
+      not out_of(os.path.join(work, "a2f"), "changed", "Src", "Data.cpp") and "적용하지 않음" in out_of(os.path.join(work, "a2f"), "report.md"))
 
 pkg = os.path.join(work, "BIG")
 rows = ["        {%d, %d, %d}," % (i, i * 2, i * 3 + 1) for i in range(12000)]
@@ -199,7 +221,7 @@ code, text = cli(*BASE, "--package", pkg, "--request", req, "--no-llm", "--out",
 src = out_of(os.path.join(work, "a3"), "changed", "Src", "Tbl.cpp")
 orig = open(os.path.join(pkg, "Src", "Tbl.cpp"), "rb").read().decode("cp949")
 data0 = orig[orig.index("= {") + 3:orig.index("    };")]
-check("큰 표(V3): 함수 안의 2차원 표(20만 자 이상)를 행 구조체의 배열로. 선언 머리와 사용처만 바꾸고 데이터는 한 글자도 바꾸지 않음",
+check("큰 표: 함수 안의 2차원 표(20만 자 이상)를 행 구조체의 배열로. 선언 머리와 사용처만 바꾸고 데이터는 한 글자도 바꾸지 않음(sLLM 호출 없음)",
       len(data0) > 200000 and "static const TBL_ROW_T TBL[12000] = {" in src and data0 in src and "return TBL[r].min + TBL[r].max;" in src
       and "typedef struct TBL_ROW_T" in src)
 
@@ -208,7 +230,7 @@ pkg = os.path.join(work, "REF")
 write(pkg, "Src/Fill.cpp", ["#include <stdio.h>", "typedef struct { char name[32]; int id; } USER_T;", "void Fill(USER_T* user)", "{", "    char line[64];",
                             "    int k = 0;"] + ["    k += %d;" % i for i in range(45)] + ["    gets(line);", "    user->id = k;", "}"])
 m = Mock(fix_gets)
-code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "f1"))
+code, text = cli(*BASEC, "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "f1"))
 m.close()
 ref = m.prompts[-1].split("[참고: 선언]")[1].split("[코드 조각]")[0] if m.prompts and "[참고: 선언]" in m.prompts[-1] else ""
 check("참고 영역(V5): 조각 밖에 있는 변수 선언을 [참고: 선언]으로 붙임", "char line[64]" in ref and "char line[64];" not in code_of(m.prompts[-1]))
@@ -219,7 +241,7 @@ names = ["b%02d" % i for i in range(1, 21)]
 write(pkg, "Src/Many.cpp", ["#include <stdio.h>", "void Big()", "{"] + ["    char %s[16];" % n for n in names] +
       [x for n in names for x in ("    gets(%s);" % n, "    puts(%s);" % n)] + ["}"])
 m = Mock(fix_gets)
-code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "m1"))
+code, text = cli(*BASEC, "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "m1"))
 m.close()
 src = out_of(os.path.join(work, "m1"), "changed", "Src", "Many.cpp")
 check("작업 나누기(V7): 한 함수의 독립 수정 20곳을 8곳 이하의 작업 3건으로 나눠 보냄", m.calls == 3 and src.count("fgets(") == 20 and "gets(b" not in src.replace("fgets(b", ""))
@@ -230,7 +252,7 @@ def fail_b10(user):
 
 
 m = Mock(fail_b10)
-code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "m2"))
+code, text = cli(*BASEC, "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "m2"))
 m.close()
 src = out_of(os.path.join(work, "m2"), "changed", "Src", "Many.cpp")
 check("작업 나누기(V8): 한 작업이 실패해도 그 작업의 8곳만 수동 검토로 가고 나머지 12곳은 고쳐짐",
@@ -238,7 +260,7 @@ check("작업 나누기(V8): 한 작업이 실패해도 그 작업의 8곳만 �
 
 # ------------------------------------------------------------------ 4. 호출 예산, 대기, 이어서 실행
 m = Mock(fix_gets)
-code1, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--max-calls", "1", "--out", os.path.join(work, "b1"))
+code1, text = cli(*BASEC, "--package", pkg, "--llm-endpoint", m.url, "--max-calls", "1", "--out", os.path.join(work, "b1"))
 rd = run_dir(os.path.join(work, "b1"))
 src1, rep1 = out_of(os.path.join(work, "b1"), "changed", "Src", "Many.cpp"), out_of(os.path.join(work, "b1"), "report.md")
 check("호출 예산(V11): --max-calls 를 다 쓰면 남은 작업을 대기로 두고 종료 코드 4",
@@ -258,7 +280,7 @@ cfgb = os.path.join(work, "busy.json")
 with open(cfgb, "w", encoding="utf-8") as fh:
     json.dump({"llm": {"busy_retries": 1}}, fh)
 m = Mock(busy_b10)
-code1, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--server-config", cfgb, "--out", os.path.join(work, "b2"))
+code1, text = cli(*BASEC, "--package", pkg, "--llm-endpoint", m.url, "--server-config", cfgb, "--out", os.path.join(work, "b2"))
 m.close()
 rd = run_dir(os.path.join(work, "b2"))
 src1, manual1 = out_of(os.path.join(work, "b2"), "changed", "Src", "Many.cpp"), out_of(os.path.join(work, "b2"), "manual_review.md")
@@ -289,12 +311,12 @@ def fix_swl(user):
 
 
 m = Mock(fix_swl)
-code0, text0 = cli(*BASE, "--platform", "x64", "--package", pkgw, "--llm-endpoint", m.url, "--server-config", cfgw, "--out", os.path.join(work, "w0"))
+code0, text0 = cli(*BASEC, "--platform", "x64", "--package", pkgw, "--llm-endpoint", m.url, "--server-config", cfgw, "--out", os.path.join(work, "w0"))
 n_parts = m.calls
 m.close()
 src0 = out_of(os.path.join(work, "w0"), "changed", "Src", "Wide.cpp")
 m = Mock(fix_swl)
-code1, text1 = cli(*BASE, "--platform", "x64", "--package", pkgw, "--llm-endpoint", m.url, "--server-config", cfgw, "--max-calls", "1", "--out", os.path.join(work, "w1"))
+code1, text1 = cli(*BASEC, "--platform", "x64", "--package", pkgw, "--llm-endpoint", m.url, "--server-config", cfgw, "--max-calls", "1", "--out", os.path.join(work, "w1"))
 src1 = out_of(os.path.join(work, "w1"), "changed", "Src", "Wide.cpp")
 code2, text2 = cli("run", "--resume", run_dir(os.path.join(work, "w1")), "--server-config", cfgw)
 src2 = out_of(os.path.join(work, "w1"), "changed", "Src", "Wide.cpp")
@@ -306,14 +328,7 @@ check("분할 순차와 대기: 이어서 실행하면 끊지 않은 실행과 �
 
 pkg = os.path.join(work, "ARR8")
 with open(req, "w", encoding="utf-8") as fh:
-    json.dump({"features": [dict(ft, variable_index="llm", bare_use="cast")]}, fh)
-
-
-def arr_responder(user):
-    line = line_with(user, "g_data[i]")
-    return block(line, line.replace("g_data[i]", "((int*)&g_data)[i]")) if line else "NO_CHANGE"
-
-
+    json.dump({"features": [ft]}, fh)
 m = Mock(lambda user: ("busy",))
 code1, text = cli(*BASE, "--package", pkg, "--request", req, "--llm-endpoint", m.url, "--server-config", cfgb, "--out", os.path.join(work, "h1"))
 m.close()
@@ -325,13 +340,7 @@ code2, text = cli("run", "--resume", rd, "--llm-endpoint", m.url)
 m.close()
 src = out_of(os.path.join(work, "h1"), "changed", "Src", "Data.cpp")
 check("요청의 원자성과 대기: 이어서 실행해 사용처가 고쳐지면 요청 전체를 적용",
-      code2 != 4 and "G_DATA_T g_data = {0};" in src and "((int*)&g_data)[i]" in src and "g_data.temp = 20;" in src)
-m = Mock(lambda user: "잘 모르겠습니다.")
-code3, text = cli(*BASE, "--package", pkg, "--request", req, "--llm-endpoint", m.url, "--out", os.path.join(work, "h2"))
-m.close()
-check("요청의 원자성: sLLM 에 맡긴 사용처가 실패하면 그 요청의 수정을 전부 되돌림(on_unresolved 기본값 stop)",
-      not out_of(os.path.join(work, "h2"), "changed", "Src", "Data.cpp") and "적용하지 않음" in out_of(os.path.join(work, "h2"), "report.md"))
-
+      code2 != 4 and "G_DATA_T g_data = {0};" in src and "((int*)&g_data)[i]" in src and "Send((int*)&g_data);" in src and "g_data.temp = 20;" in src)
 # ------------------------------------------------------------------ 5. 수용 검사 추가
 pkg = os.path.join(work, "CHK")
 write(pkg, "Src/Read.cpp", [
@@ -366,7 +375,7 @@ cfg1 = os.path.join(work, "one_target.json")
 with open(cfg1, "w", encoding="utf-8") as fh:
     json.dump({"limits": {"task_max_targets": 1, "cluster_gap_lines": 0}}, fh)
 m = Mock(chk_responder)
-code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--server-config", cfg1, "--out", os.path.join(work, "c1"))
+code, text = cli(*BASEC, "--package", pkg, "--llm-endpoint", m.url, "--server-config", cfg1, "--out", os.path.join(work, "c1"))
 m.close()
 src, manual, report = out_of(os.path.join(work, "c1"), "changed", "Src", "Read.cpp"), out_of(os.path.join(work, "c1"), "manual_review.md"), out_of(os.path.join(work, "c1"), "report.md")
 check("크기 인자: 포인터 인자에 sizeof 를 쓴 수정은 기각하고 수동 검토로(원문 유지)", "gets(out);" in src and "포인터" in manual)
@@ -380,81 +389,210 @@ cfg2 = os.path.join(work, "reject_new.json")
 with open(cfg2, "w", encoding="utf-8") as fh:
     json.dump({"limits": {"task_max_targets": 1, "cluster_gap_lines": 0, "new_name_check": "reject"}}, fh)
 m = Mock(chk_responder)
-code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--server-config", cfg2, "--only", "Src/Read.cpp", "--out", os.path.join(work, "c2"))
+code, text = cli(*BASEC, "--package", pkg, "--llm-endpoint", m.url, "--server-config", cfg2, "--only", "Src/Read.cpp", "--out", os.path.join(work, "c2"))
 m.close()
 src2, manual2 = out_of(os.path.join(work, "c2"), "changed", "Src", "Read.cpp"), out_of(os.path.join(work, "c2"), "manual_review.md")
 check("새 이름: new_name_check 가 reject 이면 기각하고 수동 검토로", "SafeReadLine" not in src2 and "gets(name);" in src2 and "어디에도 없는 이름" in manual2)
 
-# ------------------------------------------------------------------ 6. 위치 조건, 찾기 전용, 문장 요청
+# ------------------------------------------------------------------ 6. 요청문(--ask)의 의미 분석
 pkg = os.path.join(work, "SAY")
 write(pkg, "Src/Svc.cpp", [
     "#include <stdio.h>", "void WriteLog(const char* s);", "void TraceMsg(const char* s);", "void ShowDialog(int id);", "void Catalog(int n);", "",
     "int Work(int a)", "{", "    WriteLog(\"start\");", "    if (a > 3) {", "        WriteLog(\"big\");", "        TraceMsg(\"t1\");",
     "    } else {", "        ShowDialog(1);", "    }", "    for (int i = 0; i < a; i++) {", "        TraceMsg(\"loop\");", "        if (i == 2)",
     "            WriteLog(\"two\");", "    }", "    Catalog(a);", "    printf(\"log: %d\\n\", a);", "    return a;", "}"])
-state = {"interpret": 0}
 
 
-def say_responder(user):
-    if "[후보]" in user:
-        nums = [x.group(1) for x in re.finditer(r"^(\d+)\. (\w+) \(", user, re.M) if x.group(2) in ("WriteLog", "TraceMsg")]
-        return "KEEP: %s, 99" % ", ".join(nums)
-    if "[요청 문장]" in user:
-        state["interpret"] += 1
-        if state["interpret"] == 1:
-            return "네, 로그 함수를 찾아 보겠습니다."
-        return "```json\n{\"action\": \"find\", \"where\": \"if\", \"words\": [\"log\", \"trace\", \"ab\"]}\n```"
+def is_analysis(user):
+    return "[요청 원문]" in user and "BEGIN CODE" not in user
+
+
+def intent(typ, ins, names=(), words=(), construct="any", files=()):
+    return {"type": typ, "instruction": ins, "names": list(names), "words": list(words), "construct": construct, "files": list(files)}
+
+
+def edit_targets(user, fn):
+    """[수정 대상 줄]마다 fn(줄) 로 바꾼 수정 블록을 낸다. 바뀌지 않는 줄은 건너뛴다."""
     out = []
     for x in re.finditer(r"- \d+번째 줄 \[[^\]]+\]: (.+)", user):
         line = line_with(user, x.group(1).strip())
-        if line and "WriteLog(" in line:
-            out.append(block(line, line.replace("WriteLog(", "WriteLog2(")))
+        if line and fn(line) != line and not any(line in b for b in out):
+            out.append(block(line, fn(line)))
     return "\n".join(out) or "NO_CHANGE"
 
 
-m = Mock(say_responder)
-code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--ask", "[if] WriteLog: WriteLog2 로 바꾼다", "--out", os.path.join(work, "s1"))
+def ask_mock(intents, edit=None, keep=(), bad_first=False):
+    """요청문 시험용 모의 모델. 분석 요청에는 intents 를, 후보 확인에는 keep 에 든 이름의 번호를, 수정 요청에는 edit(줄) 의 결과를 낸다."""
+    state = {"n": 0}
+
+    def responder(user):
+        if "[후보]" in user:
+            nums = [int(x.group(1)) for x in re.finditer(r"(?m)^(\d+)\. (\w+) \(", user) if x.group(2) in keep]
+            return json.dumps({"keep": nums + [99]})
+        if is_analysis(user):
+            state["n"] += 1
+            if bad_first and state["n"] == 1:
+                return "네, 요청을 확인했습니다. 곧 처리하겠습니다."
+            return "```json\n%s\n```" % json.dumps({"intents": intents}, ensure_ascii=False)
+        return edit_targets(user, edit) if edit else "NO_CHANGE"
+    return Mock(responder)
+
+
+ASK1 = "if 문 안의 WriteLog 호출을 WriteLog2 로 바꿔 줘"
+m = ask_mock([intent("modify", "if 문 안의 WriteLog 호출을 WriteLog2 로 바꾼다", names=["WriteLog", "WriteLog2"], construct="if")],
+             edit=lambda l: l.replace("WriteLog(", "WriteLog2("))
+code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--ask", ASK1, "--out", os.path.join(work, "s1"))
 m.close()
 src = out_of(os.path.join(work, "s1"), "changed", "Src", "Svc.cpp")
-check("위치 조건 [if]: if 문 안의 호출만 대상이 됨(밖의 호출과 선언은 그대로)",
-      'WriteLog2("big");' in src and 'WriteLog2("two");' in src and 'WriteLog("start");' in src and "void WriteLog(const char* s);" in src)
-code, text = cli(*BASE, "--package", pkg, "--no-llm", "--ask", "[if, find] WriteLog, TraceMsg: 로그 호출 목록",
-                 "--ask", "[string, find] /log/: 문자열 속의 log", "--out", os.path.join(work, "s2"))
-f1, f2 = out_of(os.path.join(work, "s2"), "found_ASK-1.md"), out_of(os.path.join(work, "s2"), "found_ASK-2.md")
-check("찾기 전용 [find]: 고치지 않고 목록만 냄(if 안의 3곳), 수동 검토도 만들지 않음(종료 코드 0)",
-      code == 0 and "찾은 곳: 3곳" in f1 and '"big"' in f1 and '"t1"' in f1 and '"two"' in f1 and '"start"' not in f1 and '"loop"' not in f1
-      and not out_of(os.path.join(work, "s2"), "changed", "Src", "Svc.cpp"))
-check("위치 조건 [string]: 문자열 안에서만 찾음", "찾은 곳: 1곳" in f2 and "printf" in f2)
-code, text = cli(*BASE, "--package", pkg, "--no-llm", "--say", "if 문 안의 WriteLog 호출을 찾아 줘", "--out", os.path.join(work, "s3"))
-res = json.loads(out_of(os.path.join(work, "s3"), "request_resolved.json") or "{}")
-a0 = (res.get("asks") or [{}])[0]
-check("문장 요청: 문장에 패키지의 이름이 있으면 모델 없이 대상, 위치, 동작을 정함",
-      a0.get("targets") == ["WriteLog"] and a0.get("where") == "if" and a0.get("action") == "find" and a0.get("from") == "sentence"
-      and "찾은 곳: 2곳" in out_of(os.path.join(work, "s3"), "found_SAY-1.md"))
-m = Mock(say_responder)
-code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--say", "조건문 안에서 로그를 남기는 함수를 찾아 줘", "--out", os.path.join(work, "s4"))
-m.close()
-res = json.loads(out_of(os.path.join(work, "s4"), "request_resolved.json") or "{}")
-a0 = (res.get("asks") or [{}])[0]
-check("문장 요청: 이름이 없으면 모델에게 낱말을 받아 낱말 단위로 이름을 고르고 번호로 추림(Dialog, Catalog 는 후보가 아님)",
-      a0.get("targets") == ["WriteLog", "TraceMsg"] and a0.get("from") == "model" and a0.get("words") == ["log", "trace"]
-      and "ShowDialog" not in json.dumps(res) and "Catalog" not in json.dumps(res))
-check("문장 요청: 형식이 틀린 답은 한 번 다시 묻고(해석 2회, 추리기 1회), 범위 밖 번호는 버림", m.calls == 3 and len(a0.get("targets") or []) == 2)
-check("문장 요청: 모델에 코드를 보내지 않음(해석 요청에는 문장만)", all("BEGIN CODE" not in p for p in m.prompts) and "WriteLog" not in m.prompts[0])
-check("문장 요청: 찾은 곳 목록", "찾은 곳: 3곳" in out_of(os.path.join(work, "s4"), "found_SAY-1.md"))
-resolved = os.path.join(run_dir(os.path.join(work, "s4")), "out", "request_resolved.json")
-code, text = cli(*BASE, "--package", pkg, "--no-llm", "--request", resolved, "--out", os.path.join(work, "s5"))
-check("해석 결과 파일을 --request 로 주면 모델 없이 같은 대상을 씀", "찾은 곳: 3곳" in out_of(os.path.join(work, "s5"), "found_ASK-1.md"))
-code, text = cli(*BASE, "--package", pkg, "--no-llm", "--say", "로그를 남기는 함수를 찾아 줘", "--out", os.path.join(work, "s6"))
-check("문장 요청: 모델을 쓸 수 없고 이름도 없으면 수동 검토로 남김(종료 코드 1)",
-      code == 1 and "문장 요청을 해석하지 못함" in out_of(os.path.join(work, "s6"), "manual_review.md"))
-m = Mock(say_responder)
-code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--say", "WriteLog를 WriteLog2로 바꿔줘", "--out", os.path.join(work, "s7"))
-m.close()
-src = out_of(os.path.join(work, "s7"), "changed", "Src", "Svc.cpp")
-check("문장 요청(수정): '로' 앞의 이름은 바꾼 결과로 보고 대상에서 빼며, 대상이 쓰인 곳을 모두 sLLM 에 맡김",
-      src.count("WriteLog2(") == 4 and "WriteLog(" not in src)
+plan = json.loads(out_of(os.path.join(work, "s1"), "ask_plan.json") or "{}")
+i0 = ((plan.get("asks") or [{}])[0].get("intents") or [{}])[0]
+a_prompt = next((p for p in m.prompts if is_analysis(p)), "")
+e_prompt = next((p for p in m.prompts if "BEGIN CODE" in p), "")
+check("요청문: 원문을 그대로 분석 호출에 보내고, 원문의 이름 가운데 코드에 있는 것만 알려 줌(코드 조각은 보내지 않음)",
+      ASK1 in a_prompt and "- WriteLog (함수 호출" in a_prompt and "- WriteLog2" not in a_prompt and "void Catalog" not in a_prompt)
+check("요청문: 모델이 낸 이름 가운데 코드에 없는 것은 버리고, 구문 조건(if 문 안)에 맞는 줄만 대상으로 삼음",
+      i0.get("names") == ["WriteLog"] and i0.get("names_dropped") == ["WriteLog2"] and i0.get("sites") == 2
+      and 'WriteLog2("big");' in src and 'WriteLog2("two");' in src and 'WriteLog("start");' in src and "void WriteLog(const char* s);" in src)
+check("요청문: 수정 요청에 그 의도의 요청문과 원문이 함께 들어감(분석 1회 + 수정 1회)",
+      "사용자 요청: if 문 안의 WriteLog 호출을 WriteLog2 로 바꾼다" in e_prompt and "요청 원문: " + ASK1 in e_prompt and m.calls == 2)
 
+ASK2 = "if 문 안에서 로그를 남기는 함수를 찾아 주고, Catalog 호출의 인자에 1을 더해 줘. 주석은 바꾸지 마."
+m = ask_mock([intent("find", "if 문 안에서 로그를 남기는 함수 호출을 찾는다", words=["log", "trace", "ab"], construct="if"),
+              intent("modify", "Catalog 호출의 인자에 1을 더한다", names=["Catalog"], construct="call"),
+              intent("constraint", "주석은 바꾸지 않는다")],
+             edit=lambda l: l.replace("Catalog(a)", "Catalog(a + 1)"))
+code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--ask", ASK2, "--out", os.path.join(work, "s2"))
+m.close()
+src, found = out_of(os.path.join(work, "s2"), "changed", "Src", "Svc.cpp"), out_of(os.path.join(work, "s2"), "found_ASK-1-1.md")
+plan = json.loads(out_of(os.path.join(work, "s2"), "ask_plan.json") or "{}")
+its = (plan.get("asks") or [{}])[0].get("intents") or []
+e_prompt = next((p for p in m.prompts if "BEGIN CODE" in p), "")
+check("요청문: 한 요청에 섞인 일을 의도별로 나눠 처리(찾기, 수정, 조건)",
+      [i.get("type") for i in its] == ["find", "modify", "constraint"] and [i.get("id") for i in its] == ["ASK-1-1", "ASK-1-2", "ASK-1-3"])
+check("요청문(찾기): 낱말이 낱말 단위로 든 호출 이름을 고르고(Dialog, Catalog 는 아님) 고치지 않고 목록만 냄",
+      its and its[0].get("targets") == ["WriteLog", "TraceMsg"] and its[0].get("words") == ["log", "trace"]
+      and "찾은 곳: 3곳" in found and '"big"' in found and '"t1"' in found and '"two"' in found and '"start"' not in found)
+check("요청문(수정): 의도별로 대상을 찾아 고치고, 조건 의도는 모든 수정 요청에 붙음",
+      "Catalog(a + 1);" in src and "void Catalog(int n);" in src and "사용자 요청: Catalog 호출의 인자에 1을 더한다" in e_prompt
+      and "[공통 요청]" in e_prompt and "주석은 바꾸지 않는다" in e_prompt and "WriteLog2" not in src)
+check("요청문: 모델이 고칠 필요가 없다고 본 줄(선언)은 수동 검토로 올리지 않음(종료 코드 0)",
+      code == 0 and "Catalog" not in out_of(os.path.join(work, "s2"), "manual_review.md"))
+
+m = ask_mock([intent("modify", "Catalog 호출의 인자에 1을 더한다", names=["Catalog"], construct="call")],
+             edit=lambda l: l.replace("Catalog(a)", "Catalog(a + 1)"))
+code1, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--max-calls", "1", "--ask", "Catalog 호출의 인자에 1을 더해 줘", "--out", os.path.join(work, "s2r"))
+n1 = m.calls
+code2, text = cli("run", "--resume", run_dir(os.path.join(work, "s2r")))
+m.close()
+check("요청문과 호출 예산: 분석 호출도 예산에 들어가고, 이어서 실행하면 분석 결과를 다시 묻지 않고 남은 수정 요청만 보냄",
+      code1 == 4 and n1 == 1 and code2 == 0 and m.calls == 2 and "Catalog(a + 1);" in out_of(os.path.join(work, "s2r"), "changed", "Src", "Svc.cpp"))
+
+m = ask_mock([intent("modify", "if 문의 조건식을 괄호로 한 번 더 감싼다", construct="if")])
+code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--ask", "모든 if 문의 조건식을 괄호로 한 번 더 감싸 줘", "--out", os.path.join(work, "s2c"))
+m.close()
+plan = json.loads(out_of(os.path.join(work, "s2c"), "ask_plan.json") or "{}")
+i0 = ((plan.get("asks") or [{}])[0].get("intents") or [{}])[0]
+check("요청문: 이름 없이 구문만 받으면 그 구문의 머리 줄이 대상이 되고, 모델이 고치지 않으면 그대로 둠",
+      i0.get("sites") == 2 and code == 0 and any("if (a > 3) {" in p and "if (i == 2)" in p for p in m.prompts if "BEGIN CODE" in p))
+
+cfgk = os.path.join(work, "check_over.json")
+with open(cfgk, "w", encoding="utf-8") as fh:
+    json.dump({"limits": {"ask_check_over": 1}}, fh)
+m = ask_mock([intent("find", "로그를 남기는 함수 호출을 찾는다", words=["log", "trace"])], keep=("WriteLog",), bad_first=True)
+code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--server-config", cfgk, "--ask", "로그를 남기는 함수 호출을 찾아 줘", "--out", os.path.join(work, "s3"))
+m.close()
+plan = json.loads(out_of(os.path.join(work, "s3"), "ask_plan.json") or "{}")
+i0 = ((plan.get("asks") or [{}])[0].get("intents") or [{}])[0]
+check("요청문: 형식이 틀린 분석 답은 한 번 다시 묻고, 후보가 많으면 번호로 추리며 범위 밖 번호는 버림(분석 2회 + 후보 확인 1회)",
+      m.calls == 3 and i0.get("candidates") == 2 and i0.get("targets") == ["WriteLog"]
+      and "찾은 곳: 4곳" in out_of(os.path.join(work, "s3"), "found_ASK-1-1.md"))
+
+code, text = cli(*BASE, "--package", pkg, "--no-llm", "--ask", ASK1, "--out", os.path.join(work, "s4"))
+report = out_of(os.path.join(work, "s4"), "report.md")
+check("요청문: sLLM 을 쓸 수 없으면 분석하지 못한 요청을 수동 검토로 남기고, 호출이 없는 이유를 보고서에 적음(종료 코드 1)",
+      code == 1 and "요청을 분석하지 못함" in out_of(os.path.join(work, "s4"), "manual_review.md")
+      and "수정 요청을 한 건도 보내지 않았다" in report and "분석하지 못했거나 대상을 찾지 못한 것 1건" in report)
+
+m = ask_mock([intent("modify", "NoSuchFunc 호출을 지운다", names=["NoSuchFunc"])])
+code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--ask", "NoSuchFunc 호출을 지워 줘", "--out", os.path.join(work, "s5"))
+m.close()
+check("요청문: 모델이 낸 이름이 코드에 없으면 대상을 만들지 않고 이유를 남김",
+      "코드에 없음" in out_of(os.path.join(work, "s5"), "manual_review.md") and m.calls == 1 and not out_of(os.path.join(work, "s5"), "changed", "Src", "Svc.cpp"))
+
+pkg = os.path.join(work, "ARR8")
+ASK3 = "환경 호환성 변경과 명시한 배열->구조체 개선 수행한다."
+two = [intent("compat", "환경 호환성 변경을 수행한다"), intent("array_to_struct", "명시한 배열을 구조체로 바꾼다")]
+m = ask_mock(two, edit=None)
+code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--ask", ASK3, "--out", os.path.join(work, "s6"))
+m.close()
+report = out_of(os.path.join(work, "s6"), "report.md")
+check("요청문: 대상을 가리키지 않는 요청은 조용히 끝나지 않고, 호출이 없는 이유를 알림(환경 호환성은 규칙과 --compat-llm, 배열은 이름 필요)",
+      m.calls == 1 and "수정 요청을 한 건도 보내지 않았다" in report and "환경 호환성 변경은 요청문으로 처리하지 않음" in report
+      and "배열 이름을 받지 못함" in out_of(os.path.join(work, "s6"), "manual_review.md"))
+with open(req, "w", encoding="utf-8") as fh:
+    json.dump({"features": [ft]}, fh)
+
+
+def arr_and_analysis(user):
+    if is_analysis(user):
+        return json.dumps({"intents": two}, ensure_ascii=False)
+    return arr_responder(user)
+
+
+m = Mock(arr_and_analysis)
+code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--ask", ASK3, "--request", req, "--out", os.path.join(work, "s7"))
+m.close()
+src = out_of(os.path.join(work, "s7"), "changed", "Src", "Data.cpp")
+check("요청문 + 요청 파일: 같은 문장이라도 배열을 요청 파일로 명시하면 선언은 도구가, 남은 사용처는 sLLM 이 고침",
+      "G_DATA_T g_data = {0};" in src and "((int*)&g_data)[i]" in src and "Send((int*)&g_data);" in src and m.calls >= 2)
+
+
+def named_array(user):
+    if is_analysis(user):
+        return json.dumps({"intents": [intent("array_to_struct", "g_data 배열을 구조체로 바꾼다", names=["g_data"])]}, ensure_ascii=False)
+    return arr_responder(user)
+
+
+m = Mock(named_array)
+code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--ask", "g_data 배열을 구조체로 바꿔 줘", "--out", os.path.join(work, "s8"))
+m.close()
+src, hdr = out_of(os.path.join(work, "s8"), "changed", "Src", "Data.cpp"), out_of(os.path.join(work, "s8"), "changed", "Inc", "Data.h")
+check("요청문(배열): 문장에 배열 이름이 있으면 요청 파일 없이도 처리. 필드 이름은 인덱스 상수의 이름에서 만듦(IDX_TEMP -> temp)",
+      "G_DATA_T g_data = {0};" in src and "g_data.temp = 20;" in src and "g_data.count + ((int*)&g_data)[i]" in src
+      and "int temp;" in (src + hdr) and "int count;" in (src + hdr) and "extern G_DATA_T g_data;" in hdr)
+
+# ------------------------------------------------------------------ 7. 환경 호환성 항목의 sLLM 호출(--compat-llm)
+pkg = os.path.join(work, "CPT")
+write(pkg, "Src/Copy.cpp", ["#include <string.h>", "#include <stdio.h>", "void CopyArr(const char* src)", "{", "    char buf[32];", "    strcpy(buf, src);",
+                            "    gets(buf);", "}", "", "void CopyPtr(char* dst, const char* src)", "{", "    strcpy(dst, src);", "}"])
+
+
+def compat_responder(user):
+    def fn(line):
+        if "sizeof(dst)" in user and "strcpy(dst" in line:      # 앞 답이 기각된 이유(포인터)를 받았으면 그 줄은 고치지 않는다
+            return line
+        x = re.search(r"strcpy\(([^,]+), ([^)]+)\);", line)
+        if x:
+            return line.replace(x.group(0), "strcpy_s(%s, sizeof(%s), %s);" % (x.group(1), x.group(1), x.group(2)))
+        return re.sub(r"gets\((\w+)\);", r"fgets(\1, sizeof(\1), stdin);", line)
+    return edit_targets(user, fn)
+
+
+m = Mock(compat_responder)
+code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "k1"))
+m.close()
+report, manual = out_of(os.path.join(work, "k1"), "report.md"), out_of(os.path.join(work, "k1"), "manual_review.md")
+check("환경 호환성(기본): --compat-llm 을 주지 않으면 sLLM 을 부르지 않고 규칙의 sLLM 대상은 수동 검토로 둠",
+      m.calls == 0 and code == 1 and "R-T3-GETS-REMOVED" in manual and "--compat-llm" in manual
+      and "수정 요청을 한 건도 보내지 않았다" in report and "_CRT_SECURE_NO_WARNINGS" in out_of(os.path.join(work, "k1"), "project_settings.md"))
+m = Mock(compat_responder)
+code, text = cli(*BASEC, "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "k2"))
+m.close()
+src, report, manual = out_of(os.path.join(work, "k2"), "changed", "Src", "Copy.cpp"), out_of(os.path.join(work, "k2"), "report.md"), out_of(os.path.join(work, "k2"), "manual_review.md")
+check("환경 호환성(--compat-llm): 규칙의 sLLM 대상(gets)과 설정 흡수 항목(strcpy)의 사용 줄을 보내 고침",
+      m.calls >= 1 and "strcpy_s(buf, sizeof(buf), src);" in src and "fgets(buf, sizeof(buf), stdin);" in src)
+check("환경 호환성(--compat-llm): 포인터 대상이라 고치지 못한 흡수 항목은 그대로 두고 수동 검토로 올리지 않음",
+      "strcpy(dst, src);" in src and "strcpy(dst" not in manual and "환경 호환성 항목의 sLLM 수정 시도" in report and code == 0)
 
 n_ok = sum(1 for _n, ok in checks if ok)
 for name, ok in checks:

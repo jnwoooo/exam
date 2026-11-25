@@ -1,11 +1,10 @@
 {
   "_설명": [
     "요청 파일의 예. --request 로 준다. 필요한 항목만 남기고 지운다.",
-    "array_to_struct 의 variable_index, bare_use: 기계적으로 못 바꾸는 사용처(변수 인덱스, 통째 사용)를 어떻게 할지 정한다.",
-    "  stop(기본) 아무것도 적용하지 않고 사용처 목록만 낸다 / manual 그 사용처만 수동 검토로 남긴다(결과는 컴파일되지 않는다)",
-    "  llm sLLM 에 맡긴다 / cast ((타입*)&이름)[i] 로 바꾼다 / raw_view 공용체로 배열 보기(.raw)를 함께 둔다",
-    "on_unresolved: llm 에 맡긴 사용처가 실패했을 때. stop(기본) 요청 전체를 되돌린다 / keep 남기고 미완료로 표시한다",
-    "0.7.1 까지의 키(llm_variable_index, llm_other_uses, convert_declaration)가 하나라도 있으면 예전처럼 동작한다."
+    "features: 배열(표)을 구조체로 바꾸는 정형 요청. 배열 이름과 필드 이름을 정확히 줄 때 쓴다(요청문으로는 필드 이름을 인덱스 상수의 이름에서 만든다).",
+    "  선언과 상수 인덱스는 규칙으로 바꾸고, 변수 인덱스나 통째로 쓰는 곳은 sLLM 에 맡긴다. 맡긴 곳이 하나라도 실패하면 요청 전체를 되돌린다.",
+    "common: 모든 수정 요청에 붙는 조건.",
+    "asks: 요청문. --ask 와 같다. 글 하나가 요청 하나다."
   ],
   "common": [
     "주석의 문구는 바꾸지 않는다",
@@ -21,10 +20,7 @@
         "IDX_TEMP": "temp",
         "IDX_COUNT": "count"
       },
-      "unmapped": "reserved",
-      "variable_index": "stop",
-      "bare_use": "stop",
-      "on_unresolved": "stop"
+      "unmapped": "reserved"
     },
     {
       "id": "REQ-002",
@@ -35,40 +31,10 @@
         "COL_ID": "id",
         "COL_MIN": "min",
         "COL_MAX": "max"
-      },
-      "variable_index": "cast",
-      "bare_use": "cast"
-    },
-    {
-      "id": "REQ-003",
-      "type": "struct_change",
-      "target": "MSG_HEADER",
-      "rename": {
-        "nLen": "nLength",
-        "nSeq": "nSequence"
-      },
-      "check_layout": true,
-      "llm_unresolved": false
+      }
     }
   ],
   "asks": [
-    "SendPacket: 둘째 인자와 셋째 인자의 순서가 바뀌었다. 호출하는 곳의 인자 순서를 바꾼다",
-    {
-      "target": "MSG_HEADER",
-      "files": "Src/Ipc/*",
-      "text": "필드 nLen 의 이름이 nLength 로 바뀌었다"
-    },
-    {
-      "targets": [
-        "WriteLog",
-        "TraceMsg"
-      ],
-      "where": "if",
-      "action": "find",
-      "text": "if 문 안의 로그 호출 목록"
-    }
-  ],
-  "sentences": [
-    "if 문 안에서 로그를 남기는 함수를 찾아 줘"
+    "SendPacket 의 둘째 인자와 셋째 인자의 순서가 바뀌었다. 호출하는 곳의 인자 순서를 바꾼다"
   ]
 }

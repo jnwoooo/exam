@@ -44,9 +44,6 @@ def make_file(idx):
 
 
 TOTAL_SITES = sum(make_file(i) for i in range(3))
-prof = os.path.join(work, "p.json")
-with open(prof, "w", encoding="utf-8") as fh:
-    json.dump({"from": {"vs": 2008}, "to": {"vs": 2022, "platform": "x64"}}, fh)
 scfg = os.path.join(work, "server.json")              # 서버가 허용하는 동시 수를 8로 둔다(--max-parallel 은 이 값 이하로만 적용된다)
 with open(scfg, "w", encoding="utf-8") as fh:
     json.dump({"llm": {"max_parallel": 8}}, fh)
@@ -104,7 +101,7 @@ for n in (1, 4, 8):
         stat.update(cur=0, max=0, calls=0)
     out = os.path.join(work, "r%d" % n)
     t0 = time.time()
-    p = subprocess.run([sys.executable, os.path.join(vdir, "vupdate.py"), "run", "--package", pkg, "--profile", prof,
+    p = subprocess.run([sys.executable, os.path.join(vdir, "vupdate.py"), "run", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "x64", "--compat-llm",
                         "--server-config", scfg, "--llm-endpoint", url, "--max-parallel", str(n), "--out", out],
                        capture_output=True)
     sec = time.time() - t0

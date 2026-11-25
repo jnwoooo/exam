@@ -13,7 +13,6 @@
     "server_prompt_reserve_tokens": 0,
     "busy_retries": 5,
     "calibrate_first": true,
-    "transport": "openai",
     "extra_body": {}
   },
   "limits": {
@@ -25,7 +24,6 @@
     "chunk_head_lines": 25,
     "compile_timeout_sec": 180,
     "compile_parallel": 0,
-    "buildlog_max_per_file": 5,
     "ask_max_sites": 0,
     "task_max_targets": 8,
     "task_max_lines": 150,
@@ -34,7 +32,8 @@
     "new_name_check": "mark",
     "known_names": [],
     "decl_change_check": true,
-    "size_arg_check": true
+    "size_arg_check": true,
+    "ask_check_over": 8
   },
   "compile": {
     "mode": "changed"

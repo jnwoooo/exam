@@ -272,7 +272,7 @@ with open(scfg, "w", encoding="utf-8") as fh:
 
 # E. --no-llm
 out = os.path.join(work, "rE")
-code, log = cli("run", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "x64", "--server-config", scfg,
+code, log = cli("run", "--compat-llm", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "x64", "--server-config", scfg,
                 "--llm-endpoint", url, "--no-llm", "--out", out)
 rows = db(last_run(out), "SELECT status, note, COUNT(*) FROM issues WHERE tier='T3' AND llm=1 GROUP BY status, note")
 check("E: --no-llm 이면 sLLM 을 한 번도 부르지 않고 대상 이슈를 수동 검토로 보냄",
@@ -280,7 +280,7 @@ check("E: --no-llm 이면 sLLM 을 한 번도 부르지 않고 대상 이슈를 
 
 # F. --only / --exclude, G. --max-parallel 상한, J. 환경변수 주소
 out = os.path.join(work, "rF")
-code, log = cli("run", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "x64", "--server-config", scfg,
+code, log = cli("run", "--compat-llm", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "x64", "--server-config", scfg,
                 "--only", "Src/*,ThirdParty/*", "--exclude", "thirdparty", "--exclude", "B_util.cpp",
                 "--max-parallel", "8", "--out", out, env={"VUPDATE_LLM_ENDPOINT": url})
 rd = last_run(out)
@@ -299,16 +299,16 @@ check("F: 보고서에 처리 범위와 호출자가 적힘", "처리 범위: on
 out = os.path.join(work, "rH")
 with lock:
     stat.update(cur=0, max=0, n=0)
-code1, _ = cli("run", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "x64", "--server-config", scfg,
-               "--llm-endpoint", url, "--only", "Src/A_*", "--no-llm", "--caller", "PC-07\\kim", "--until", "S2", "--out", out)
+code1, _ = cli("run", "--compat-llm", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "x64", "--server-config", scfg,
+               "--llm-endpoint", url, "--only", "Src/A_*", "--no-llm", "--until", "S2", "--out", out)
 rd = last_run(out)
 code2, log2 = cli("run", "--resume", rd, "--server-config", scfg, "--llm-endpoint", url, "--only", "Src/*")
 opts = json.load(open(os.path.join(rd, "run.json"), encoding="utf-8"))["opts"]
 scope = dict(db(rd, "SELECT path, status FROM files WHERE kind='source'"))
-check("H: 이어서 실행해도 처음의 --no-llm, --only, --caller 가 유지됨",
-      opts["no_llm"] and opts["only"] == ["src/a_*"] and opts["caller"] == "PC-07\\kim" and stat["n"] == 0
+check("H: 이어서 실행해도 처음의 --no-llm, --only 가 유지됨",
+      opts["no_llm"] and opts["only"] == ["src/a_*"] and stat["n"] == 0
       and scope.get("Src/B_util.cpp") == "범위제외" and "처리 범위(--only, --exclude)를 바꿀 수 없습니다" in log2
-      and "호출자: PC-07\\kim" in log2 and code2 == 1)
+      and code2 == 1)
 
 # I. rules 명령
 code, text = cli("rules", "--from-vs", "2015", "--to-vs", "2022")
@@ -316,7 +316,7 @@ line = {l.split()[0]: l for l in text.splitlines() if l.startswith("R-")}
 check("I: rules 명령이 환경값에서 켜지는 규칙과 꺼진 이유를 보여 줌",
       code == 0 and "꺼짐" in line.get("R-T2-MAKE-PAIR", "") and "원본 VS 2015 에서 이미 겪은 문제" in line.get("R-T2-MAKE-PAIR", "")
       and "켜짐" in line.get("R-T0-CRT-SECURE", "") and "규칙 65개 중 켜짐" in text)
-code, text = cli("run", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "arm")
+code, text = cli("run", "--compat-llm", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "arm")
 check("I: 잘못된 --platform 값은 입력 오류(종료 코드 3)", code == 3 and "platform" in text)
 srv.shutdown()
 

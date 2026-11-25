@@ -19,8 +19,6 @@ src = "\n".join([
     "    (void)blob;",
     "}", ""])
 V.write_bytes(os.path.join(pkg, "Src", "Big.cpp"), src.replace("\n", "\r\n").encode("cp949"))
-prof = os.path.join(work, "p.json")
-V.write_text(prof, json.dumps({"from": {"vs": 2008}, "to": {"vs": 2022, "platform": "x64"}}))
 
 state = {"n": 0, "prompts": []}
 GOOD = ("<<<<<<< SEARCH\n    SetWindowLong(hWnd, GWL_USERDATA, (LONG)self);\n=======\n"
@@ -43,7 +41,7 @@ class H(BaseHTTPRequestHandler):
 
 srv = HTTPServer(("127.0.0.1", 0), H)
 threading.Thread(target=srv.serve_forever, daemon=True).start()
-ns = argparse.Namespace(package=pkg, profile=prof, request=None, from_vs=None, to_vs=None, cpp_standard=None,
+ns = argparse.Namespace(package=pkg, request=None, from_vs="2008", to_vs="2022", platform="x64", compat_llm=True, cpp_standard=None,
                         server_config=None, rules=None, out=os.path.join(work, "runs"), dry_run=False, resume=None,
                         until=None, max_parallel=2, no_compile=False,
                         llm_endpoint="http://127.0.0.1:%d/v1" % srv.server_address[1])

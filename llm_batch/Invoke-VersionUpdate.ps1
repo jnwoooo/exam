@@ -9,32 +9,30 @@
 
   sLLM(또는 중계 서버) 주소는 이 스크립트에 적지 않는다. 다음 순서로 정해진다.
     1) -LlmEndpoint  2) 환경변수 VUPDATE_LLM_ENDPOINT  3) config\server.json 의 llm.endpoint
-  서버 점검(llmcheck)과 빌드 오류 분류(buildlog)는 vupdate 를 직접 부른다. 예: vupdate.exe buildlog --log msbuild.log --run <실행 폴더>
+  서버 점검(llmcheck)은 vupdate 를 직접 부른다. 예: vupdate.exe llmcheck
   Visual Studio 자동 탐지가 틀리면 -VsPath 또는 환경변수 VUPDATE_VS_PATH 로 설치 폴더를 지정한다.
   Windows SDK 는 -SdkPath 또는 환경변수 VUPDATE_SDK_PATH 로 지정한다(예: C:\Program Files (x86)\Windows Kits\10).
 .EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022
 .EXAMPLE
-  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -EnvProfile vs2008_to_vs2022 -Request PKG_A
-.EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2015 -ToVs 2022 -Platform x64 -Only "Src/Net/*" -NoLlm
-.EXAMPLE
-  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -Axis "os=Windows 7->Windows 11","db=Oracle 19c"
-.EXAMPLE
-  .\Invoke-VersionUpdate.ps1 -Package D:\build\PKG_A -FromVs 2008 -ToVs 2022 -BuildLog D:\build\msbuild.log
-  (빌드한 소스 트리와 그 빌드의 로그를 주면 컴파일 오류가 난 줄을 sLLM 단계에서 고친다)
 .EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Resume D:\work\runs\PKG_A\20261124_101500
 .EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -MaxCalls 200
   (sLLM 호출을 200회까지만 한다. 남은 작업이 있으면 종료 코드 4 로 끝나고, -Resume 으로 이어서 보낸다)
 .EXAMPLE
-  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -Only "Src/Net/*" -UntilStage S5 -Say "if 문 안에서 로그를 남기는 함수를 찾아 줘"
-  (문장 요청. 대상 판정까지만 돌려 out\request_resolved.json 과 out\found_SAY-1.md 로 결과를 먼저 본다)
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -Ask "WriteLog 호출에 줄 번호 인자를 추가하고 g_data 배열을 구조체로 바꾼다"
+  (요청문. 형식 없이 글로 적는다. sLLM 이 의도별로 나누고 도구가 대상을 찾아 수정 요청을 보낸다. 결과는 out\ask_plan.json)
+.EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -Only "Src/Net/*" -UntilStage S5 -Ask "if 문 안에서 로그를 남기는 함수를 찾아 줘"
+  (대상 판정까지만 돌려 out\ask_plan.json 으로 어떻게 이해했는지 먼저 본다)
+.EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -CompatLlm -MaxCalls 50
+  (환경 호환성 항목도 sLLM 에 보내 수정을 시도한다. 기본은 기계적 변경과 설정 흡수까지만 한다)
 #>
 param(
     [string]$Package,
-    [string]$EnvProfile,
     [string]$FromVs,
     [string]$ToVs,
     [string]$CppStandard,
@@ -42,16 +40,12 @@ param(
     [string]$Conformance,
     [string]$Charset,
     [string]$Deprecated,
-    [string[]]$Axis,
     [string]$Request,
     [string[]]$Ask,
     [string]$AskFile,
-    [string[]]$Say,
-    [string]$SayFile,
     [string]$FromCppStandard,
     [string]$Exceptions,
     [string[]]$DisableRule,
-    [string]$BuildLog,
     [string[]]$Only,
     [string[]]$Exclude,
     [string]$LlmEndpoint,
@@ -60,14 +54,13 @@ param(
     [int]$MaxCalls = 0,
     [string]$VsPath,
     [string]$SdkPath,
-    [string]$Caller,
     [string]$Out,
     [string]$UntilStage,
     [string]$Resume,
     [switch]$DryRun,
     [switch]$NoCompile,
     [switch]$NoLlm,
-    [switch]$NoChunk
+    [switch]$CompatLlm
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -82,15 +75,11 @@ if ($Resume) {
     if (-not $Package) { Write-Host "오류: -Package 로 대상 패키지 폴더를 지정하세요."; exit 3 }
     $a += @("--package", $Package)
 }
-if ($EnvProfile)  { $a += @("--profile", $EnvProfile) }
 if ($Ask)     { foreach ($x in $Ask) { $a += @("--ask", $x) } }
 if ($AskFile) { $a += @("--ask-file", $AskFile) }
-if ($Say)     { foreach ($x in $Say) { $a += @("--say", $x) } }
-if ($SayFile) { $a += @("--say-file", $SayFile) }
 if ($FromCppStandard) { $a += @("--from-cpp-standard", $FromCppStandard) }
 if ($Exceptions)  { $a += @("--exceptions", $Exceptions) }
 if ($DisableRule) { $a += @("--disable-rule", ($DisableRule -join ",")) }
-if ($BuildLog)    { $a += @("--build-log", $BuildLog) }
 if ($FromVs)      { $a += @("--from-vs", $FromVs) }
 if ($ToVs)        { $a += @("--to-vs", $ToVs) }
 if ($CppStandard) { $a += @("--cpp-standard", $CppStandard) }
@@ -98,7 +87,6 @@ if ($Platform)    { $a += @("--platform", $Platform) }
 if ($Conformance) { $a += @("--conformance", $Conformance) }
 if ($Charset)     { $a += @("--charset", $Charset) }
 if ($Deprecated)  { $a += @("--deprecated", $Deprecated) }
-foreach ($p in $Axis)    { if ($p) { $a += @("--axis", $p) } }
 if ($Request)     { $a += @("--request", $Request) }
 foreach ($p in $Only)    { if ($p) { $a += @("--only", $p) } }
 foreach ($p in $Exclude) { if ($p) { $a += @("--exclude", $p) } }
@@ -108,13 +96,12 @@ if ($CompileParallel -ge 0) { $a += @("--compile-parallel", "$CompileParallel") 
 if ($MaxCalls -gt 0) { $a += @("--max-calls", "$MaxCalls") }
 if ($VsPath)      { $a += @("--vs-path", $VsPath) }
 if ($SdkPath)     { $a += @("--sdk-path", $SdkPath) }
-if ($Caller)      { $a += @("--caller", $Caller) }
 if ($Out)         { $a += @("--out", $Out) }
 if ($UntilStage)  { $a += @("--until", $UntilStage) }
 if ($DryRun)      { $a += "--dry-run" }
 if ($NoCompile)   { $a += "--no-compile" }
 if ($NoLlm)       { $a += "--no-llm" }
-if ($NoChunk)     { $a += "--no-chunk" }
+if ($CompatLlm)   { $a += "--compat-llm" }
 
 if (Test-Path $exe) {
     & $exe @a
