@@ -4,8 +4,9 @@
 ==============================================================================
 vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본)
 ==============================================================================
-버전 : 0.9.0 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
+버전 : 0.9.1 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
               환경 호환성 항목의 sLLM 호출은 --compat-llm 으로 켠다. 당장 쓰지 않는 기능은 뺐다. 17_추가_0.9.0.md)
+              0.9.1: OS·DB 의 원본/대상 옵션(--from-os, --to-os, --from-db, --to-db). 18_추가_0.9.1.md
 목적 : 레거시 C++ 패키지를 새 Visual Studio 환경(예: 2008 -> 2022)에 맞게
        고치는 작업을 한 명령으로 수행한다. 규칙으로 고칠 수 있는 것은 규칙으로,
        규칙으로 못 고치는 것만 sLLM에 맡기고, 결과를 별도 폴더에 낸다.
@@ -100,7 +101,7 @@ from concurrent.futures import ThreadPoolExecutor
 # 목적: 모든 구획이 같이 쓰는 최소한의 도구. 로그 접두어 규칙을 여기서 보장한다.
 # ============================================================================
 APP = "vupdate"
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 
 STAGES = [("S0", "준비"), ("S1", "인벤토리"), ("S2", "탐지"), ("S3", "설정흡수"),
           ("S4", "규칙적용"), ("S5", "영향분석"), ("S6", "sLLM수정"), ("S7", "병합"),
@@ -349,6 +350,21 @@ def _parse_vs(value, label):
 _COMPILER_KEYS = {"vs", "toolset", "cpp_standard", "conformance", "platform", "charset"}
 
 
+ENV_AXES = (("os", "OS"), ("db", "DB"))        # 컴파일러 말고 원본/대상을 받는 환경값(키, 표시 이름). 축을 늘리려면 여기와 명령줄 인자에 더한다
+
+
+def _env_text(args, name):
+    return " ".join(str(getattr(args, name, None) or "").split())[:80]
+
+
+def env_axis_text(a):
+    """원본/대상 값을 한 줄로: 'Windows 7 -> Windows 11', 대상만 있으면 'Windows 11', 원본만 있으면 'Windows 7 (대상 미지정)'"""
+    f, t = (a or {}).get("from") or "", (a or {}).get("to") or ""
+    if f and t and f.lower() != t.lower():
+        return "%s -> %s" % (f, t)
+    return t or (("%s (대상 미지정)" % f) if f else "")
+
+
 def build_env(args):
     """명령줄 인자로 환경값을 만든다. 주지 않은 값은 기본값(B9). (프로필 파일과 환경값 축은 0.9.0 에서 뺐다)"""
     f, t, pol = {}, {}, {}
@@ -408,6 +424,10 @@ def build_env(args):
         "platform": pick(t, "platform", ["keep", "x86", "x64"], "keep"),
         "charset": pick(t, "charset", ["keep", "mbcs", "unicode"], "keep"),
         "policy": {"deprecated_warnings": pick(pol, "deprecated_warnings", ["suppress", "fix"], "suppress")},
+        # OS 와 DB 의 원본/대상(선택). 제품 이름과 판을 글로 적는다(예: "Windows 7", "Oracle 19c"). 쓰이는 곳:
+        # 모든 sLLM 요청의 [환경], 보고서, WINVER 를 올릴 값(to_os), 규칙의 발동 조건(when 의 os, db, os_changed, db_changed)
+        "os": {"from": _env_text(args, "from_os"), "to": _env_text(args, "to_os")},
+        "db": {"from": _env_text(args, "from_db"), "to": _env_text(args, "to_db")},
     }
     if std in ("c++20", "c++latest") and env["conformance"] == "off":
         env["conformance"] = "on"
@@ -431,6 +451,10 @@ def env_summary_lines(env):
         "문자셋: %s" % env["charset"],
         "deprecated 경고 처리: %s" % env["policy"]["deprecated_warnings"],
     ]
+    for key, label in ENV_AXES:
+        txt = env_axis_text(env.get(key))
+        if txt:
+            lines.append("%s: %s" % (label, txt))
     return lines
 
 
@@ -1862,6 +1886,13 @@ def rule_state(rule, env):
         return False, "준수 모드 %s 에서만 해당(지금 %s)" % (w["conformance"], env["conformance"])
     if "deprecated" in w and env["policy"]["deprecated_warnings"] != w["deprecated"]:
         return False, "deprecated 처리 방침 %s 에서만 해당(지금 %s)" % (w["deprecated"], env["policy"]["deprecated_warnings"])
+    for key, label in ENV_AXES:                    # OS, DB 조건: 값(원본 -> 대상)에 그 낱말이 있을 때 / 원본과 대상이 다를 때
+        a = env.get(key) or {}
+        have = env_axis_text(a)
+        if key in w and str(w[key]).lower() not in ("%s -> %s" % (a.get("from") or "", a.get("to") or "")).lower():
+            return False, "%s 에 '%s' 이(가) 있을 때만 해당(지금 %s)" % (label, w[key], have or "미지정")
+        if w.get(key + "_changed") and not (a.get("from") and a.get("to") and a["from"].lower() != a["to"].lower()):
+            return False, "%s 이(가) 바뀔 때만 해당(지금 %s)" % (label, have or "미지정")
     return True, ""
 
 
@@ -1878,6 +1909,11 @@ def rule_when_text(rule):
     for key, label in (("min_std", "표준>="), ("platform", "플랫폼="), ("conformance", "준수모드="), ("deprecated", "deprecated=")):
         if key in w:
             parts.append(label + str(w[key]))
+    for key, label in ENV_AXES:
+        if key in w:
+            parts.append("%s~%s" % (label, w[key]))
+        if w.get(key + "_changed"):
+            parts.append("%s 변경" % label)
     return ", ".join(parts) or "항상"
 
 
@@ -2095,11 +2131,24 @@ _WINVER_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(WINVER|_WIN32_WINNT)[ \t]+(
 
 
 
+def winver_for_os(os_text):
+    """대상 OS 이름에서 WINVER 값을 정한다. 알아보지 못하면 None."""
+    t = " ".join(str(os_text or "").lower().split())
+    for pat, val in ((r"(?:windows|win)\s*1[01]\b|server\s*20(?:16|19|22|25)", "0x0A00"), (r"8\.1|2012\s*r2", "0x0603"),
+                     (r"(?:windows|win)\s*8\b|server\s*2012", "0x0602"), (r"(?:windows|win)\s*7\b|2008\s*r2", "0x0601"),
+                     (r"vista|server\s*2008", "0x0600")):
+        if re.search(pat, t):
+            return val
+    return None
+
+
 def _det_winver_old(rule, doc, env=None):
     """WINVER, _WIN32_WINNT 정의 중 0x0501 미만인 것. 바꿀 값은 환경값의 대상 OS 에서 정하고,
     대상 OS 를 모르면 지금의 Visual Studio 가 지원하는 하한인 Windows 7(0x0601)로 한다."""
-    new = "0x0601"
-    why = "지금의 Visual Studio 가 지원하는 하한인 Windows 7 값으로 함"
+    os_to = (((env or {}).get("os") or {}).get("to") or "").strip()
+    want = winver_for_os(os_to)                    # 대상 OS(--to-os)를 알면 그 값으로, 모르면 Windows 7 값으로 올린다
+    new = want or "0x0601"
+    why = ("대상 OS %s" % os_to) if want else "대상 OS 를 몰라 지금의 Visual Studio 가 지원하는 하한인 Windows 7 값으로 함"
     hits = []
     for m in _WINVER_RE.finditer(doc.code):
         if int(m.group(2), 16) >= 0x0501:
@@ -4175,7 +4224,7 @@ def analyze_ask(ctx, ask):
     돌려주는 값: (의도 목록 또는 None, 실패 사유)"""
     hints = _ask_hints(ctx, ask["text"])
     hint_txt = "\n".join("- %s (%s)" % h for h in hints[:40]) or "(없음)"
-    env_txt = "\n".join(env_summary_lines(ctx.env)[:2])
+    env_txt = "\n".join(env_summary_lines(ctx.env))
     feedback, why = "", ""
     for attempt in (1, 2):
         ok, content = _ask_model(ctx, ANALYZE_SYSTEM, ANALYZE_USER.format(env=env_txt, text=ask["text"], hints=hint_txt, feedback=feedback),
@@ -7881,6 +7930,12 @@ def build_parser():
     r.add_argument("--conformance", help="준수 모드 /permissive- (off, on). 기본 off")
     r.add_argument("--charset", help="문자셋(keep, mbcs, unicode). 기본 keep")
     r.add_argument("--deprecated", help="사용 중단 경고 처리(suppress: 설정으로 끈다, fix: 코드를 고친다). 기본 suppress")
+    r.add_argument("--from-os", dest="from_os", metavar="\"이름 판\"", help="원본 OS(선택). 예: \"Windows 7\"")
+    r.add_argument("--to-os", dest="to_os", metavar="\"이름 판\"",
+                   help="대상 OS(선택). 예: \"Windows 11\". 주면 sLLM 요청의 [환경]과 보고서에 들어가고, 낮은 WINVER 를 이 OS 의 값으로 올린다")
+    r.add_argument("--from-db", dest="from_db", metavar="\"이름 판\"", help="원본 DB(선택). 예: \"Oracle 11g\"")
+    r.add_argument("--to-db", dest="to_db", metavar="\"이름 판\"",
+                   help="대상 DB(선택). 예: \"Oracle 19c\". 주면 sLLM 요청의 [환경]과 보고서에 들어간다. 규칙의 조건(when 의 db)으로도 쓸 수 있다")
     r.add_argument("--request", help="요청사항(파일 경로 또는 config/requests 안의 이름)")
     r.add_argument("--ask", action="append", metavar="\"요청문\"",
                    help="요청문. 정해진 형식 없이 하려는 일을 글로 적는다(예: \"WriteLog 호출에 줄 번호 인자를 추가하고 g_data 배열을 구조체로 바꾼다\"). "
@@ -7943,6 +7998,10 @@ def build_parser():
     u.add_argument("--conformance")
     u.add_argument("--charset")
     u.add_argument("--deprecated")
+    u.add_argument("--from-os", dest="from_os")
+    u.add_argument("--to-os", dest="to_os")
+    u.add_argument("--from-db", dest="from_db")
+    u.add_argument("--to-db", dest="to_db")
     u.add_argument("--coverage", action="store_true", help="알려진 변경 항목과 처리 방식의 표를 낸다")
     u.add_argument("--test", action="store_true", help="규칙에 붙은 시험 예(잡아야 하는 코드, 잡지 말아야 하는 코드)를 돌린다")
     u.set_defaults(func=cmd_rules)

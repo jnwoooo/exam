@@ -17,6 +17,9 @@
 .EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2015 -ToVs 2022 -Platform x64 -Only "Src/Net/*" -NoLlm
 .EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -FromOs "Windows 7" -ToOs "Windows 11" -FromDb "Oracle 11g" -ToDb "Oracle 19c"
+  (OS 와 DB 의 원본/대상. 선택이다. sLLM 요청의 [환경]과 보고서에 들어가고, 낮은 WINVER 를 대상 OS 의 값으로 올린다)
+.EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Resume D:\work\runs\PKG_A\20261124_101500
 .EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -MaxCalls 200
@@ -40,6 +43,10 @@ param(
     [string]$Conformance,
     [string]$Charset,
     [string]$Deprecated,
+    [string]$FromOs,
+    [string]$ToOs,
+    [string]$FromDb,
+    [string]$ToDb,
     [string]$Request,
     [string[]]$Ask,
     [string]$AskFile,
@@ -87,6 +94,10 @@ if ($Platform)    { $a += @("--platform", $Platform) }
 if ($Conformance) { $a += @("--conformance", $Conformance) }
 if ($Charset)     { $a += @("--charset", $Charset) }
 if ($Deprecated)  { $a += @("--deprecated", $Deprecated) }
+if ($FromOs)      { $a += @("--from-os", $FromOs) }
+if ($ToOs)        { $a += @("--to-os", $ToOs) }
+if ($FromDb)      { $a += @("--from-db", $FromDb) }
+if ($ToDb)        { $a += @("--to-db", $ToDb) }
 if ($Request)     { $a += @("--request", $Request) }
 foreach ($p in $Only)    { if ($p) { $a += @("--only", $p) } }
 foreach ($p in $Exclude) { if ($p) { $a += @("--exclude", $p) } }

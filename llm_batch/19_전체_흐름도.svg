@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 1140" width="780" height="1140" font-family="'Malgun Gothic','Apple SD Gothic Neo','Noto Sans KR','Noto Sans CJK KR',sans-serif">
+<title>vupdate 0.9.1 전체 흐름도</title>
+<defs>
+<marker id="a" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#495057"/></marker>
+<marker id="b" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" refX="0" refY="4.5" orient="auto"><path d="M9,0 L0,4.5 L9,9 z" fill="#E08A1E"/></marker>
+<marker id="c" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" refX="9" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 z" fill="#E08A1E"/></marker>
+</defs>
+<rect x="0" y="0" width="780" height="1140" fill="#FFFFFF"/>
+<text x="20" y="32" font-size="19" font-weight="700" fill="#212529">vupdate 0.9.1 전체 흐름: 사용자 요청부터 산출까지</text>
+<rect x="20" y="56" width="500" height="114" rx="8" fill="#F1F3F5" stroke="#868E96" stroke-width="1.5"/>
+<text x="34" y="78" font-size="16" font-weight="700" fill="#343A40">사용자 실행</text>
+<text x="34" y="102" font-size="13.5" fill="#212529" xml:space="preserve">vupdate run --package … --from-vs … --to-vs …</text>
+<text x="34" y="126" font-size="13.5" fill="#212529" xml:space="preserve">선택: --ask &quot;요청문&quot;, --request, --compat-llm,</text>
+<text x="34" y="150" font-size="13.5" fill="#212529" xml:space="preserve">        --from-os/--to-os, --from-db/--to-db</text>
+<line x1="270" y1="170" x2="270" y2="194" stroke="#495057" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="20" y="196" width="500" height="162" rx="8" fill="#E7F1FB" stroke="#4C8FD0" stroke-width="1.5"/>
+<text x="34" y="218" font-size="16" font-weight="700" fill="#1B4F86">S0~S4 준비와 규칙 (sLLM 없음)</text>
+<text x="34" y="242" font-size="13.5" fill="#212529" xml:space="preserve">S0 준비: 환경 점검, 원본을 실행 폴더에 복사</text>
+<text x="34" y="266" font-size="13.5" fill="#212529" xml:space="preserve">S1 인벤토리: 파일·인코딩·함수 경계·큰 초기화 목록</text>
+<text x="34" y="290" font-size="13.5" fill="#212529" xml:space="preserve">S2 탐지: 규칙으로 문제 지점을 찾음</text>
+<text x="34" y="314" font-size="13.5" fill="#212529" xml:space="preserve">S3 설정흡수: 옵션·매크로로 해결할 항목</text>
+<text x="34" y="338" font-size="13.5" fill="#212529" xml:space="preserve">S4 규칙적용: 기계적 변경(이름 치환 등)</text>
+<line x1="270" y1="358" x2="270" y2="382" stroke="#495057" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="20" y="384" width="500" height="162" rx="8" fill="#F1EAFB" stroke="#8A63D2" stroke-width="1.5"/>
+<text x="34" y="406" font-size="16" font-weight="700" fill="#4B2A91">S5 요청 분석과 대상 찾기</text>
+<text x="34" y="430" font-size="13.5" fill="#212529" xml:space="preserve">① 요청문 원문 → 의도별 JSON</text>
+<text x="34" y="454" font-size="13.5" fill="#212529" xml:space="preserve">② 이름이 코드에 있는지 확인, 낱말로 후보 고르기</text>
+<text x="34" y="478" font-size="13.5" fill="#212529" xml:space="preserve">③ 후보가 8개를 넘으면 번호로 추리기</text>
+<text x="34" y="502" font-size="13.5" fill="#212529" xml:space="preserve">④ 의도마다 대상 줄 찾기, 배열 사용처 분류</text>
+<text x="34" y="526" font-size="13.5" fill="#212529" xml:space="preserve">⑤ out/ask_plan.json 에 기록</text>
+<line x1="270" y1="546" x2="270" y2="570" stroke="#495057" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="20" y="572" width="500" height="162" rx="8" fill="#F1EAFB" stroke="#8A63D2" stroke-width="1.5"/>
+<text x="34" y="594" font-size="16" font-weight="700" fill="#4B2A91">S6 조각별 수정 요청</text>
+<text x="34" y="618" font-size="13.5" fill="#212529" xml:space="preserve">① 대상 줄을 조각으로(앞뒤 25줄, 작업당 8곳·150줄)</text>
+<text x="34" y="642" font-size="13.5" fill="#212529" xml:space="preserve">② 토큰 한도 확인, 넘으면 나눠서 차례로</text>
+<text x="34" y="666" font-size="13.5" fill="#212529" xml:space="preserve">③ 조각 + 의도의 요청문 → 수정 블록 / NO_CHANGE</text>
+<text x="34" y="690" font-size="13.5" fill="#212529" xml:space="preserve">④ 수용 검사. 불합격이면 사유를 붙여 재요청(2회까지)</text>
+<text x="34" y="714" font-size="13.5" fill="#212529" xml:space="preserve">⑤ 그래도 안 되면 수동 검토, 호출 예산을 다 쓰면 대기</text>
+<line x1="270" y1="734" x2="270" y2="758" stroke="#495057" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="20" y="760" width="500" height="90" rx="8" fill="#E7F1FB" stroke="#4C8FD0" stroke-width="1.5"/>
+<text x="34" y="782" font-size="16" font-weight="700" fill="#1B4F86">S7 병합</text>
+<text x="34" y="806" font-size="13.5" fill="#212529" xml:space="preserve">배열 요청이 일부라도 실패했으면 그 요청 전체를 되돌림</text>
+<text x="34" y="830" font-size="13.5" fill="#212529" xml:space="preserve">중복 선언 검사 뒤 사본에 적용(원본은 그대로)</text>
+<line x1="270" y1="850" x2="270" y2="874" stroke="#495057" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="20" y="876" width="500" height="90" rx="8" fill="#E7F1FB" stroke="#4C8FD0" stroke-width="1.5"/>
+<text x="34" y="898" font-size="16" font-weight="700" fill="#1B4F86">S8 검증</text>
+<text x="34" y="922" font-size="13.5" fill="#212529" xml:space="preserve">괄호 짝, include, 규칙 재검사, (가능하면) 컴파일 검사</text>
+<text x="34" y="946" font-size="13.5" fill="#212529" xml:space="preserve">불합격이면 그 수정을 되돌림</text>
+<line x1="270" y1="966" x2="270" y2="990" stroke="#495057" stroke-width="1.6" marker-end="url(#a)"/>
+<rect x="20" y="992" width="500" height="90" rx="8" fill="#E6F6EC" stroke="#3FA36B" stroke-width="1.5"/>
+<text x="34" y="1014" font-size="16" font-weight="700" fill="#1D6B40">S9 산출</text>
+<text x="34" y="1038" font-size="13.5" fill="#212529" xml:space="preserve">out/changed/(바뀐 파일), diff, report.md</text>
+<text x="34" y="1062" font-size="13.5" fill="#212529" xml:space="preserve">manual_review.md, project_settings.md, build_guide.md</text>
+<rect x="580" y="384" width="180" height="350" rx="8" fill="#FFF4E0" stroke="#E08A1E" stroke-width="1.5"/>
+<text x="670" y="539" font-size="16" font-weight="700" fill="#8A4B00" text-anchor="middle">sLLM 서버</text>
+<text x="670" y="563" font-size="12" fill="#5C3A00" text-anchor="middle">POST /chat/completions</text>
+<text x="670" y="581" font-size="12" fill="#5C3A00" text-anchor="middle">요청 1건 송수신 24k 토큰</text>
+<text x="670" y="599" font-size="12" fill="#5C3A00" text-anchor="middle">S5 와 S6 만 서버와 통신</text>
+<line x1="530" y1="425" x2="570" y2="425" stroke="#E08A1E" stroke-width="1.8" marker-start="url(#b)" marker-end="url(#c)"/>
+<text x="594" y="429" font-size="12.5" font-weight="700" fill="#8A4B00">요청문당 1회</text>
+<line x1="530" y1="473" x2="570" y2="473" stroke="#E08A1E" stroke-width="1.8" marker-start="url(#b)" marker-end="url(#c)"/>
+<text x="594" y="477" font-size="12.5" font-weight="700" fill="#8A4B00">필요할 때만</text>
+<line x1="530" y1="661" x2="570" y2="661" stroke="#E08A1E" stroke-width="1.8" marker-start="url(#b)" marker-end="url(#c)"/>
+<text x="594" y="665" font-size="12.5" font-weight="700" fill="#8A4B00">동시 1~8</text>
+<text x="20" y="1104" font-size="12.5" fill="#495057">종료 코드: 0 완료 · 1 완료(수동 검토 있음) · 2 단계 실패 · 3 입력 오류 · 4 대기 남음(--resume 으로 이어서)</text>
+<text x="20" y="1124" font-size="12.5" fill="#495057">원본 패키지는 읽기만 한다. 결과는 실행 폴더의 out/ 에만 쓴다.</text>
+</svg>

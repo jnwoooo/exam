@@ -10,6 +10,7 @@
   5. 수용 검사: 새 이름, 선언 변화, 크기 인자, 중복 선언
   6. 요청문(--ask): 원문을 sLLM 이 의도별로 나누고, 도구가 대상을 찾아 의도별로 수정 요청을 보냄
   7. 환경 호환성 항목의 sLLM 호출(--compat-llm. 기본 꺼짐)
+  8. OS, DB 의 원본/대상 옵션(--from-os, --to-os, --from-db, --to-db)
 모델은 이 파일 안의 모의 서버다. 실제 sLLM 의 응답 품질은 이 시험으로 확인되지 않는다.
 """
 import json, os, re, shutil, subprocess, sys, threading
@@ -593,6 +594,30 @@ check("환경 호환성(--compat-llm): 규칙의 sLLM 대상(gets)과 설정 흡
       m.calls >= 1 and "strcpy_s(buf, sizeof(buf), src);" in src and "fgets(buf, sizeof(buf), stdin);" in src)
 check("환경 호환성(--compat-llm): 포인터 대상이라 고치지 못한 흡수 항목은 그대로 두고 수동 검토로 올리지 않음",
       "strcpy(dst, src);" in src and "strcpy(dst" not in manual and "환경 호환성 항목의 sLLM 수정 시도" in report and code == 0)
+
+# ------------------------------------------------------------------ 8. OS, DB 의 원본/대상(--from-os, --to-os, --from-db, --to-db)
+import argparse
+e = V.build_env(argparse.Namespace(from_vs="2008", to_vs="2022", from_os="Windows 7", to_os="Windows  11", from_db="Oracle 11g", to_db="Oracle 19c"))
+lines = V.env_summary_lines(e)
+check("OS·DB 옵션: 원본/대상 값을 받아 환경 요약에 넣음(주지 않으면 줄이 없음)",
+      "OS: Windows 7 -> Windows 11" in lines and "DB: Oracle 11g -> Oracle 19c" in lines
+      and not any(l.startswith(("OS:", "DB:")) for l in V.env_summary_lines(V.build_env(argparse.Namespace(from_vs="2008", to_vs="2022")))))
+rule = {"id": "X", "tier": "T3", "title": "t", "pattern": "x", "when": {"db": "oracle", "os_changed": True}}
+e2 = V.build_env(argparse.Namespace(from_vs="2008", to_vs="2022", to_os="Windows 11", to_db="MySQL 8.0"))
+check("OS·DB 옵션: 규칙의 조건으로 쓸 수 있음(값에 낱말이 있을 때, 원본과 대상이 다를 때)",
+      V.rule_state(rule, e)[0] and not V.rule_state(rule, e2)[0] and "DB~oracle" in V.rule_when_text(rule) and "OS 변경" in V.rule_when_text(rule))
+pkg = os.path.join(work, "OSDB")
+write(pkg, "Src/Ver.cpp", ["#define WINVER 0x0400", "#include <stdio.h>", "void Log(const char* s);", "void F() { Log(\"a\"); }"])
+m = ask_mock([intent("modify", "Log 호출의 문자열 앞에 DB 이름을 붙인다", names=["Log"], construct="call")], edit=lambda l: l)
+code, text = cli(*BASE, "--package", pkg, "--llm-endpoint", m.url, "--to-os", "Windows 11", "--from-db", "Oracle 11g", "--to-db", "Oracle 19c",
+                 "--ask", "Log 호출의 문자열 앞에 DB 이름을 붙여 줘", "--out", os.path.join(work, "o1"))
+m.close()
+src, report = out_of(os.path.join(work, "o1"), "changed", "Src", "Ver.cpp"), out_of(os.path.join(work, "o1"), "report.md")
+check("OS·DB 옵션: 낮은 WINVER 를 대상 OS 의 값으로 올리고, 분석 요청과 수정 요청의 [환경]과 보고서에 들어감",
+      "#define WINVER 0x0A00" in src and "DB: Oracle 11g -> Oracle 19c" in report and "OS: Windows 11" in report
+      and len(m.prompts) >= 2 and all("DB: Oracle 11g -> Oracle 19c" in p and "OS: Windows 11" in p for p in m.prompts))
+code, text = cli(*BASE, "--package", pkg, "--no-llm", "--out", os.path.join(work, "o2"))
+check("OS·DB 옵션: 대상 OS 를 주지 않으면 WINVER 는 Windows 7 값으로", "#define WINVER 0x0601" in out_of(os.path.join(work, "o2"), "changed", "Src", "Ver.cpp"))
 
 n_ok = sum(1 for _n, ok in checks if ok)
 for name, ok in checks:
