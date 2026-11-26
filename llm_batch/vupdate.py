@@ -4,7 +4,7 @@
 ==============================================================================
 vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본)
 ==============================================================================
-버전 : 0.10.3 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
+버전 : 0.10.5 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
               환경 호환성 항목의 sLLM 호출은 --compat-llm 의 단계로 정한다. 당장 쓰지 않는 기능은 뺐다. 17_추가_0.9.0.md)
               0.9.1: OS·DB 의 원본/대상 옵션(--from-os, --to-os, --from-db, --to-db). 18_추가_0.9.1.md
               0.9.2: --compat-llm 을 단계 1|2|3 으로. 막힌 컴파일 검사를 통과로 치지 않는다. 옵션별 사용 예는 vupdate examples.
@@ -20,6 +20,10 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
               0.10.3: --compat-llm 3 은 1, 2단계 뒤에 남은 사용 중단 경고 줄을 모두 sLLM 에 보낸다. 요청문의 구조 변환은 규칙이 못 정한
                       자리를 sLLM 에 맡긴다. 요청 연결, 멤버 구조체의 sizeof, 값으로 채우는 묶음, include 경로, 보고서의 보장 문구를 고쳤다.
                       29_추가_0.10.3.md
+              0.10.4: 이름 없는 구조체(struct { ... } 변수;)가 sLLM 에 줄 구조체 후보에 들어가 S5 가 IndexError 로 멈추던 결함을 고쳤다.
+                      남은 자리를 sLLM 에 맡기는 단계와 기록(추적 파일, 집계)의 오류가 실행을 멈추지 않게 했다. 30_추가_0.10.4.md
+              0.10.5: 이름이 없어 대상에서 뺀 구조체를 조용히 빼지 않는다. 어느 파일 몇째 줄의 구조체를 왜 뺐는지 run.log, out/struct_scan.md,
+                      보고서의 구조 분석 절에 남긴다. 30_추가_0.10.4.md 의 5절
 목적 : 레거시 C++ 패키지를 새 Visual Studio 환경(예: 2008 -> 2022)에 맞게
        고치는 작업을 한 명령으로 수행한다. 규칙으로 고칠 수 있는 것은 규칙으로,
        규칙으로 못 고치는 것만 sLLM에 맡기고, 결과를 별도 폴더에 낸다.
@@ -120,7 +124,7 @@ from concurrent.futures import ThreadPoolExecutor
 # 목적: 모든 구획이 같이 쓰는 최소한의 도구. 로그 접두어 규칙을 여기서 보장한다.
 # ============================================================================
 APP = "vupdate"
-VERSION = "0.10.3"
+VERSION = "0.10.5"
 
 STAGES = [("S0", "준비"), ("S1", "인벤토리"), ("S2", "탐지"), ("S3", "설정흡수"),
           ("S4", "규칙적용"), ("S5", "영향분석"), ("S6", "sLLM수정"), ("S7", "병합"),
@@ -5502,7 +5506,7 @@ def _sx_field_expr(prefix, node, r, idx):
     return ("&" + prefix + node["path"]) if (r["voidp"] or (node["char"] and node["leaf"])) else None
 
 
-def _sx_match(spans, sx, forced=None):
+def _sx_match(spans, sx, forced=None, where=""):
     """확정된 (위치, 길이)들과 배치가 맞는 기존 구조체를 고른다. 돌려주는 값: (구조체 항목 또는 None, 후보 이름 목록, 사유)
     조건: 위치와 길이가 필드와 같은 것이 2곳 이상이고, 구조체의 범위 안에서 필드의 경계와 어긋나는 접근이 없다. 후보가 여럿이면 고르지 않는다."""
     if forced:
@@ -5510,15 +5514,23 @@ def _sx_match(spans, sx, forced=None):
         if e is None or not e["ok"]:
             return None, [], "요청의 구조체 %s 을(를) 쓸 수 없음(%s)" % (forced, "정의를 찾지 못함" if e is None else e["why"])
         return e, [forced], ""                               # 요청이 정한 구조체: 맞는 접근만 바꾸고 어긋나는 접근은 사유와 함께 남긴다
-    cands = []
+    cands, anon = [], []
     for e in sx["list"]:
-        if not e.get("ok") or not e["names"]:
+        if not e.get("ok"):
             continue
         keys = {(x["off"], x["size"]) for x in e["nodes"]}
         hit = [sp for sp in spans if sp in keys]
         if len(hit) >= 2 and not [sp for sp in spans if sp[0] < e["size"] and sp not in keys]:
+            if not e["names"]:                               # 배치는 맞지만 이름이 없다. 필드 접근의 글(변수 선언, 캐스팅)을 쓸 수 없어 뺀다(0.10.5: 적어 둔다)
+                anon.append(e)
+                continue
             cands.append((len(hit), sum(sp[1] for sp in hit) / float(e["size"]), e))
+    for e in anon:
+        _sx_anon_log(sx, where or ("전문 버퍼의 접근(위치·길이 %s)" % ", ".join("%d+%d" % sp for sp in sorted(spans)[:4])), e, "대응시킬 구조체 후보")
     if not cands:
+        if anon:
+            return None, [], ("위치와 길이가 맞는 기존 구조체가 없음(배치가 맞는 구조체는 있으나 이름이 없어 쓰지 못함: %s. 이름을 붙이면 대상이 된다)"
+                              % ", ".join(_sx_anon_text(e) for e in anon[:2]))
         return None, [], "위치와 길이가 맞는 기존 구조체가 없음"
     cands.sort(key=lambda c: (-c[0], -c[1], c[2]["names"][-1]))
     top = [c for c in cands if c[0] == cands[0][0] and abs(c[1] - cands[0][1]) < 1e-9]
@@ -5639,7 +5651,7 @@ def _sx_plan_buffer(ctx, f, buf, opts, sx):
     forced = opts.get("struct")
     if isinstance(forced, dict):
         forced = forced.get(f["func"].split("::")[-1]) or forced.get(f["func"]) or forced.get(buf)
-    e, plan["cands"], why = _sx_match(spans, sx, forced)
+    e, plan["cands"], why = _sx_match(spans, sx, forced, "%s:%d %s() 버퍼 %s" % (f["rel"], fixed[0]["line"], f["func"], buf))
     if e is None:                                              # 2) 대응하는 구조체가 없거나 정하지 못했다
         plan["why"] = why
         for r in fixed:
@@ -5850,10 +5862,23 @@ def _sx_request(ctx, ft, files):
                     bump("left", re.sub(r"\d+", "N", re.split(r"[:(.]", r["out"])[0].strip()) or "그 밖")
                 sent = [r for r in left if r["st"] in ("nopos", "nolen")] if llm_on else []
                 if sent:
-                    cands = _sx_llm_cands(ctx, ft, d.struct[fn.blk["head"]:fn.blk["close"]], sx)
+                    anon = []
+                    try:
+                        cands = _sx_llm_cands(ctx, ft, d.struct[fn.blk["head"]:fn.blk["close"]], sx, anon)
+                    except Exception as e:
+                        LOG5.warn("%s %s(): sLLM 에 줄 구조체 후보를 고르다 실패했습니다(%s: %s). 이 함수의 남은 자리는 보내지 않습니다"
+                                  % (f["rel"], f["func"], type(e).__name__, e))
+                        cands = []
+                    for e in anon:
+                        _sx_anon_log(sx, "%s:%d %s() 버퍼 %s" % (f["rel"], sent[0]["line"], f["func"], buf), e, "sLLM 에 줄 구조체 후보")
+                    if anon:
+                        stat["where"].append("%s:%d %s() 버퍼 %s: 이름 없는 구조체 %s 를 sLLM 에 줄 구조체 후보에서 뺌(이름으로 가리킬 수 없음)" % (
+                            f["rel"], sent[0]["line"], f["func"], buf, ", ".join(_sx_anon_text(e) for e in anon[:3]) + (" 외" if len(anon) > 3 else "")))
                     if not cands:
+                        tail = (" 필드 이름이 맞는 구조체는 있으나 이름이 없다: %s. 이름을 붙이면 대상이 된다" % ", ".join(_sx_anon_text(e) for e in anon[:2])) if anon \
+                            else " 요청 파일의 struct 로 지정한다"
                         for r in sent:
-                            r["out"] += " (필드 표를 줄 기존 구조체 후보가 없어 sLLM 에 보내지 않음. 요청 파일의 struct 로 지정한다)"
+                            r["out"] += " (필드 표를 줄 기존 구조체 후보가 없어 sLLM 에 보내지 않음.%s)" % tail
                         sent = []
                     else:
                         ft["_llm_structs"] = [n for n in OrderedDict.fromkeys((ft.get("_llm_structs") or []) + [e["names"][-1] for e in cands])][:12]
@@ -7271,6 +7296,18 @@ _STAGE_NAMES = OrderedDict((("설정", "설정 처리(코드는 그대로 두고
                             ("수동", "규칙도 sLLM 도 고치지 않는 것(수동 검토 전용)")))
 
 
+def _safe_lines(ctx, what, fn, *args):
+    """기록용 함수를 부른다. 오류가 나면 경고만 남기고 빈 목록을 돌려준다(기록 때문에 실행이나 보고서가 멈추지 않게. 0.10.4)."""
+    try:
+        return fn(*args) or []
+    except Exception as e:
+        try:
+            LOG9.warn("%s을(를) 만들지 못했습니다(%s: %s). 나머지 결과에는 영향이 없습니다" % (what, type(e).__name__, e))
+        except Exception:
+            pass
+        return []
+
+
 def _ask_log_answer(ctx, label, tag, content):
     """모델의 답 원문을 실행 로그에 줄마다 남긴다. limits.ask_log_chars 보다 길면 거기서 자르고 원문 파일을 알려 준다(0 이면 적지 않는다)."""
     cap, text = int(ctx.cfg["limits"].get("ask_log_chars", 6000) or 0), str(content or "")
@@ -7551,7 +7588,7 @@ def _write_ask_plan(ctx, plan, contracts):
                   "분석 요청과 응답의 원문은 logs/llm/ask_*.txt 에 있고, 각 요청의 analysis 에도 답 원문(raw)이 있다. "
                   "의도별 건수는 out/ask_trace.md 에 있다.", "asks": plan}, ensure_ascii=False, indent=2))
     ctx.store.set_meta("ask_plan", plan)
-    _write_ask_trace(ctx, final=False)
+    _safe_lines(ctx, "요청문 처리 추적 파일", _write_ask_trace, ctx, False)
     LOG5.info("요청문 분석 결과: %s (읽기 쉬운 꼴: %s)" % (ctx.p("out", "ask_plan.json"), ctx.p("out", "ask_trace.md")))
 
 
@@ -7995,9 +8032,27 @@ def _mark_manual(ctx, issue_ids, note):
 _SX_LLM_TITLE = "요청사항: 전문 버퍼의 위치 접근을 기존 구조체의 필드 접근으로(sLLM 의 판단)"
 
 
-def _sx_llm_cands(ctx, ft, text, sx):
+def _sx_anon_text(e):
+    """이름 없는 구조체를 가리키는 글: 파일:줄(필드 몇 개). 이름이 없으므로 정의의 위치로 적는다."""
+    leafs = [x["path"] for x in e.get("nodes") or [] if x.get("leaf")]
+    return "%s:%d(필드 %s%s)" % (e["rel"], e["line"], ", ".join(leafs[:4]), " 외" if len(leafs) > 4 else "")
+
+
+def _sx_anon_log(sx, where, e, why):
+    """이름이 없어 뺀 구조체를 실행 로그에 한 번만 적는다(같은 자리, 같은 구조체, 같은 까닭은 다시 적지 않는다)."""
+    seen = sx.setdefault("_anon_logged", set())
+    key = (where, e["rel"], e["line"], why)
+    if key in seen:
+        return
+    seen.add(key)
+    LOG5.info("%s: 이름 없는 구조체 %s 를 %s에서 뺐습니다. 이름으로 가리킬 수 없기 때문입니다(typedef 나 태그로 이름을 붙이면 대상이 됩니다)"
+              % (where, _sx_anon_text(e), why))
+
+
+def _sx_llm_cands(ctx, ft, text, sx, anon=None):
     """sLLM 에 필드 표를 줄 구조체 후보(많아야 4개). 요청이 지정한 구조체, text(함수 본문이나 조각)에 이름이 나온 구조체,
-    text 에 나온 필드 이름을 둘 이상 가진 구조체 순서다. 배치를 확정한 구조체만 준다(위치를 말할 수 있어야 하므로)."""
+    text 에 나온 필드 이름을 둘 이상 가진 구조체 순서다. 배치를 확정한 구조체만 준다(위치를 말할 수 있어야 하므로).
+    anon(목록)을 주면 이름이 없어서 뺀 구조체(이름만 있었으면 후보였던 것)를 거기에 넣는다."""
     names = set(re.findall(r"[A-Za-z_]\w*", text or ""))
     forced = ft.get("struct")
     forced = set(str(v) for v in forced.values()) if isinstance(forced, dict) else ({str(forced)} if forced else set())
@@ -8005,6 +8060,10 @@ def _sx_llm_cands(ctx, ft, text, sx):
     out = []
     for e in sx["list"]:
         if not e.get("ok"):
+            continue
+        if not e.get("names"):                               # 이름 없는 구조체(struct { ... } 변수;)는 물음에서 이름으로 가리킬 수 없다
+            if anon is not None and len({x["path"].split(".")[-1] for x in e["nodes"] if x.get("leaf")} & names) >= 2:
+                anon.append(e)                               # 이름만 있었으면 후보였다: 부르는 쪽이 로그와 결과 문서에 적는다
             continue
         en = set(e["names"])
         common = len({x["path"].split(".")[-1] for x in e["nodes"] if x.get("leaf")} & names)
@@ -8018,7 +8077,10 @@ def _sx_llm_cands(ctx, ft, text, sx):
 def _sx_llm_guidance(ctx, ft, near_text):
     """전문 버퍼의 남은 자리(위치나 길이를 규칙이 확정하지 못한 접근)를 sLLM 에 맡길 때의 지침. 후보 구조체의 필드 표를 붙인다."""
     sx = _sx_structs(ctx)
-    cands = _sx_llm_cands(ctx, ft, near_text, sx)
+    try:
+        cands = _sx_llm_cands(ctx, ft, near_text, sx)
+    except Exception:
+        cands = []
     if not cands:                                           # 조각에는 이름이 없다: 요청을 만들 때 함수에서 고른 후보를 쓴다
         cands = [sx["by_name"][n] for n in (ft.get("_llm_structs") or []) if n in sx["by_name"]][:4]
     tables = "; ".join("%s(크기 %d): %s" % (e["names"][-1], e["size"], " ".join(
@@ -8830,7 +8892,9 @@ def _explain_no_calls(ctx, n_off):
         elif c.get("type") == "array_to_struct":
             why.append("배열 요청 %s 은(는) 전부 규칙으로 바꿈(sLLM 에 맡길 사용처가 없음)" % c["id"])
         elif c.get("type") in ("buffer_fields", "record_group"):
-            why.append("구조 분석 요청 %s 은(는) 규칙으로만 처리함(sLLM 에 보내지 않음)" % c["id"])
+            why.append(("구조 분석 요청 %s: 지역 병렬 배열의 묶음은 규칙으로만 처리함(sLLM 에 보내지 않는다)" % c["id"]) if c["type"] == "record_group" else
+                       ("구조 분석 요청 %s: sLLM 에 맡길 자리가 없음(위치나 길이를 확정하지 못한 접근이 없거나, 필드 표를 줄 이름 있는 구조체 후보가 없거나, "
+                        "요청에서 llm 을 껐다. 접근별 사유는 out/struct_scan.md)" % c["id"]))
         elif c.get("type") == "요청문(찾기)":
             why.append("요청 %s 은(는) 찾기 전용이라 수정 요청을 보내지 않음" % c["id"])
         elif c.get("type") == "요청문(환경 호환성)":
@@ -9846,7 +9910,7 @@ def prompt_version(ctx):
 def _extra_report_lines(ctx):
     """보고서 7절 뒤에 붙는 부분: 변경 계약(E3, E4, E6), 빌드 로그에서 넣은 이슈(F8), 예외로 건너뛴 탐지(C11),
     규칙 후보(C12). 해당하는 것이 없으면 그 부분은 내지 않는다."""
-    st, L = ctx.store, _ask_trace_report_lines(ctx)
+    st, L = ctx.store, _safe_lines(ctx, "보고서의 요청문 처리 추적", _ask_trace_report_lines, ctx)
     cons = st.get_meta("contracts", []) or []
     if cons:
         L += ["", "### 변경 계약(요청사항)", "", "요청사항으로 바뀌는 선언과 그 사용처의 처리 결과다. 컴파일러 없이 글자로 분석한 "
@@ -9939,8 +10003,8 @@ def _extra_report_lines(ctx):
 def s9_report(ctx):
     st, env = ctx.store, ctx.env
     out = ctx.p("out")
-    _write_ask_trace(ctx, final=True)                       # 요청문 -> 의도 -> 대상·수정 요청·미수정(최종 건수)
-    _log_tallies(ctx)                                       # 처리 단계별, 의도별 집계를 실행 로그에 적는다
+    _safe_lines(ctx, "요청문 처리 추적 파일", _write_ask_trace, ctx, True)    # 요청문 -> 의도 -> 대상·수정 요청·미수정(최종 건수)
+    _safe_lines(ctx, "집계 로그", _log_tallies, ctx)                           # 처리 단계별, 의도별 집계를 실행 로그에 적는다
     shutil.rmtree(os.path.join(out, "diff"), ignore_errors=True)
 
     # --- diff ---
@@ -10078,13 +10142,14 @@ def s9_report(ctx):
     cov = coverage_summary()
     R += ["", "알려진 변경 항목 %d건의 처리 방식: %s. 목록은 `vupdate rules --coverage`."
           % (sum(cov.values()), ", ".join("%s %d건" % kv for kv in cov.items()))]
-    R += ["", "## 2. 환경 등급과 보장 범위", "", "- 환경 등급: **%s**" % ctx.grade] + _guarantee_lines(ctx, grade_txt) + [
+    R += ["", "## 2. 환경 등급과 보장 범위", "", "- 환경 등급: **%s**" % ctx.grade] + (_safe_lines(ctx, "보고서의 보장 범위", _guarantee_lines, ctx, grade_txt) or [
+        "- 보장 범위의 문장을 만들지 못했다(오류). 파일별 검증 수준은 3절과 manifest.csv 에 있다."]) + [
           "- 상세는 `preflight.md` 참조.", "", "## 3. 파일 처리 결과", ""]
     R += _table(["상태", "파일 수"], [(r["status"], r["n"]) for r in fstat])
     R += ["", "## 4. 이슈(탐지 결과)", ""] + _table(["규칙/요청", "단계", "탐지", "수정됨", "설정 흡수", "수동 검토"], [
         (r["rule_id"], r["tier"], r["n"], r["fixed"] or 0, r["absorbed"] or 0, r["manual"] or 0) for r in rstat])
     R += ["", "단계별 상태:", ""] + _table(["단계", "상태", "건수"], [(r["tier"], r["status"], r["n"]) for r in istat])
-    R += _stage_report_lines(ctx)
+    R += _safe_lines(ctx, "보고서의 처리 단계별 집계", _stage_report_lines, ctx)
     R += ["", "## 5. 수정 레코드", ""] + (_table(["출처", "상태", "건수"], [(r["origin"], r["status"], r["n"]) for r in estat])
                                        if estat else ["없음."])
     R += ["", "## 6. sLLM 사용", "", "- 호출 %d회(실패 %d회), 소요 %.1f초" % (calls["n"], calls["fail"], calls["ms"] / 1000.0),
