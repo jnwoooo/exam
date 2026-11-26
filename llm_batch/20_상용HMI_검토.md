@@ -2,10 +2,10 @@
 
 | 항목 | 내용 |
 |---|---|
-| 읽는 순서 | 20 / 20 |
-| 작성일 | 2026-11-25 |
+| 읽는 순서 | 20 / 23 |
+| 작성일 | 2026-11-25(8절 InTouch 기준 정리는 2026-11-26에 더했다) |
 | 대상 코드 | `vupdate.py` 0.9.1(코드 변경 없음. 검토 문서) |
-| 근거 | 제조사 공개 문서(6절)와 합성 예제를 도구로 돌린 결과(4절). Linux에서 확인했다 |
+| 근거 | 제조사 공개 문서(7절, 8.8)와 합성 예제를 도구로 돌린 결과(4절, 8.5). Linux에서 확인했다 |
 
 `18_추가_0.9.1.md` 2절에서 "상용 HMI는 내장 규칙으로 어렵다"고 적은 것은 찾아보지 않은 판단이었다. 이 문서는 그 부분을 제조사 자료로 다시 확인한 것이다.
 
@@ -24,7 +24,7 @@
 | WinCC V7/V8 (Siemens) | ANSI-C와 VBScript. C 스크립트는 제품의 해석기가 실행한다 | ODK. C API이고 별도 옵션이다 | 함수는 `.fct`, 액션은 `.pas` 파일로 프로젝트 폴더에 있다. 화면에 붙인 스크립트는 화면 파일 안에 있다 |
 | WinCC Unified (Siemens) | JavaScript | - | C 스크립트를 지원하지 않는다. WinCC V7에서 넘어오는 것은 변환이 아니라 다시 만드는 일이다 |
 | WinCC OA (Siemens) | CTRL. C와 비슷한 제품 자체 언어(해석 실행) | C++ API(매니저, 드라이버, CTRL 확장) | **판마다 컴파일러가 정해져 있다.** 기존 API 프로젝트는 그 컴파일러로 바꿔 다시 컴파일해야 한다. 3.19 이후의 인터페이스 변경은 대부분 소스 수정이 필요 없다고 제조사가 적었다 |
-| InTouch (AVEVA) | QuickScript. 제품 자체 언어 | - | 32비트 전용인 옛 스크립트 함수가 따로 표시돼 있다 |
+| InTouch (AVEVA) | QuickScript. 제품 자체 언어 | 스크립트 함수 키트(C로 만든 DLL과 `.wdf`), 태그 접근 DLL(`ptacc.dll`) | 판 올림은 제품의 변환 기능이 한다. 32비트 전용인 옛 스크립트 함수가 따로 표시돼 있다. **자세한 것은 8절** |
 | Plant SCADA, 구 Citect (AVEVA) | Cicode. 제품 자체 언어 | CtAPI. DLL 인터페이스(C 등에서 호출) | - |
 | FactoryTalk View SE (Rockwell) | VBA | - | - |
 | iFIX (GE Vernova) | VBA | 확인하지 못했다 | - |
@@ -106,3 +106,103 @@ HMI 개발 도구 규칙(`R-T0-HMI-SCADA-SDK`)은 0.6.0부터 있다. iFIX EDA, 
 - iFIX의 VBA: https://gevernova.com/software/documentation/ifix/version65/understanding-ifix/und_visual_basic_for_applications_vba.htm
 - Ignition의 Jython: https://docs.inductiveautomation.com/docs/8.1/platform/scripting/python-scripting
 - Qt 6 포팅: https://doc.qt.io/qt-6.10/portingguide.html , https://www.qt.io/blog/porting-from-qt-5-to-qt-6-using-qt5compat-library , C++17 요구는 The Qt Company 발표 자료 https://conf.kde.org/event/1/contributions/19/attachments/17/18/2106-PortingToQt6%20(Final%20Version).pdf
+
+## 8. InTouch 기준 정리
+
+2026-11-26에 더한 절이다. InTouch(AVEVA, 구 Wonderware)에 해당하는 내용만 모았다. 근거는 8.8의 문서와, 합성 예제를 0.9.1로 돌린 결과(8.5)다.
+
+### 8.1 결론
+
+- **같은 InTouch 안에서 판만 올리는 일은 어렵지 않다. 다만 그 일은 InTouch가 스스로 한다.** 옛 애플리케이션을 새 판에서 열면 제품이 변환한다. 이 도구가 맡을 부분이 없다.
+- **이 도구의 대상은 InTouch에 붙여 쓰는 C/C++ 소스뿐이다.** 스크립트 함수 DLL의 소스와, 태그 접근 DLL(`ptacc.dll`)을 쓰는 바깥 프로그램의 소스다. 보통의 C/C++ 코드여서 `--from-vs`, `--to-vs`로 다룬다.
+- InTouch에서 Industrial Graphics나 OMI로 옮기는 것은 판 올림이 아니라 다시 구성하는 일이다(8.4).
+
+### 8.2 InTouch에서 코드가 있는 곳
+
+| 무엇 | 언어 | 어디에 | 이 도구의 대상인가 |
+|---|---|---|---|
+| 화면과 스크립트 | QuickScript(제품 자체 언어) | 애플리케이션 폴더(제품 형식) | 아니다 |
+| QuickFunction | QuickScript로 쓴 재사용 함수 | 위와 같다 | 아니다 |
+| 스크립트 함수 DLL(스크립트 확장) | C. 제조사 기술 노트는 ANSI C 컴파일러를 권한다 | DLL과 `.wdf` 파일. 소스는 `.c`, `.def`, `.rc` | **소스가 있으면 대상이다** |
+| .NET 스크립트 라이브러리, 스크립트 라이브러리 파일 | .NET | `.dll`, `.aaSLIB` | 아니다(C++가 아니다) |
+| 태그 접근 DLL을 쓰는 바깥 프로그램 | 그 프로그램을 쓴 언어 | `ptacc.dll`, `wwheap.dll`을 불러 쓴다 | **C/C++로 썼으면 대상이다** |
+
+지금 판의 InTouch도 `.wdf` 스크립트 확장 파일을 가져올 수 있다. 가져오기 대상에 .NET 라이브러리, `.aaSLIB`와 함께 들어 있다.
+
+### 8.3 InTouch → InTouch: 제품이 하는 일과 남는 일
+
+제품이 하는 일(InTouch 2026 문서 기준).
+
+- 옛 애플리케이션을 WindowMaker나 WindowViewer로 열면 변환 창이 뜬다. 백업을 만들 폴더를 정하고 변환한다.
+- 7.11 P07 이후 판에서 만든 애플리케이션이 변환 대상이다. 2023 문서의 표에서 7.0과 7.1은 변환 불가로 표시돼 있다.
+- 설치본을 바로 올리는 것(upgrade)은 11.1 SP1 이후 판이고 64비트 OS에 설치돼 있을 때 된다.
+
+변환 뒤 사람이 손봐야 한다고 확인한 것.
+
+| 항목 | 내용 |
+|---|---|
+| 32비트 전용 옛 스크립트 함수 | `WWPoke`, `WWExecute`, `WWRequest`, `ActivateApp`, `SendKeys`는 64비트 Windows에서 동작하지 않는다. 문서도 이런 함수를 64비트 Windows용 스크립트에 넣지 말라고 한다 |
+| SPCPro | 제품에서 빠졌다. SPCPro 구성요소가 든 애플리케이션은 열리지도 변환되지도 않는다. 제조사는 QI Analyst로 옮기라고 한다 |
+| `StringCompareEncrypted` | 2026으로 올리면 실행해도 효과가 없고 늘 0을 돌려준다 |
+| 7.11 이전의 경보 객체 | 변환하면 분산 경보 객체로 바뀌고 기본값이 된다. 색, 글꼴, 식, 조회 설정은 넘어오지 않는다 |
+
+이 항목들은 QuickScript와 화면 안의 일이어서 WindowMaker에서 고친다. 이 도구가 읽는 파일이 아니다.
+
+### 8.4 InTouch → Industrial Graphics, OMI, 웹 클라이언트
+
+- InTouch 애플리케이션을 OMI 애플리케이션으로 통째로 바꾸는 기능은 없다(AVEVA 커뮤니티의 답변). 관리형 InTouch 애플리케이션의 창을 Industrial Graphics로 변환하는 기능을 쓰고, 그것으로 다시 구성한다.
+- 그 변환에서 InTouch 함수나 QuickScript 함수를 쓴 스크립트는 변환되지 않는다. ActiveX 컨트롤, OCX DLL, DLL 객체는 결과에 들어가지 않는다. 변환 중에 스크립트 검증 경고가 나오지 않으므로 변환 뒤에 따로 검증해야 한다.
+- 웹 클라이언트로 보여 줄 때는 .NET 스크립트를 .NET 표준 이름공간에 맞게 고쳐야 할 수 있고, 대응하는 것이 없으면 그 스크립트는 지원되지 않는다.
+
+모두 제품 도구 안에서 하는 일이다.
+
+### 8.5 C 소스 쪽을 도구로 돌려 본 결과
+
+합성 예제 7개 파일을 만들어 0.9.1로 돌렸다(Linux, sLLM 없이). 실제 제품의 키트나 코드가 아니고, 태그 접근 함수의 이름은 기억에 따라 적은 것이다.
+
+| 파일 | 읽었는가 | 결과 |
+|---|---|---|
+| 스크립트 함수 DLL의 `.c` 2개 | 읽음 | 함수 5개 모두 정상(`WINAPI` 함수 4개, `DllMain`) |
+| `.def`, `.rc` | 글 파일로 분류 | 함수 분석 대상이 아니다 |
+| `.wdf` | 읽지 않음 | - |
+| 태그 접근 프로그램 `.cpp` | 읽음 | 함수 4개 모두 정상. `ptacc.h`를 HMI 개발 도구 규칙(`R-T0-HMI-SCADA-SDK`)이 탐지해 설정 안내를 냈다 |
+| 스크립트를 글로 꺼낸 `.txt` | 읽지 않음 | - |
+
+옵션에 따른 차이.
+
+- 기본(`--from-vs 2010 --to-vs 2022`): 소스를 바꾸지 않았다. `sprintf`, `itoa` 등의 경고는 설정으로 흡수했다.
+- `--deprecated fix`: `itoa` → `_itoa`, `stricmp` → `_stricmp`로 바꿨다. 이 DLL은 Visual Studio로 컴파일하므로 여기서는 맞는 수정이다. 3.3의 WinCC 스크립트와 다른 점이다.
+- `--platform x64`: `SetWindowLong` 줄을 탐지해 수동 검토로 올렸다(`--compat-llm 3`이면 sLLM에 보낸다). `return (long)p;`처럼 **변수인 포인터를 정수로 바꾸는 줄은 잡지 못했다.** 규칙이 변수의 타입을 모르기 때문이다.
+
+### 8.6 주의할 것과 확인하지 못한 것
+
+- **`--platform x64`는 확인한 뒤에만 준다.** DLL은 그것을 불러 쓰는 프로세스와 비트 수가 같아야 한다. 대상 판의 WindowViewer가 32비트인지 64비트인지는 제조사 공개 문서에서 찾지 못했다. 설치된 `view.exe`로 확인하거나 제조사에 물어야 한다.
+- 태그 접근 DLL(`ptacc.dll`, `wwheap.dll`)의 쓰임은 제3자 제품의 문서에서 확인했다. 제조사의 키트 문서는 찾지 못했다. 사용자 글에는 "제조사가 이 키트를 지원하지 않는다", "10.1에서는 됐는데 12에서는 안 됐다", "64비트 OS에서 초기화 함수가 멈춘다는 기술 노트가 있다"는 말이 있다. 확인된 사실이 아니므로 대상 판에서 직접 시험해야 한다.
+- 스크립트 함수 키트의 기술 노트는 옛 판(FactorySuite 2000) 기준이다. 지금 판의 키트가 어떤 Visual Studio를 요구하는지는 확인하지 못했다.
+- InTouch의 스크립트를 글 파일로 꺼내는 방법은 확인하지 않았다.
+
+### 8.7 판단
+
+| 일 | 될까 | 누가 하는가 |
+|---|---|---|
+| InTouch 애플리케이션의 판 올림 | 된다 | InTouch의 변환 기능 |
+| 변환 뒤 남는 스크립트 수정(8.3의 표) | 된다 | 사람이 WindowMaker에서. 확인한 항목은 넷이다 |
+| 스크립트 함수 DLL, 태그 접근 프로그램의 컴파일러 올림 | 된다 | 이 도구(`--from-vs`, `--to-vs`). 소스가 패키지에 있을 때 |
+| 위 소스의 x64 전환 | 조건부 | 비트 수를 확인한 뒤에. 포인터 잘림은 일부만 탐지한다 |
+| Industrial Graphics·OMI로 옮기기 | 이 도구로는 안 된다 | 제품의 창 변환 기능과 사람 |
+
+`--from-hmi`, `--to-hmi`를 InTouch용으로 넣을 이유는 없다. InTouch의 판에 따라 C 소스를 바꿔야 한다는 공개된 변경 목록을 찾지 못했고, 스크립트 쪽 변경은 이 도구가 읽는 파일이 아니다.
+
+### 8.8 출처(InTouch)
+
+- 스크립트 언어와 QuickFunction: https://docs.aveva.com/bundle/intouch-hmi-2026/page/313282.html
+- 스크립트 함수 라이브러리 가져오기(.NET, `.aaSLIB`, `.wdf`): https://docs.aveva.com/bundle/intouch-hmi/page/332367.html
+- 스크립트 함수 키트: Wonderware Tech Note 162(배포사 사본) https://cdn.logic-control.com/docs/aveva/Tech%20Notes/Tech%20Note%20162%20-%20Script%20SDK%20Implementation%20Basics.pdf
+- 태그 접근 DLL: Software Toolbox의 InTouch 클라이언트 드라이버 설명서 https://help.softwaretoolbox.com/hubfs/faq/files/documentation/topserver/intouch-client-manual.pdf?hsLang=en , 사용자 글 https://static.codeproject.com/Messages/4816187/Re-using-ptacc-dll-under-Windows-7-x64
+- 애플리케이션 변환: https://docs.aveva.com/bundle/intouch-hmi-2026/page/315541.html , 변환 범위 https://docs.aveva.com/bundle/intouch-hmi-2026/page/368445.html , 2023의 표 https://docs.aveva.com/bundle/intouch-hmi-2023/page/368445.html , 7.11 이전 https://docs.aveva.com/bundle/intouch-hmi-2026/page/315542.html
+- 설치본 올림: https://docs.aveva.com/bundle/intouch-hmi-2026/page/368441.html
+- 32비트 전용 스크립트 함수: https://docs.aveva.com/bundle/intouch-hmi-2023/page/321235.html , 제품 ReadMe(배포사 사본) https://cdn.logic-control.com/docs/Wonderware/InTouch/ReadMe.html
+- 2026 릴리스 노트(`StringCompareEncrypted`): https://docs.aveva.com/bundle/intouch-hmi-2026/page/InTouchHMI_ReleaseNotes.html
+- 창을 Industrial Graphics로 변환: https://docs.aveva.com/bundle/intouch-hmi-2026/page/315640.html , 제한 https://docs.aveva.com/bundle/intouch-hmi-2026/page/315644.html , 스크립트 변환의 예외 https://docs.aveva.com/bundle/intouch-hmi-2023/page/315643.html
+- OMI로의 통째 변환이 없음: AVEVA 커뮤니티 답변 https://softwareforums.aveva.com/heroes-hq/f/aveva-system-platform-and-omi/83417/guidelines-or-documentation-on-converting-an-intouch-for-system-platform-application-to-omi/312139
+- 웹 클라이언트의 .NET 스크립트: https://docs.aveva.com/bundle/intouch-hmi-2026/page/1612713.html

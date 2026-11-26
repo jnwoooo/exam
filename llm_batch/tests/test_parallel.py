@@ -101,7 +101,7 @@ for n in (1, 4, 8):
         stat.update(cur=0, max=0, calls=0)
     out = os.path.join(work, "r%d" % n)
     t0 = time.time()
-    p = subprocess.run([sys.executable, os.path.join(vdir, "vupdate.py"), "run", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "x64", "--compat-llm",
+    p = subprocess.run([sys.executable, os.path.join(vdir, "vupdate.py"), "run", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "x64", "--compat-llm", "3",
                         "--server-config", scfg, "--llm-endpoint", url, "--max-parallel", str(n), "--out", out],
                        capture_output=True)
     sec = time.time() - t0

@@ -9,7 +9,7 @@
   4. 호출 예산, 대기, 이어서 실행
   5. 수용 검사: 새 이름, 선언 변화, 크기 인자, 중복 선언
   6. 요청문(--ask): 원문을 sLLM 이 의도별로 나누고, 도구가 대상을 찾아 의도별로 수정 요청을 보냄
-  7. 환경 호환성 항목의 sLLM 호출(--compat-llm. 기본 꺼짐)
+  7. 환경 호환성 항목의 처리 깊이(--compat-llm 1|2|3. 기본 1)
   8. OS, DB 의 원본/대상 옵션(--from-os, --to-os, --from-db, --to-db)
 모델은 이 파일 안의 모의 서버다. 실제 sLLM 의 응답 품질은 이 시험으로 확인되지 않는다.
 """
@@ -130,7 +130,7 @@ def fix_gets(user, how=None):
 
 
 BASE = ["run", "--from-vs", "2008", "--to-vs", "2022", "--no-compile"]
-BASEC = BASE + ["--compat-llm"]                   # 규칙의 sLLM 대상(gets 등)을 보내야 하는 시험에 쓴다
+BASEC = BASE + ["--compat-llm", "3"]                   # 규칙의 sLLM 대상(gets 등)을 보내야 하는 시험에 쓴다
 
 # ------------------------------------------------------------------ 1. 구조 분석
 code1 = "\n".join([
@@ -587,13 +587,24 @@ check("환경 호환성(기본): --compat-llm 을 주지 않으면 sLLM 을 부�
       m.calls == 0 and code == 1 and "R-T3-GETS-REMOVED" in manual and "--compat-llm" in manual
       and "수정 요청을 한 건도 보내지 않았다" in report and "_CRT_SECURE_NO_WARNINGS" in out_of(os.path.join(work, "k1"), "project_settings.md"))
 m = Mock(compat_responder)
-code, text = cli(*BASEC, "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "k2"))
+code, text = cli(*BASE, "--compat-llm", "2", "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "k2"))
 m.close()
 src, report, manual = out_of(os.path.join(work, "k2"), "changed", "Src", "Copy.cpp"), out_of(os.path.join(work, "k2"), "report.md"), out_of(os.path.join(work, "k2"), "manual_review.md")
-check("환경 호환성(--compat-llm): 규칙의 sLLM 대상(gets)과 설정 흡수 항목(strcpy)의 사용 줄을 보내 고침",
-      m.calls >= 1 and "strcpy_s(buf, sizeof(buf), src);" in src and "fgets(buf, sizeof(buf), stdin);" in src)
-check("환경 호환성(--compat-llm): 포인터 대상이라 고치지 못한 흡수 항목은 그대로 두고 수동 검토로 올리지 않음",
-      "strcpy(dst, src);" in src and "strcpy(dst" not in manual and "환경 호환성 항목의 sLLM 수정 시도" in report and code == 0)
+check("환경 호환성(2단계): sLLM 을 부르지 않고, 지역 배열에 쓰는 strcpy 를 규칙으로 바꿈. 규칙의 sLLM 대상(gets)은 수동 검토로 둠",
+      m.calls == 0 and "strcpy_s(buf, sizeof(buf), src);" in src and "gets(buf);" in src and "strcpy(dst, src);" in src
+      and "R-T3-GETS-REMOVED" in manual and "2단계" in report and code == 1)
+m = Mock(compat_responder)
+code, text = cli(*BASE, "--compat-llm", "3", "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "k3"))
+m.close()
+src, report, manual = out_of(os.path.join(work, "k3"), "changed", "Src", "Copy.cpp"), out_of(os.path.join(work, "k3"), "report.md"), out_of(os.path.join(work, "k3"), "manual_review.md")
+check("환경 호환성(3단계): 2단계의 기계적 변환 뒤에 규칙의 sLLM 대상(gets)을 sLLM 에 보내 고침. 포인터에 쓰는 strcpy 는 그대로 둠",
+      m.calls >= 1 and "strcpy_s(buf, sizeof(buf), src);" in src and "fgets(buf, sizeof(buf), stdin);" in src and "strcpy(dst, src);" in src
+      and "strcpy(dst" not in manual and "보안 CRT 함수의 기계적 변환" in report and "지역 배열이 아님" in report and code == 0
+      and "strcpy" not in "\n".join(re.findall(r"- \d+번째 줄 \[[^\]]+\]: (.+)", "\n".join(m.prompts))))
+code, text = cli(*BASE, "--compat-llm", "--package", pkg, "--out", os.path.join(work, "k4"))
+code2, text2 = cli(*BASE, "--compat-llm", "5", "--package", pkg, "--out", os.path.join(work, "k4"))
+check("환경 호환성: --compat-llm 에 값을 주지 않거나 1, 2, 3 이 아닌 값을 주면 입력 오류(단계의 뜻을 알려 줌)",
+      code == 3 and code2 == 3 and "1, 2, 3" in text and "받은 값: 5" in text2)
 
 # ------------------------------------------------------------------ 8. OS, DB 의 원본/대상(--from-os, --to-os, --from-db, --to-db)
 import argparse

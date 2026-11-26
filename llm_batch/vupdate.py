@@ -4,9 +4,12 @@
 ==============================================================================
 vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본)
 ==============================================================================
-버전 : 0.9.1 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
-              환경 호환성 항목의 sLLM 호출은 --compat-llm 으로 켠다. 당장 쓰지 않는 기능은 뺐다. 17_추가_0.9.0.md)
+버전 : 0.9.3 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
+              환경 호환성 항목의 sLLM 호출은 --compat-llm 의 단계로 정한다. 당장 쓰지 않는 기능은 뺐다. 17_추가_0.9.0.md)
               0.9.1: OS·DB 의 원본/대상 옵션(--from-os, --to-os, --from-db, --to-db). 18_추가_0.9.1.md
+              0.9.2: --compat-llm 을 단계 1|2|3 으로. 막힌 컴파일 검사를 통과로 치지 않는다. 옵션별 사용 예는 vupdate examples.
+              0.9.3: 단계를 처리의 깊이로 다시 나눴다. 1: 기계적 변경만, 2: 1 + 선언을 읽어 판정하는 기계적 변환(보안 CRT),
+                     3: 2 + 기계적 변경 뒤에 남은 것을 sLLM 에. 22_추가_0.9.3.md, 23_옵션별_사용예시.md
 목적 : 레거시 C++ 패키지를 새 Visual Studio 환경(예: 2008 -> 2022)에 맞게
        고치는 작업을 한 명령으로 수행한다. 규칙으로 고칠 수 있는 것은 규칙으로,
        규칙으로 못 고치는 것만 sLLM에 맡기고, 결과를 별도 폴더에 낸다.
@@ -24,7 +27,9 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
   vupdate run --package D:\\src\\PKG_A --from-vs 2008 --to-vs 2022 --max-calls 200   (호출 200회까지만. 남으면 종료 코드 4)
   vupdate run --resume <실행 폴더>                 (대기로 남은 작업을 이어서 보냄)
   vupdate run ... --ask "WriteLog 호출에 줄 번호 인자를 추가하고 g_data 배열을 구조체로 바꾼다"   (요청문. 형식 없이 글로 적는다)
-  vupdate run ... --compat-llm                    (환경 호환성 항목도 sLLM 에 보내 수정을 시도한다. 기본은 보내지 않는다)
+  vupdate run ... --compat-llm 3                  (환경 호환성 항목의 처리 깊이. 1: 기계적 변경만(기본), 2: 1 + 선언을 읽어 판정하는
+                                                   기계적 변환(지역 배열에 쓰는 보안 CRT 호출), 3: 2 + 남은 것을 sLLM 에)
+  vupdate examples                               (옵션별 사용 예 전체)
 
 [이 파일의 구획]  수정할 때는 해당 구획만 고친다. 구획 사이의 호출은
                   실행기(M10)가 넘겨주는 ctx 객체와 저장소(M03)만 거친다.
@@ -52,7 +57,8 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
   문장 요청(--say), 요청문의 문법(대상: 요청문, [if], /정규식/, @파일), 배열 요청의 정책 키, 구조체 변경 요청(struct_change),
   빌드 로그 되먹임(--build-log, buildlog), MCP 경유 호출과 중계 서버 참고 구현, 환경값 축과 프로필(--axis, --profile),
   --caller, --no-chunk, 실행 사이 공용 캐시
-  M11 명령줄    run / preflight / status / rules / selftest / llmcheck
+  M11 명령줄    run / preflight / status / rules / selftest / llmcheck / examples
+  M13 사용 예   옵션별 사용 예의 표(vupdate examples, 23_옵션별_사용예시.md 의 원본)
 
 [로그 규칙]  모든 로그 줄은  "시각 수준 [모듈][함수명] 내용"  형식이다.
              실행 폴더의 logs/run.log 에 전부 남는다. 오류가 나면 이 접두어로
@@ -101,7 +107,7 @@ from concurrent.futures import ThreadPoolExecutor
 # 목적: 모든 구획이 같이 쓰는 최소한의 도구. 로그 접두어 규칙을 여기서 보장한다.
 # ============================================================================
 APP = "vupdate"
-VERSION = "0.9.1"
+VERSION = "0.9.3"
 
 STAGES = [("S0", "준비"), ("S1", "인벤토리"), ("S2", "탐지"), ("S3", "설정흡수"),
           ("S4", "규칙적용"), ("S5", "영향분석"), ("S6", "sLLM수정"), ("S7", "병합"),
@@ -274,6 +280,7 @@ DEFAULT_SERVER = {
         "ref_chars": 1500,           # [참고: 선언]에 넣는 글자 수의 상한
         "new_name_check": "mark",    # 수정에 조각·패키지 어디에도 없는 이름이 생겼을 때: mark(검토 메모만) / reject(기각하고 다시 요청) / off
         "known_names": [],           # 새 이름 검사에서 아는 이름으로 칠 것(사내 공용 함수 등). 표준 C·CRT 의 흔한 이름은 내장돼 있다
+        "scrt_raw_calls": [],        # --compat-llm 2 이상: 버퍼를 바이트 단위로 쓰는 자체 함수의 이름(예: SendPacket). 이 함수에 넘기는 버퍼는 보안 CRT 변환에서 뺀다
         "word_suffixes": ["s", "er", "ger", "ing", "ging", "ed", "ged"],   # 요청문: 낱말 뒤에 붙어도 같은 낱말로 보는 꼴(log -> logs, logger, logging)
         "ask_max_candidates": 600,   # 요청문: 낱말로 고른 후보 이름의 최대 수(많이 쓰인 순서로 자른다)
         "ask_check_over": 8,         # 요청문: 낱말로 고른 후보가 이 수를 넘으면 sLLM 에 번호로 추리게 한다. 0 이면 묻지 않고 전부 대상으로 한다
@@ -427,6 +434,7 @@ def build_env(args):
         # OS 와 DB 의 원본/대상(선택). 제품 이름과 판을 글로 적는다(예: "Windows 7", "Oracle 19c"). 쓰이는 곳:
         # 모든 sLLM 요청의 [환경], 보고서, WINVER 를 올릴 값(to_os), 규칙의 발동 조건(when 의 os, db, os_changed, db_changed)
         "os": {"from": _env_text(args, "from_os"), "to": _env_text(args, "to_os")},
+        "compat": compat_level_of(getattr(args, "compat_llm", None)),     # 환경 호환성 항목의 처리 깊이(1, 2, 3). 규칙의 조건(when 의 compat)에 쓴다
         "db": {"from": _env_text(args, "from_db"), "to": _env_text(args, "to_db")},
     }
     if std in ("c++20", "c++latest") and env["conformance"] == "off":
@@ -647,13 +655,15 @@ def collect_opts(args, saved=None):
     """실행 옵션 묶음(ctx.opts)을 만든다.
     이어서 실행할 때(saved 가 None 이 아닐 때)는 처음 실행의 값에서 시작하고, 명령줄에 다시 준 값만 덮어쓴다.
     처리 범위(only, exclude)와 호출자는 처음 실행의 값을 그대로 쓴다(중간에 바꾸면 앞 단계 결과와 어긋난다)."""
-    o = {"no_llm": False, "no_compile": False, "compat_llm": False, "only": [], "exclude": [], "caller": "",
+    o = {"no_llm": False, "no_compile": False, "compat_llm": 1, "only": [], "exclude": [], "caller": "",
          "max_parallel": 0, "compile_parallel": -1, "disable_rules": [], "exceptions": ""}
     if saved is not None:
         o.update({k: saved[k] for k in o if k in saved})
-    for k in ("no_llm", "no_compile", "compat_llm"):
+    for k in ("no_llm", "no_compile"):
         if getattr(args, k, False):
             o[k] = True
+    # 환경 호환성 항목의 sLLM 수정 단계(1, 2, 3). 명령줄에 주지 않았으면 처음 실행의 값(없으면 1)을 쓴다
+    o["compat_llm"] = compat_level_of(getattr(args, "compat_llm", None), compat_level_of(o.get("compat_llm")))
     v = getattr(args, "max_parallel", None)
     if v is not None:
         if int(v) < 1:
@@ -1536,12 +1546,11 @@ RULES = [
                 r"localtime|gmtime|ctime|asctime|getenv|wcscpy|wcscat|swscanf|_snprintf|_vsnprintf|_splitpath|"
                 r"_makepath|mbstowcs|wcstombs|_itoa|_ltoa|_ultoa|_i64toa|_ui64toa|_itow|_ltow|_ultow|_strlwr|_strupr|"
                 r"_wcslwr|_wcsupr|_mktemp|_ecvt|_fcvt|_gcvt)\s*\(",
-     "setting": "전처리기 정의 추가: _CRT_SECURE_NO_WARNINGS",
-     "llm_guidance": "이 함수를 보안 CRT 함수로 바꾼다(strcpy -> strcpy_s, sprintf -> sprintf_s, _itoa -> _itoa_s, fopen -> fopen_s 등). "
-                     "버퍼 크기 인자가 필요하다. 대상 버퍼가 이 조각이나 [참고: 선언]에서 배열로 확인될 때만 _countof(이름)이나 sizeof(이름)을 "
-                     "크기로 넣는다. 포인터이거나 크기를 알 수 없으면 그 줄은 고치지 않는다. 인자의 순서나 반환값이 달라지는 함수"
-                     "(fopen, strtok, localtime, getenv 등)는 결과를 쓰는 줄까지 이 조각 안에서 함께 고칠 수 있을 때만 고친다. "
-                     "고칠 줄이 하나도 없으면 NO_CHANGE 를 쓴다."},
+     "setting": "전처리기 정의 추가: _CRT_SECURE_NO_WARNINGS"},
+    {"id": "R-T2-CRT-SECURE-LOCAL", "tier": "T2", "category": "CRT", "review": True, "detector": "scrt_local",
+     "title": "지역 char 배열에 쓰는 strcpy/strcat/sprintf 를 보안 CRT 함수로(--compat-llm 2 이상)",
+     "review_note": "버퍼가 모자랄 때의 동작이 달라진다(옛 함수는 넘쳐 썼고 보안 함수는 프로그램을 끝낸다). Debug 에서는 문자열 뒤가 0xFE 로 채워진다",
+     "when": {"since": 2005, "standing": True, "compat": 2}},
     {"id": "R-T0-CRT-NONSTDC", "tier": "T0", "category": "CRT", "collapse": True,
      "title": "POSIX 이름 함수 사용(C4996)", "when": {"since": 2005, "standing": True, "deprecated": "suppress"},
      "pattern": r"(?<![\w.>:])(?:%s)\s*\(" % _NONSTDC,
@@ -1554,8 +1563,8 @@ RULES = [
      "title": "사용 중단된 Winsock 함수 사용(C4996)", "when": {"since": 2013},
      "pattern": r"(?<![\w.>:])(?:inet_addr|inet_ntoa|gethostbyname|gethostbyaddr|WSAAsyncSelect)\s*\(",
      "setting": "전처리기 정의 추가: _WINSOCK_DEPRECATED_NO_WARNINGS",
-     "llm_guidance": "사용 중단된 Winsock 함수를 새 함수로 바꾼다(inet_ntoa -> inet_ntop, inet_addr -> inet_pton, gethostbyname -> getaddrinfo). "
-                     "인자와 반환값의 꼴이 다르다. 결과를 쓰는 줄까지 이 조각 안에서 함께 고칠 수 있을 때만 고친다. 아니면 NO_CHANGE 를 쓴다."},
+     # (0.9.1 까지는 사용 줄을 sLLM 에 보내는 지침이 있었다. 새 함수는 인자와 반환값의 꼴이 달라 도구가 안전을 판정할 조건이 없어 뺐다)
+    },
     {"id": "R-T0-STD17-REMOVED", "tier": "T0", "category": "C++ 표준", "collapse": True,
      "title": "C++17에서 제거된 표준 라이브러리 기능 사용",
      "when": {"min_std": "c++17", "deprecated": "suppress"},
@@ -1886,6 +1895,8 @@ def rule_state(rule, env):
         return False, "준수 모드 %s 에서만 해당(지금 %s)" % (w["conformance"], env["conformance"])
     if "deprecated" in w and env["policy"]["deprecated_warnings"] != w["deprecated"]:
         return False, "deprecated 처리 방침 %s 에서만 해당(지금 %s)" % (w["deprecated"], env["policy"]["deprecated_warnings"])
+    if "compat" in w and int(env.get("compat") or 1) < int(w["compat"]):       # 환경 호환성 항목의 처리 깊이(--compat-llm)
+        return False, "--compat-llm %d 이상에서만 해당(지금 %d)" % (int(w["compat"]), int(env.get("compat") or 1))
     for key, label in ENV_AXES:                    # OS, DB 조건: 값(원본 -> 대상)에 그 낱말이 있을 때 / 원본과 대상이 다를 때
         a = env.get(key) or {}
         have = env_axis_text(a)
@@ -1909,6 +1920,8 @@ def rule_when_text(rule):
     for key, label in (("min_std", "표준>="), ("platform", "플랫폼="), ("conformance", "준수모드="), ("deprecated", "deprecated=")):
         if key in w:
             parts.append(label + str(w[key]))
+    if "compat" in w:
+        parts.append("--compat-llm>=%s" % w["compat"])
     for key, label in ENV_AXES:
         if key in w:
             parts.append("%s~%s" % (label, w[key]))
@@ -1945,6 +1958,13 @@ def load_rules(extra_path):
 #   code  : 시험할 코드 한 토막        hits : 탐지돼야 하는 곳의 수(0 이면 잡지 말아야 한다)
 #   after : (선택) 자동 치환한 뒤의 코드   file : (선택) 파일 이름. 기본 t.cpp
 RULE_TESTS = {
+    "R-T2-CRT-SECURE-LOCAL": [
+        {"code": "void f(const char* s) { char b[32]; strcpy(b, s); }", "hits": 1,
+         "after": "void f(const char* s) { char b[32]; strcpy_s(b, sizeof(b), s); }"},
+        {"code": "void f(int n) { char b[16]; sprintf(b, \"%04d\", n); strcat(b, \"x\"); }", "hits": 2,
+         "after": "void f(int n) { char b[16]; sprintf_s(b, sizeof(b), \"%04d\", n); strcat_s(b, sizeof(b), \"x\"); }"},
+        {"code": "struct M { char seq[6]; };\nvoid f(M* m, char* p, int n) {\n char q[6];\n sprintf(m->seq, \"%06d\", n);\n strcpy(p, \"a\");\n"
+                 " sprintf(q, \"%06d\", n);\n strncpy(q, p, 6);\n memcpy(p, q, 6);\n}", "hits": 0}],
     "R-T1-CRT-NONSTDC": [{"code": "char* p = strdup(s);", "hits": 1, "after": "char* p = _strdup(s);"},
                          {"code": "char* p = _strdup(s); q = obj.strdup(s);", "hits": 0}],
     "R-T1-TR1-NAMESPACE": [{"code": "std::tr1::shared_ptr<int> p;", "hits": 1, "after": "std::shared_ptr<int> p;"},
@@ -2217,7 +2237,310 @@ def _det_tech(rule, doc, env=None):
 
 
 
-_DETECTORS = {"tech": _det_tech, "literal_ident": _det_literal_ident, "snprintf_macro": _det_snprintf_macro,
+# ---- 보안 CRT 의 기계적 변환(규칙 R-T2-CRT-SECURE-LOCAL, --compat-llm 2 이상. 0.9.3) ------------------------
+# 지역 char 배열에 쓰는 strcpy / strcat / sprintf 를 strcpy_s(배열, sizeof(배열), ...) 꼴로 바꾼다. sLLM 을 쓰지 않는다.
+# 바꿔도 동작이 같다고 판정할 수 있는 줄만 바꾼다. 조건을 도구가 판정하므로 수정도 기계적으로 만들 수 있다(결과가 늘 같고 호출이 들지 않는다).
+#   바꾸는 줄: 문장 하나로 쓰인 호출이고, 첫 인자가 같은 함수에서 선언된 1차원 char 지역 배열의 이름이고, 배열 크기를 숫자로 알 수 있고,
+#              그 배열이 바이트 단위 함수의 인자로 쓰이지 않고, 쓸 내용의 최소 길이와 NUL 이 배열에 들어가는 줄
+#   바꾸지 않는 줄과 그 사유는 _SCRT_WHY 에 있다. 사유별 줄 수는 보고서에 낸다.
+# 배경: 0.9.1 은 보안 CRT 경고에 걸린 줄을 모두 sLLM 에 보냈고, 실제 코드에서 고정 길이 필드를 문자열 버퍼로 다루는 수정이 나왔다
+#       (21_실코드시험_결함분석.md). strncpy, 구조체 멤버, 버퍼의 위치에 쓰는 줄에는 동작이 같은 보안 함수 꼴이 없다. 그런 줄은 누구도 바꾸지 않는다.
+_SCRT_RULE = "R-T2-CRT-SECURE-LOCAL"
+_SCRT_MAP = OrderedDict([("strcpy", "strcpy_s"), ("strcat", "strcat_s"), ("sprintf", "sprintf_s")])     # 옛 이름 -> 새 이름. 이 표 밖의 변환은 하지 않는다
+_SCRT_RAW = ("memcpy", "memmove", "memcmp", "CopyMemory", "MoveMemory", "fwrite", "WriteFile", "send", "sendto", "_write", "write")   # 버퍼를 바이트 단위로 쓰는 함수
+_SCRT_SIZES = {"MAX_PATH": 260, "_MAX_PATH": 260, "_MAX_DRIVE": 3, "_MAX_DIR": 256, "_MAX_FNAME": 256, "_MAX_EXT": 256, "BUFSIZ": 512}
+_SCRT_WHY = OrderedDict([
+    ("func", "대상 함수가 아님(strncpy, strncat, fopen 등. 동작이 같은 보안 함수 꼴이 없거나 인자·반환값이 달라진다)"),
+    ("member", "구조체 멤버에 쓰는 줄(고정 길이 필드일 수 있다)"),
+    ("offset", "버퍼의 위치에 쓰는 줄(포인터 연산, 첨자, 주소)"),
+    ("dest", "첫 인자가 단순한 이름이 아님"),
+    ("value", "반환값을 쓰거나 다른 식 안에 있는 호출"),
+    ("scope", "함수 밖의 코드이거나 호출의 괄호 짝을 읽지 못함(매크로 정의 등)"),
+    ("notlocal", "첫 인자가 이 함수의 지역 배열이 아님(인자, 전역, 멤버, 포인터)"),
+    ("type", "char 1차원 배열이 아님"),
+    ("size", "배열 크기를 숫자로 확인하지 못함"),
+    ("raw", "바이트 단위 함수(memcpy, send, fwrite 등)에도 쓰이는 버퍼"),
+    ("format", "sprintf 의 형식이 문자열 리터럴이 아니거나 읽지 못함"),
+    ("small", "쓸 내용의 최소 길이와 NUL 이 배열에 들어가지 않음"),
+    ("line", "같은 줄의 다른 호출이 조건에 맞지 않음"),
+])
+_FMT_RE = re.compile(r"%([-+ #0]*)(\d+|\*)?(?:\.(\d+|\*))?(hh|h|ll|l|L|I64|I32|I|z|j|t|w)?([A-Za-z%])")
+_STR_LIT_RE = re.compile(r'"((?:[^"\\\n]|\\.)*)"')
+# 탐지 단계(S2)가 넣어 주는 값. ctx: 배열 크기의 이름을 패키지 전체에서 찾을 때 쓴다. stat: 판정 결과의 집계(보고서용).
+# S2 밖(규칙 시험, 검증 단계의 재탐지)에서는 둘 다 None 이고, 그때는 그 파일 안의 #define 만 본다.
+_DET = {"ctx": None, "stat": None, "pattern": None, "raw": None}
+
+
+def _paren_close(s, op, allow_semi=False):
+    """s[op] 의 여는 괄호와 짝이 되는 닫는 괄호의 위치. 짝을 찾지 못하면 -1. s 는 문자열과 주석을 가린 본문이어야 한다.
+    괄호 안에서 { } ; 를 만나면 호출이 아니라고 보고 그만둔다(allow_semi 면 ; 는 허용한다. for 의 머리)."""
+    if op < 0 or op >= len(s) or s[op] != "(":
+        return -1
+    depth = 0
+    for i in range(op, min(len(s), op + 20000)):
+        ch = s[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        elif ch in "{}" or (ch == ";" and not allow_semi):
+            return -1
+    return -1
+
+
+def _split_top(s, a, b):
+    """s[a:b] 를 맨 바깥의 쉼표에서 나눈다. 돌려주는 값: [(시작, 끝)]. 괄호 안의 쉼표에서는 나누지 않는다."""
+    out, depth, last = [], 0, a
+    for i in range(a, b):
+        ch = s[i]
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.append((last, i))
+            last = i + 1
+    if s[last:b].strip() or out:
+        out.append((last, b))
+    return out
+
+
+def _c_literals(text):
+    """text 가 문자열 리터럴(하나, 또는 공백으로 이어 쓴 여럿)이면 그 안의 글을 목록으로 돌려준다. 아니면 None"""
+    t = (text or "").strip()
+    if not t or not re.match(r'^(?:"(?:[^"\\\n]|\\.)*"\s*)+$', t):
+        return None
+    return _STR_LIT_RE.findall(t)
+
+
+def _lit_min_len(bodies, codec, fmt):
+    """문자열 리터럴이 차지하는 바이트 수의 하한(NUL 제외). fmt 면 printf 형식으로 읽어 출력의 최소 길이를 센다.
+    폭을 준 변환(%06d)은 그 폭, 정수는 1, %s 는 0 으로 센다. 읽지 못하는 형식이면 None"""
+    n = 0
+    for body in bodies:
+        i = 0
+        while i < len(body):
+            ch = body[i]
+            if ch == "\\" and i + 1 < len(body):
+                m = re.match(r"\\(?:x[0-9a-fA-F]+|[0-7]{1,3}|.)", body[i:], re.S)
+                i += len(m.group(0))
+                n += 1
+                continue
+            if fmt and ch == "%":
+                m = _FMT_RE.match(body, i)
+                if not m:
+                    return None
+                _flags, width, prec, _len, conv = m.groups()
+                i = m.end()
+                if conv == "%":
+                    n += 1
+                    continue
+                w = int(width) if width and width != "*" else 0
+                p = int(prec) if prec and prec != "*" else None
+                if conv in "diouxX":
+                    base = 1 if p is None else p
+                elif conv in "cC":
+                    base = 1
+                elif conv in "sSn":
+                    base = 0
+                elif conv in "fF":
+                    base = 1 + (1 + (6 if p is None else p) if (p is None or p > 0) else 0)
+                elif conv in "eEgGaAp":
+                    base = 1
+                else:
+                    return None
+                n += max(w, base)
+                continue
+            try:
+                n += len(ch.encode(codec or "utf-8", "replace"))
+            except LookupError:
+                n += len(ch.encode("utf-8"))
+            i += 1
+    return n
+
+
+def _is_plain_stmt(struct, pos):
+    """pos 에서 시작하는 호출이 문장의 처음에 있는가(반환값을 쓰지 않는다).
+    if (..), else, for (..), while (..), do, case 값:, 이름표: 뒤는 문장의 처음으로 본다."""
+    s = struct[stmt_start_of(struct, pos):pos]
+    for _ in range(8):
+        s = s.strip()
+        if not s:
+            return True
+        m = re.match(r"(?:else|do)\b", s)
+        if m:
+            s = s[m.end():]
+            continue
+        m = re.match(r"(?:if|while|for|switch)\s*\(", s)
+        if m:
+            c = _paren_close(s, m.end() - 1, allow_semi=True)
+            if c < 0:
+                return False
+            s = s[c + 1:]
+            continue
+        m = re.match(r"(?:case\b[^:;]*|default\s*|[A-Za-z_]\w*\s*):(?!:)", s)
+        if m:
+            s = s[m.end():]
+            continue
+        return False
+    return False
+
+
+def _scrt_values(names, doc):
+    """배열 크기 식에 나온 이름의 값을 찾는다. 돌려주는 값: {이름: 값 또는 None}
+    S2 안에서는 패키지 전체의 #define·enum 을 보고(_resolve_names), 그 밖에서는 이 파일의 #define 만 본다."""
+    ctx = _DET["ctx"]
+    if ctx is not None:
+        need = [n for n in names if n not in ctx._scrt_vals]
+        if need:
+            if ctx._scrt_files is None:
+                ctx._scrt_files = [r["path"] for r in ctx.store.q("SELECT path FROM files WHERE kind='source' ORDER BY path")]
+            found = _resolve_names(ctx, ctx._scrt_files, need)
+            for n in need:
+                ctx._scrt_vals[n] = found.get(n)
+        return {n: ctx._scrt_vals.get(n) for n in names}
+    out = {n: None for n in names}
+    for m in re.finditer(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)[ \t]+\(?[ \t]*(%s)[uUlL]*[ \t]*\)?[ \t]*$" % _INT_LIT, doc.code, re.M):
+        if m.group(1) in out:
+            out[m.group(1)] = _to_int(m.group(2))
+    return out
+
+
+def _scrt_raw_re():
+    """버퍼를 바이트 단위로 쓰는 함수의 호출을 찾는 정규식. 내장 목록에 설정 limits.scrt_raw_calls 의 이름을 더한다."""
+    ctx = _DET["ctx"]
+    extra = []
+    if ctx is not None:
+        if ctx._scrt_raw is not None:
+            return ctx._scrt_raw
+        extra = [str(x) for x in ((ctx.cfg.get("limits") or {}).get("scrt_raw_calls") or []) if re.match(r"^[A-Za-z_]\w*$", str(x))]
+    elif _DET["raw"] is not None:
+        return _DET["raw"]
+    rx = re.compile(r"(?<![\w.>:])(?:%s)\s*\(" % "|".join(re.escape(x) for x in list(_SCRT_RAW) + extra))
+    if ctx is not None:
+        ctx._scrt_raw = rx
+    else:
+        _DET["raw"] = rx
+    return rx
+
+
+def _scrt_size(expr, doc):
+    """배열 선언의 크기 식을 정수로 만든다. 숫자, #define·enum 값, 널리 쓰이는 상수(MAX_PATH 등)와 + - * / 만 읽는다. 못 읽으면 None"""
+    expr = (expr or "").strip()
+    if not expr:
+        return None
+    names = set(re.findall(r"[A-Za-z_]\w*", re.sub(r"0[xX][0-9a-fA-F]+", " ", expr)))
+    vals = {n: _SCRT_SIZES[n] for n in names if n in _SCRT_SIZES}
+    rest = [n for n in names if n not in vals]
+    if rest:
+        vals.update(_scrt_values(rest, doc))
+    if any(v is None for v in vals.values()):
+        return None
+    s = re.sub(r"\b[A-Za-z_]\w*\b", lambda m: str(vals[m.group(0)]) if m.group(0) in vals else m.group(0), expr)
+    s = re.sub(r"(?<=[0-9a-fA-F])[uUlL]+\b", "", s).replace("/", "//")
+    if not re.match(r"^[0-9a-fA-FxX\s+\-*/()]+$", s):
+        return None
+    try:
+        v = eval(s, {"__builtins__": {}}, {})          # 숫자와 사칙연산 기호만 남은 식이다(위의 정규식이 걸러 낸다)
+    except Exception:
+        return None
+    return int(v) if isinstance(v, int) else None
+
+
+def _scrt_site(d, blocks, big, m):
+    """보안 CRT 경고에 걸린 호출 하나(m)를 기계적으로 바꿀 수 있는지 판정한다.
+    돌려주는 값: (바꾸지 않는 사유의 키 또는 "", 정보). 바꿀 수 있으면 정보는 {"name", "dest", "size", "arg_end": 첫 인자의 끝 위치} 다."""
+    name = d.code[m.start():m.end()].rstrip("( \t\r\n").strip()
+    if name not in _SCRT_MAP:
+        return "func", {"name": name}
+    op = m.end() - 1
+    cl = _paren_close(d.struct, op)
+    if cl < 0:
+        return "scope", {}
+    parts = _split_top(d.struct, op + 1, cl)
+    if len(parts) < 2:
+        return "scope", {}
+    dest = d.code[parts[0][0]:parts[0][1]].strip()
+    if not re.match(r"^[A-Za-z_]\w*$", dest):
+        return ("member" if re.search(r"->|\.", dest) else "offset" if re.search(r"[+\-\[&*(]", dest) else "dest"), {}
+    j = cl + 1
+    while j < len(d.struct) and d.struct[j].isspace():
+        j += 1
+    if j >= len(d.struct) or d.struct[j] != ";" or not _is_plain_stmt(d.struct, m.start()):
+        return "value", {}
+    fi = block_at(blocks, m.start(), kinds=("func",))
+    if fi < 0:
+        return "scope", {}
+    r = find_decl(d.struct, m.start(), dest, big)
+    if not r or r["kind"] != "local" or not r.get("certain") or not r.get("is_array"):
+        return "notlocal", {}
+    dm = re.search(r"\b%s\s*((?:\[[^\]]*\])+)" % re.escape(dest), r["text"])
+    if not dm or dm.group(1).count("[") != 1 or not re.match(r"^(?:(?:static|const)\s+)*(?:char|CHAR)\b", r["text"]):
+        return "type", {}
+    size = _scrt_size(dm.group(1)[1:-1], d)
+    if size is None or size <= 0:
+        return "size", {}
+    fb = blocks[fi]
+    for rm in _scrt_raw_re().finditer(d.code, fb["open"], fb["close"]):
+        rc = _paren_close(d.struct, rm.end() - 1)
+        if rc > 0 and re.search(r"\b%s\b" % re.escape(dest), d.code[rm.end():rc]):
+            return "raw", {}
+    lits = _c_literals(d.text[parts[1][0]:parts[1][1]])
+    if name == "sprintf":
+        need = _lit_min_len(lits, d.codec, True) if lits is not None else None
+        if need is None:
+            return "format", {}
+    else:
+        need = _lit_min_len(lits, d.codec, False) if lits is not None else 0
+    if need + 1 > size:
+        return "small", {"need": need, "size": size}
+    return "", {"name": name, "dest": dest, "size": size, "arg_end": parts[0][0] + len(d.code[parts[0][0]:parts[0][1]].rstrip())}
+
+
+def _det_scrt_local(rule, doc, env=None):
+    """지역 char 배열에 쓰는 strcpy / strcat / sprintf 호출을 찾아 보안 CRT 함수로 바꾸는 수정을 만든다.
+    한 줄에 보안 CRT 경고 대상 호출이 여럿이면 모두 조건에 맞아야 그 줄을 바꾼다.
+    바꾸는 범위는 함수 이름부터 첫 인자의 끝까지다: strcpy(buf  ->  strcpy_s(buf, sizeof(buf)   (나머지 인자와 공백은 건드리지 않는다)"""
+    if _DET["pattern"] is None:
+        _DET["pattern"] = next(r["pattern"] for r in RULES if r["id"] == "R-T0-CRT-SECURE")
+    by_line = OrderedDict()
+    for m in _rx(_DET["pattern"]).finditer(doc.code):
+        if doc.code[m.start():m.end()].rstrip("( \t\r\n") == "gets":
+            continue                                          # gets 는 없어진 함수다. 다른 규칙(R-T3-GETS-REMOVED)이 맡는다
+        by_line.setdefault(doc.line_of(m.start()), []).append(m)
+    if not by_line:
+        return []
+    blocks, big, stat, hits = doc.get_blocks(), list(doc.inits or []), _DET["stat"], []
+    for line, ms in by_line.items():
+        key, found = "", []
+        for k, m in enumerate(ms):
+            try:
+                key, info = _scrt_site(doc, blocks, big, m)
+            except Exception:                                  # 판정하다 실패한 줄은 바꾸지 않는다(이 판정은 바꾸는 쪽을 좁히는 장치다)
+                key, info = "scope", {}
+            if key:
+                key = key if k == 0 else "line"
+                break
+            found.append((m, info))
+        la, lb = doc.line_span(line)
+        if stat is not None:
+            stat["seen"] += 1
+            if key:
+                stat["why"][key] = stat["why"].get(key, 0) + 1
+                if len(stat["samples"].setdefault(key, [])) < 3:
+                    stat["samples"][key].append("%s:%d  %s" % (doc.rel, line, doc.text[la:lb].strip()[:100]))
+        if key:
+            continue
+        for m, info in found:
+            before, n = doc.text[m.start():info["arg_end"]], len(info["name"])
+            hits.append({"start": m.start(), "end": info["arg_end"], "detail": doc.text[la:lb].strip()[:120],
+                         "after": before[:n] + "_s" + before[n:] + ", sizeof(%s)" % info["dest"]})
+    return hits
+
+
+_DETECTORS = {"scrt_local": _det_scrt_local, "tech": _det_tech, "literal_ident": _det_literal_ident, "snprintf_macro": _det_snprintf_macro,
               "stdint_typedef": _det_stdint_typedef, "narrowing_char_init": _det_narrowing_char_init,
               "guarded_decl": _det_guarded_decl, "guard_macro": _det_guard_macro, "winver_old": _det_winver_old,
               "dyn_except_spec": _det_dyn_except_spec}
@@ -2252,7 +2575,8 @@ def rule_hits(rule, doc, env=None):
 # ----------------------------------------------------------------------------
 KNOWN_CHANGES = [
     # (기준, 분류, 변경 항목, 처리 방식, 규칙 ID 또는 오류 코드, 비고)
-    ("2005", "CRT", "보안 CRT 함수 사용 중단 경고(C4996)", "설정", "R-T0-CRT-SECURE", ""),
+    ("2005", "CRT", "보안 CRT 함수 사용 중단 경고(C4996)", "설정", "R-T0-CRT-SECURE, R-T2-CRT-SECURE-LOCAL",
+     "설정으로 경고를 끈다. --compat-llm 2 이상이면 지역 char 배열에 쓰는 호출만 규칙으로 바꾼다"),
     ("2005", "CRT", "POSIX 이름 함수 사용 중단(strdup 등)", "규칙", "R-T0-CRT-NONSTDC, R-T1-CRT-NONSTDC", "방침에 따라 설정 또는 치환"),
     ("2005", "CRT", "swprintf 에 크기 인자 필요", "오류표", "C4996, C2664", "인자 수를 세어야 해서 규칙으로 잡지 않는다"),
     ("2005", "CRT", "time_t 가 64비트", "없음", "", "빌드는 된다. 구조체 크기와 파일 형식이 달라질 수 있어 동작 확인 대상"),
@@ -2964,6 +3288,9 @@ class Ctx:
         self._names = None                        # 아는 이름(코드 + 규칙 지침. 새 이름 검사에 쓴다. 처음 필요할 때 만든다)
         self._code_names = None                   # 코드에 실제로 나오는 이름(요청문 분석에 쓴다)
         self._calls = None                        # 호출 꼴로 쓰인 이름의 색인(요청문 분석에서 낱말로 이름을 고를 때 쓴다)
+        self._scrt_vals = {}                      # 배열 크기 식에 나온 이름의 값(보안 CRT 의 기계적 변환에 쓴다. 못 찾은 이름은 None)
+        self._scrt_files = None                   # 위의 값을 찾을 소스 목록(처음 필요할 때 만든다)
+        self._scrt_raw = None                     # 바이트 단위 함수의 정규식(내장 목록 + 설정의 scrt_raw_calls)
         self._snips = {}                          # 심볼 정의 조각의 기억
         self.llm_calls = 0                        # 이번 실행에서 실제로 보낸 sLLM 호출 수(--max-calls 예산에 쓴다)
 
@@ -3306,6 +3633,8 @@ def s2_detect(ctx):
     counts, n_skipped = {}, 0
     files = st.q("SELECT path, status FROM files WHERE kind='source' AND status IN ('대상','읽기전용') ORDER BY path")
     LOG2.info("규칙 %d개를 소스 %d개에 적용" % (len(ctx.rules), len(files)))
+    scrt_on = any(r["id"] == _SCRT_RULE for r in ctx.rules)
+    _DET["ctx"], _DET["stat"] = ctx, ({"seen": 0, "why": OrderedDict(), "samples": {}} if scrt_on else None)
     for r in files:
         rel, editable = r["path"], r["status"] == "대상"
         d = get_doc(ctx, rel)
@@ -3343,6 +3672,8 @@ def s2_detect(ctx):
                      (rel, h["start"], h["end"], d.line_of(h["start"]), "rule", rule["id"], tier,
                       1 if rule.get("llm") else 0, rule["title"], h.get("detail", ""), h.get("after"),
                       1 if rule.get("review") else 0, status, note))
+    st.set_meta("scrt_stat", _DET["stat"])
+    _DET["ctx"], _DET["stat"] = None, None              # 이 단계 밖의 탐지(검증의 재탐지, 규칙 시험)는 파일 하나만 보고 판정한다
     st.set_meta("skipped_hits", n_skipped)
     if n_skipped:
         LOG2.info("예외(예외 파일, 소스의 vupdate:skip 표식)로 건너뛴 탐지 지점 %d곳" % n_skipped)
@@ -3400,7 +3731,7 @@ def s4_apply_rules(ctx):
         st.x("INSERT INTO edits(path,base,start,end,before,after,origin,ref,issue_ids,review,status,note) "
              "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
              (r["path"], "snapshot", r["start"], r["end"], before, r["after"], "rule", r["rule_id"],
-              str(r["id"]), r["review"], "accepted", ""))
+              str(r["id"]), r["review"], "accepted", str(ctx.rule_by_id.get(r["rule_id"], {}).get("review_note") or "")))
         last_end = r["end"]
         n_ok += 1
     st.commit()
@@ -3412,9 +3743,8 @@ def s4_apply_rules(ctx):
 # 목적: (1) 요청문(--ask)을 sLLM 에 보내 의도별로 나누고(_analyze_asks), 의도마다 코드에서 대상 줄을 찾아 sLLM 대상 이슈로 넣는다(_user_asks).
 #       (2) 배열·표 -> 구조체(요청 파일의 features 와 요청문의 배열 의도): 이름이 나온 곳을 전부 분류하고, 기계적으로 되는 곳은
 #           수정 레코드로, 나머지 사용처는 sLLM 대상 이슈로 만든다(_array_request). 맡긴 곳이 실패하면 요청 전체를 되돌린다(S7).
-#       (3) --compat-llm 이 켜져 있으면 설정으로 흡수하던 항목의 사용 줄을 sLLM 대상 이슈로 넣는다(_compat_sites).
-#       (4) 헤더를 include 하는 파일 목록을 만들어 둔다(헤더가 바뀌면 재확인할 대상).
-# 산출: issues(source='request', 'compat'), edits(origin='request'), meta(contracts, ask_state, dependents), out/ask_plan.json
+#       (3) 헤더를 include 하는 파일 목록을 만들어 둔다(헤더가 바뀌면 재확인할 대상).
+# 산출: issues(source='request'), edits(origin='request'), meta(contracts, ask_state, dependents), out/ask_plan.json
 # 이 단계는 sLLM 을 부른다(요청문의 분석과 후보 확인). 수정 요청은 S6 에서 보낸다.
 # ============================================================================
 LOG5 = Log("S5.영향분석")
@@ -4388,7 +4718,7 @@ def _analyze_asks(ctx, files):
                 continue
             if typ == "compat":
                 r["result"] = ("환경 호환성 변경은 요청문으로 처리하지 않는다. --from-vs, --to-vs 의 차이에 따라 규칙이 자동으로 수행하고, "
-                               "sLLM 수정 시도는 --compat-llm 으로 켠다(지금 %s)" % ("켜짐" if ctx.opts.get("compat_llm") else "꺼짐"))
+                               "sLLM 에 보내는 것은 --compat-llm 3 에서 한다(지금 %d)" % compat_level(ctx))
                 LOG5.info("요청 %s [환경 호환성]: %s" % (iid, r["result"]))
                 note(iid, "요청문(환경 호환성)", "요청문: %s / %s" % (it["instruction"], r["result"]))
                 continue
@@ -4576,62 +4906,51 @@ def _write_ask_plan(ctx, plan, contracts):
     LOG5.info("요청문 분석 결과: %s" % ctx.p("out", "ask_plan.json"))
 
 
-# ---- 환경 호환성 항목의 sLLM 수정 시도(--compat-llm, 0.9.0) ---------------------------------------------
-# 기본(꺼짐): 환경 호환성 항목은 규칙의 기계적 변경과 설정 흡수만 한다. 규칙이 "sLLM 대상"으로 분류한 것도 보내지 않고 수동 검토로 둔다.
-# 켜짐: 규칙의 sLLM 대상을 보내고, 설정으로 흡수하던 항목 가운데 llm_guidance 가 있는 규칙(보안 CRT, Winsock)의 사용 줄도 보낸다.
-#       이 줄들은 빌드에는 지장이 없는 것이므로, sLLM 이 고치지 않으면(NO_CHANGE) 수동 검토로 올리지 않고 그대로 둔다.
-def _compat_rules(ctx):
-    """sLLM 수정 시도의 대상이 되는 흡수 규칙. {이슈에 쓰는 ID: 규칙}. 이 환경값에서 켜진 규칙만 본다."""
-    return OrderedDict(("L-" + r["id"].split("-", 2)[-1], r) for r in ctx.rules if r.get("llm_guidance"))
+# ---- 환경 호환성 항목의 처리 깊이(--compat-llm 1|2|3) --------------------------------------------------------
+# 단계가 올라갈수록 처리가 깊어진다. 위 단계는 아래 단계의 일을 모두 한다.
+#   1(기본): 기계적 변경만. 규칙의 수정(T1, T2)과 설정 처리(T0). 규칙이 고치지 못한 것은 수동 검토로 둔다.
+#   2      : 1 + 선언을 읽어 판정하는 기계적 변환. 지역 char 배열에 쓰는 strcpy/strcat/sprintf 를 보안 CRT 함수로 바꾼다
+#            (규칙 R-T2-CRT-SECURE-LOCAL. sLLM 을 쓰지 않는다. 판정과 변환은 _det_scrt_local).
+#   3      : 2 + 기계적 변경 뒤에 남은 것 가운데 규칙이 sLLM 대상으로 분류한 것(고치지 않으면 컴파일되지 않는 것)을 sLLM 에 보낸다.
+# 어느 단계에서도 하지 않는 것: 조건에 맞지 않는 보안 CRT 줄(strncpy, 구조체 멤버 등)과 Winsock 함수의 변환. 동작이 같은 꼴이 없어
+# 누가 바꿔도 결함이 된다(21_실코드시험_결함분석.md). 설정으로만 해결한다.
+_COMPAT_HELP = ("--compat-llm 에는 단계 1, 2, 3 가운데 하나를 준다. 1: 기계적 변경만 한다(기본). "
+                "2: 1 에 더해, 선언을 읽어 판정하는 기계적 변환(지역 배열에 쓰는 보안 CRT 호출)까지 한다. "
+                "3: 2 에 더해, 기계적 변경 뒤에 남은 항목(고치지 않으면 컴파일되지 않는 것)을 sLLM 에 보낸다")
 
 
-def _compat_sites(ctx, files):
-    """--compat-llm 이 켜져 있으면 흡수 규칙의 사용 줄을 sLLM 대상 이슈로 넣는다. 돌려주는 값: 넣은 줄 수"""
-    st, n = ctx.store, 0
-    st.x("DELETE FROM issues WHERE source='compat'")
-    if not ctx.opts.get("compat_llm"):
-        return 0
-    sql = ("INSERT INTO issues(path,start,end,line,source,rule_id,tier,llm,title,detail,after,review,status,note) "
-           "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
-    taken = {(r["path"], r["line"]) for r in st.q("SELECT path, line FROM issues WHERE source='rule' AND tier='T3' AND llm=1")}
-    for cid, rule in _compat_rules(ctx).items():
-        rx, k = re.compile(rule["pattern"]), 0
-        for rel in files:
-            d = get_doc(ctx, rel)
-            done = {ln for pth, ln in taken if pth == rel}    # 규칙이 이미 sLLM 대상으로 올린 줄(gets 등)은 다시 올리지 않는다
-            for m in rx.finditer(d.code):
-                line = d.line_of(m.start())
-                if line in done or exc_skip(ctx.exceptions, rel, rule["id"], line):
-                    continue
-                done.add(line)
-                la, lb = d.line_span(line)
-                st.x(sql, (rel, m.start(), m.end(), line, "compat", cid, "T3", 1, rule["title"] + " - sLLM 수정 시도",
-                           d.text[la:lb].strip()[:160], None, 0, "open", "환경 호환성 항목을 sLLM 에 맡김(--compat-llm. 검토 필요)"))
-                k += 1
-        LOG5.info("환경 호환성(%s): 사용 줄 %d곳을 sLLM 에 맡김(--compat-llm)" % (rule["id"], k))
-        n += k
-    return n
+def compat_level_of(v, default=1):
+    """--compat-llm 의 값을 단계(1, 2, 3)로 만든다. 주지 않았으면 default.
+    참/거짓은 0.9.1 까지의 실행 기록과 시험 코드가 쓰던 값이다(참은 3, 거짓은 1로 본다)."""
+    if v is None or v == "":
+        return default
+    if v is True:
+        return 3
+    if v is False:
+        return 1
+    s = str(v).strip()
+    if s in ("1", "2", "3"):
+        return int(s)
+    raise UserInputError("%s (받은 값: %s)" % (_COMPAT_HELP, v))
+
+
+def compat_level(ctx):
+    return compat_level_of(ctx.opts.get("compat_llm"))
 
 
 def _soft_issue(ctx, issue):
-    """고치지 않아도 되는 대상인가. 요청문의 의도로 찾은 줄과 --compat-llm 의 흡수 항목이 그렇다(모델이 판단해 그대로 둘 수 있다)."""
-    if issue["source"] == "compat":
-        return True
+    """고치지 않아도 되는 대상인가. 요청문의 의도로 찾은 줄이 그렇다(모델이 판단해 그대로 둘 수 있다)."""
     return issue["source"] == "request" and any(a["id"] == issue["rule_id"] for a in ctx.request.get("asks") or [])
 
 
 def _mark_unchanged(ctx, issue_ids, note, failed=False):
     """sLLM 이 고치지 않았거나(failed=False) 고치려다 실패한(failed=True) 지점의 처리.
-      --compat-llm 의 흡수 항목: 어느 쪽이든 '건너뜀'으로 둔다(설정으로 경고가 꺼지므로 빌드에 지장이 없다. 수동 검토를 늘리지 않는다)
       요청문의 의도로 찾은 줄: 모델이 고칠 필요가 없다고 본 것은 '건너뜀', 고치려다 실패한 것은 수동 검토
       그 밖(규칙의 sLLM 대상, 배열 요청의 사용처): 수동 검토"""
     st = ctx.store
     for iid in issue_ids:
         row = st.q("SELECT source, rule_id FROM issues WHERE id=?", (iid,))
-        if row and row[0]["source"] == "compat":
-            st.x("UPDATE issues SET status='skipped', note=? WHERE id=?",
-                 (("sLLM 수정 시도 실패(그대로 둠): " + note)[:300] if failed else "sLLM 이 고치지 않음(수정 불필요로 판단)", iid))
-        elif row and not failed and _soft_issue(ctx, row[0]):
+        if row and not failed and _soft_issue(ctx, row[0]):
             st.x("UPDATE issues SET status='skipped', note=? WHERE id=?", ("sLLM 이 고치지 않음(수정 불필요로 판단)", iid))
         else:
             st.x("UPDATE issues SET status='manual', note=? WHERE id=?", (note, iid))
@@ -4656,8 +4975,6 @@ def s5_impact(ctx):
     contracts += ask_notes
     contracts += _user_asks(ctx, files)
     _write_ask_plan(ctx, plan, contracts)
-    n_compat = _compat_sites(ctx, files)
-    st.set_meta("compat_sites", n_compat)
     st.set_meta("contracts", contracts)
     deps = {}
     for r in st.q("SELECT path, header FROM includes"):
@@ -5016,10 +5333,7 @@ def _mark_manual(ctx, issue_ids, note):
 
 
 def _request_guidance(ctx, rid, near_text=""):
-    """규칙 카탈로그에 없는 ID 의 이슈에 붙일 수정 지침. 요청문의 의도, 배열 요청, --compat-llm 의 흡수 항목이 여기서 나온다."""
-    cr = _compat_rules(ctx).get(rid)
-    if cr is not None:
-        return cr["llm_guidance"]
+    """규칙 카탈로그에 없는 ID 의 이슈에 붙일 수정 지침. 요청문의 의도와 배열 요청이 여기서 나온다."""
     for a in ctx.request.get("asks") or []:
         if a["id"] == rid:                       # 요청문의 의도: 그 의도만의 요청문을 지침으로 주고, 원문을 함께 붙인다
             names = set(re.findall(r"[A-Za-z_]\w*", near_text or ""))
@@ -5669,7 +5983,8 @@ def _explain_no_calls(ctx, n_off):
     """수정 요청을 한 건도 보내지 않을 때 그 이유를 모아 로그와 보고서에 낸다(조용히 끝나지 않게 한다)."""
     st, why = ctx.store, []
     if n_off:
-        why.append("환경 호환성 규칙의 sLLM 대상 %d건은 --compat-llm 이 꺼져 있어 보내지 않음(수동 검토 목록에 있음)" % n_off)
+        why.append("환경 호환성 규칙의 sLLM 대상 %d건은 --compat-llm %d 이어서 보내지 않음(수동 검토 목록에 있음. 보내려면 --compat-llm 3)"
+                   % (n_off, compat_level(ctx)))
     if not (ctx.request.get("asks_raw") or ctx.request.get("features")):
         why.append("요청문(--ask)과 요청 파일(--request)을 주지 않음")
     n_un = st.one("SELECT COUNT(*) FROM issues WHERE source='request' AND status='manual' "
@@ -5684,7 +5999,7 @@ def _explain_no_calls(ctx, n_off):
         elif c.get("type") == "요청문(찾기)":
             why.append("요청 %s 은(는) 찾기 전용이라 수정 요청을 보내지 않음" % c["id"])
         elif c.get("type") == "요청문(환경 호환성)":
-            why.append("요청 %s: 환경 호환성 변경은 요청문으로 처리하지 않음(규칙이 수행. sLLM 시도는 --compat-llm)" % c["id"])
+            why.append("요청 %s: 환경 호환성 변경은 요청문으로 처리하지 않음(규칙이 수행. sLLM 에 보내는 것은 --compat-llm 3)" % c["id"])
     if not why:
         why.append("규칙과 요청 어디에서도 sLLM 에 맡길 대상이 나오지 않음")
     st.set_meta("no_call_reasons", why)
@@ -5711,12 +6026,12 @@ def s6_llm(ctx):
         LOG6.info("이어서 실행: 대기로 남은 이슈 %d건을 보냅니다. 지난번에 고친 %d건은 받아 둔 응답을 다시 씁니다(호출하지 않음)" % (n_back, n_redo))
     st.set_meta("llm_pending", 0)
     n_off = 0
-    if not ctx.opts.get("compat_llm"):            # 기본: 환경 호환성 항목은 기계적 변경까지만 한다. 규칙의 sLLM 대상은 보내지 않는다
+    if compat_level(ctx) < 3:                     # 1, 2단계: 환경 호환성 항목은 기계적 변경까지만 한다. 규칙의 sLLM 대상은 보내지 않는다
         n_off = st.one("SELECT COUNT(*) FROM issues WHERE source='rule' AND tier='T3' AND llm=1 AND status='open'") or 0
         if n_off:
             st.x("UPDATE issues SET status='manual', note=? WHERE source='rule' AND tier='T3' AND llm=1 AND status='open'",
-                 ("환경 호환성 항목의 sLLM 수정이 꺼져 있음(--compat-llm 으로 켠다)",))
-            LOG6.info("환경 호환성 규칙의 sLLM 대상 %d건은 보내지 않고 수동 검토로 둡니다(--compat-llm 이 꺼져 있음)" % n_off)
+                 ("환경 호환성 항목을 sLLM 에 보내지 않음(--compat-llm %d. 3 을 주면 보낸다)" % compat_level(ctx),))
+            LOG6.info("환경 호환성 규칙의 sLLM 대상 %d건은 보내지 않고 수동 검토로 둡니다(--compat-llm %d. 3 을 주면 보냅니다)" % (n_off, compat_level(ctx)))
     st.set_meta("no_call_reasons", [])
     n_open = st.one("SELECT COUNT(*) FROM issues WHERE tier='T3' AND llm=1 AND status='open'")
     if not n_open:
@@ -6085,6 +6400,44 @@ def _package_names(ctx):
     return ctx._names
 
 
+# 실제로 있는 보안 CRT 함수(_s 로 끝나는 이름). 수정에 새로 생긴 _s 호출이 이 목록에도, 패키지에도 없으면 없는 함수로 보고 기각한다.
+# (0.9.1 까지는 메모만 남겼다. 실제 코드에서 strncat 을 _strncat_s 로 바꾼 수정이 그대로 들어갔다)
+_CRT_S_NAMES = frozenset("""strcpy_s strncpy_s strcat_s strncat_s strtok_s strerror_s _strerror_s strnlen_s _strlwr_s _strupr_s _strnset_s
+_strset_s _strdate_s _strtime_s wcscpy_s wcsncpy_s wcscat_s wcsncat_s wcstok_s _wcslwr_s _wcsupr_s _wcsnset_s _wcsset_s wcsnlen_s
+_wcserror_s __wcserror_s _wstrdate_s _wstrtime_s _mbscpy_s _mbsncpy_s _mbscat_s _mbsncat_s _mbstok_s _mbslwr_s _mbsupr_s _mbsnbcpy_s
+_mbsnbcat_s _mbsset_s _mbsnset_s _mbsnbset_s _mbccpy_s sprintf_s swprintf_s _snprintf_s _snwprintf_s vsprintf_s vswprintf_s
+_vsnprintf_s _vsnwprintf_s vsnprintf_s printf_s wprintf_s fprintf_s fwprintf_s vprintf_s vfprintf_s vwprintf_s vfwprintf_s _cprintf_s
+_cwprintf_s _vcprintf_s _vcwprintf_s scanf_s wscanf_s sscanf_s swscanf_s fscanf_s fwscanf_s _cscanf_s _cwscanf_s _snscanf_s _snwscanf_s
+vscanf_s vsscanf_s vfscanf_s gets_s _getws_s _cgets_s _cgetws_s fopen_s _wfopen_s freopen_s _wfreopen_s tmpfile_s tmpnam_s _wtmpnam_s
+fread_s _sopen_s _wsopen_s _mktemp_s _wmktemp_s _umask_s _chsize_s _access_s _waccess_s memcpy_s memmove_s wmemcpy_s wmemmove_s
+_itoa_s _ltoa_s _ultoa_s _i64toa_s _ui64toa_s _itow_s _ltow_s _ultow_s _i64tow_s _ui64tow_s _ecvt_s _fcvt_s _gcvt_s mbstowcs_s wcstombs_s
+mbsrtowcs_s wcsrtombs_s wctomb_s wcrtomb_s localtime_s _localtime32_s _localtime64_s gmtime_s _gmtime32_s _gmtime64_s ctime_s _ctime32_s
+_ctime64_s _wctime_s _wctime32_s _wctime64_s asctime_s _wasctime_s getenv_s _wgetenv_s _dupenv_s _wdupenv_s _putenv_s _wputenv_s
+_searchenv_s _wsearchenv_s _splitpath_s _wsplitpath_s _makepath_s _wmakepath_s rand_s qsort_s bsearch_s _lfind_s _lsearch_s _controlfp_s
+_tcscpy_s _tcsncpy_s _tcscat_s _tcsncat_s _tcstok_s _tcslwr_s _tcsupr_s _tcserror_s _stprintf_s _sntprintf_s _vstprintf_s _vsntprintf_s
+_tprintf_s _ftprintf_s _stscanf_s _ftscanf_s _tscanf_s _tfopen_s _tfreopen_s _tsplitpath_s _tmakepath_s _itot_s _ltot_s _ultot_s
+_i64tot_s _ui64tot_s _tgetenv_s _tdupenv_s _tputenv_s _tsearchenv_s _tctime_s _tasctime_s _tstrdate_s _tstrtime_s _getts_s _tmktemp_s
+_tsopen_s _taccess_s""".split())
+def _unknown_secure_names(ctx, edits):
+    """수정에 새로 생긴 '_s 로 끝나는 함수 호출' 가운데 조각, 패키지, C 런타임 어디에도 없는 이름을 찾는다. 돌려주는 값: 기각 사유 목록
+    없는 함수를 부르면 컴파일되지 않는다. 설정 limits.new_name_check 가 off 면 보지 않고, limits.known_names 에 적은 이름은 통과시킨다."""
+    lim = ctx.cfg["limits"]
+    if str(lim.get("new_name_check", "mark")) == "off":
+        return []
+    bad, known = [], set(str(x) for x in (lim.get("known_names") or []))
+    for e in edits:
+        na, nb = mask_code(e["after"])[0], mask_code(e["before"])[0]
+        old = set(re.findall(r"[A-Za-z_]\w*", nb))
+        for n in re.findall(r"(?<![\w.>:])([A-Za-z_]\w*_s)\s*\(", na):
+            if n in old or n in bad or n in _STD_NAMES or n in _CRT_S_NAMES or n in known or n in _package_names(ctx):
+                continue
+            bad.append(n)
+    if not bad:
+        return []
+    return ["없는 함수 이름을 썼다: %s. 조각, 패키지, C 런타임 어디에도 없는 이름이다. 보안 CRT 함수의 이름은 옛 이름 뒤에 _s 만 붙인 것이다"
+            "(strncat -> strncat_s. 앞에 밑줄을 더하지 않는다). 확실하지 않으면 그 줄은 고치지 않는다" % ", ".join(bad[:4])]
+
+
 def _edit_grade(rel, blocks1, e):
     """수정 하나가 미치는 범위의 등급(요구사항 E2). 1: 함수 본문 안, 2: 파일 안(static 선언·static 함수 머리), 3: 파일 밖에 영향"""
     if rel.lower().endswith(_HEADER_EXT):
@@ -6100,6 +6453,7 @@ def _edit_checks(ctx, t, edits):
     기각 사유가 있으면 부르는 쪽이 그 사유를 붙여 다시 요청한다. 메모는 수정 레코드에 남아 보고서의 검토 목록에 나온다."""
     aux = (t.get("plan") or {}).get("aux")
     reasons, notes = [], {}
+    reasons += _unknown_secure_names(ctx, edits)      # 없는 _s 함수 이름을 썼는가
     if not aux:
         return reasons, notes
     lim = ctx.cfg["limits"]
@@ -6480,6 +6834,12 @@ def _compile_run(ctx, plan):
         return None, "컴파일 검사 중 오류(%s: %s)" % (type(e).__name__, e)
     if not (ran_a and ran_b):
         return None, "컴파일러를 실행하지 못함"
+    # 원본이 치명적 오류(열 수 없는 헤더 C1083, 오류 수 초과 C1003 등)로 중단되면 컴파일러는 그 뒤의 줄을 보지 않는다.
+    # 그러면 수정 전후의 오류 목록이 똑같아져 "새 오류 없음"이 되지만, 바뀐 줄은 검사되지 않은 것이다. 통과가 아니라 미수행으로 돌려준다
+    fatal = [x for x in before if x["kind"] == "fatal error"]
+    if fatal:
+        return None, ("원본이 치명적 오류로 컴파일이 중단돼 바뀐 줄을 검사하지 못함(%s: %s)"
+                      % (fatal[0]["code"], " ".join(fatal[0]["msg"].split())[:120]))
     old = {}
     for x in before:
         old[(x["code"], x["msg"])] = old.get((x["code"], x["msg"]), 0) + 1
@@ -6590,6 +6950,12 @@ def s8_verify(ctx):
     st.commit()
     LOG8.info("검증 결과: 변경됨 %d, 부분수정 %d, 수정 취소 %d (검증 수준: %s)"
               % (n_pass, n_partial, n_revert, "L0~L3" if use_cl else "L0~L2"))
+    blocked = [r["path"] for r in st.q("SELECT DISTINCT path FROM verifications WHERE level='L3' AND result LIKE '미수행%' "
+                                       "AND detail LIKE '원본이 치명적 오류로%' ORDER BY path")]
+    st.set_meta("compile_blocked", blocked)
+    if blocked:
+        LOG8.warn("컴파일 검사를 하지 못한 변경 파일 %d개: 원본이 치명적 오류(열 수 없는 헤더 등)로 중단됩니다. 이 파일들의 검증 수준은 L2 입니다. "
+                  "include 경로를 맞춘 뒤 다시 돌려야 컴파일 검사가 됩니다. 예: %s" % (len(blocked), ", ".join(blocked[:3])))
     _requests_check(ctx)                                    # 계약 요청의 잔여 재탐지(E4)
 
 
@@ -6648,14 +7014,22 @@ def _extra_report_lines(ctx):
                 L.append("  - " + c["note"])
             if c.get("definition_after"):
                 L += ["  - 새 정의:", "", "```cpp", c["definition_after"], "```", ""]
-    n_cs = st.one("SELECT COUNT(*) FROM issues WHERE source='compat'") or 0
-    if n_cs:
-        cs = {r["status"]: r["n"] for r in st.q("SELECT status, COUNT(*) AS n FROM issues WHERE source='compat' GROUP BY status")}
-        L += ["", "### 환경 호환성 항목의 sLLM 수정 시도(--compat-llm)", "",
-              "- 설정으로 흡수하던 항목(보안 CRT, Winsock)의 사용 줄 %d곳을 sLLM 에 보냈다: 고침 %d, sLLM 이 그대로 둠 %d, 수동 검토 %d, 대기 %d"
-              % (n_cs, cs.get("fixed", 0), cs.get("skipped", 0), cs.get("manual", 0) + cs.get("open", 0), cs.get("pending", 0)),
-              "- 고친 곳은 실행 동작이 달라질 수 있다(보안 CRT 함수는 버퍼가 모자라면 프로그램을 끝낸다). 모두 검토 대상이다.",
-              "- 그대로 둔 곳은 설정(_CRT_SECURE_NO_WARNINGS 등)으로 경고가 꺼지므로 빌드에는 지장이 없다."]
+    cf = st.get_meta("scrt_stat", None)
+    if cf:
+        cs = {r["status"]: r["n"] for r in st.q("SELECT status, COUNT(*) AS n FROM issues WHERE rule_id=? GROUP BY status", (_SCRT_RULE,))}
+        n_no = sum((cf.get("why") or {}).values())
+        L += ["", "### 보안 CRT 함수의 기계적 변환(--compat-llm 2 이상, 규칙 %s)" % _SCRT_RULE, "",
+              "- 보안 CRT 경고에 걸린 줄 %d곳 가운데 조건에 맞는 %d곳을 규칙으로 바꿨다(호출 %d건: 적용 %d, 적용하지 않음 %d). sLLM 은 쓰지 않았다."
+              % (cf.get("seen", 0), cf.get("seen", 0) - n_no, sum(cs.values()), cs.get("fixed", 0), sum(cs.values()) - cs.get("fixed", 0)),
+              "- 바꾸는 조건: 문장 하나로 쓰인 strcpy, strcat, sprintf 호출이고 첫 인자가 같은 함수의 1차원 char 지역 배열이다. "
+              "바꾼 꼴은 `함수_s(배열, sizeof(배열), 나머지 인자 그대로)` 하나다.",
+              "- 바꾼 곳은 버퍼가 모자랄 때의 동작이 달라진다(옛 함수는 넘쳐 썼고, 보안 함수는 프로그램을 끝낸다). Debug 빌드에서는 문자열 뒤의 "
+              "남는 자리가 0xFE 로 채워진다. 버퍼 전체를 넘겨 쓰는 자체 함수가 있으면 설정 limits.scrt_raw_calls 에 그 이름을 적어 대상에서 뺀다. 모두 검토 대상이다.",
+              "- 이 변환만 끄려면 `--disable-rule %s` 를 준다." % _SCRT_RULE,
+              "- 바꾸지 않은 %d곳은 설정(_CRT_SECURE_NO_WARNINGS)으로 경고가 꺼지므로 빌드에는 지장이 없다. sLLM 에도 보내지 않는다. 사유:" % n_no]
+        if cf.get("why"):
+            L += [""] + _table(["바꾸지 않은 사유", "줄 수", "예"], [
+                (_SCRT_WHY.get(k, k), n, " / ".join((cf.get("samples") or {}).get(k, [])[:2])) for k, n in cf["why"].items()])
     n_skip = st.get_meta("skipped_hits", 0) or 0
     if n_skip:
         L += ["", "### 예외로 건너뛴 탐지", "", "- %d곳(예외 파일의 skip 항목, 소스의 `vupdate:skip` 표식)" % n_skip]
@@ -6773,8 +7147,10 @@ def s9_report(ctx):
         opt_lines.append("처리 범위: only=%s, exclude=%s. 범위 밖 파일은 탐지와 수정을 하지 않았다(범위 안팎에 걸친 "
                          "변경의 일관성은 확인하지 않는다)" % (", ".join(o.get("only") or []) or "(전체)",
                                                     ", ".join(o.get("exclude") or []) or "(없음)"))
-    opt_lines.append("환경 호환성 항목의 sLLM 수정: %s" % ("켬(--compat-llm). 규칙의 sLLM 대상과 설정 흡수 항목의 사용 줄을 보냈다"
-                                                  if o.get("compat_llm") else "끔(기본). 기계적 변경과 설정 흡수까지만 했다"))
+    opt_lines.append("환경 호환성 항목의 처리 깊이(--compat-llm): %d단계. %s" % (compat_level(ctx), {
+        1: "기계적 변경만 했다(기본). 규칙의 수정과 설정 처리까지다",
+        2: "1 에 더해, 선언을 읽어 판정하는 기계적 변환(지역 배열에 쓰는 보안 CRT 호출)까지 했다. sLLM 에는 보내지 않았다",
+        3: "2 의 기계적 변경 뒤에, 규칙이 고치지 못한 항목(고치지 않으면 컴파일되지 않는 것)을 sLLM 에 보냈다"}[compat_level(ctx)]))
     for key, text in (("no_llm", "sLLM 을 쓰지 않음(--no-llm). sLLM 대상 이슈는 수동 검토로 보냈다"),
                       ("no_compile", "컴파일 검사를 하지 않음(--no-compile)")):
         if o.get(key):
@@ -6795,6 +7171,11 @@ def s9_report(ctx):
     no_call = st.get_meta("no_call_reasons", []) or []
     if no_call:
         R += ["", "> **sLLM 에 수정 요청을 한 건도 보내지 않았다.** 이유:"] + [">", ] + ["> - " + w for w in no_call]
+    blocked = st.get_meta("compile_blocked", []) or []
+    if blocked:
+        R += ["", "> **컴파일 검사를 하지 못한 변경 파일이 %d개 있다.** 원본이 치명적 오류(열 수 없는 헤더 등)로 컴파일이 중단돼, "
+              "바뀐 줄까지 검사하지 못했다. 이 파일들의 검증 수준은 L2(정적 검사)다. 프로젝트의 include 경로가 잡히도록 한 뒤 다시 돌려야 한다. "
+              "파일별 오류는 `logs/compile/` 에 있다. 예: %s" % (len(blocked), ", ".join("`%s`" % x for x in blocked[:5]))]
     R += ["", "## 1. 적용한 환경값", ""] + ["- " + s for s in env_summary_lines(env)]
     R += ["", "실행 옵션:", ""] + ["- " + s for s in opt_lines]
     if ctx.request.get("common"):
@@ -7171,6 +7552,7 @@ def _make_ctx(args, need_env=True):
                        "policy": {"deprecated_warnings": "suppress"}}
         ctx.dry_run = bool(getattr(args, "dry_run", False))
     ctx.opts = collect_opts(args, saved_opts)
+    ctx.env["compat"] = ctx.opts["compat_llm"]      # 이어서 실행할 때 명령줄에 다시 준 값이 있으면 그 값이다
     ctx.pkg_name = os.path.basename(ctx.package.rstrip("\\/")) or "package"
     if not resume:
         base = os.path.abspath(getattr(args, "out", None) or os.path.join(os.getcwd(), "runs"))
@@ -7519,7 +7901,7 @@ def _selftest_ns(work, pkg, url, **over):
     """자체 시험용 실행 인자. 명령줄에서 준 것과 같은 모양이다."""
     ns = argparse.Namespace(package=pkg, request=None, from_vs="2008", to_vs="2022", cpp_standard=None,
                             server_config=None, rules=None, out=os.path.join(work, "runs"), dry_run=False,
-                            resume=None, until=None, max_parallel=2, no_compile=False, llm_endpoint=url, compat_llm=True)
+                            resume=None, until=None, max_parallel=2, no_compile=False, llm_endpoint=url, compat_llm=3)
     for k, v in over.items():
         setattr(ns, k, v)
     return ns
@@ -7745,14 +8127,14 @@ def _selftest_v050(work, check):
 
 def _selftest_v090(work, check):
     """0.9.0 의 시험: 요청문(--ask)을 sLLM 이 의도별로 나누고, 도구가 그 결과로 대상을 찾아 의도별로 수정 요청을 보낸다.
-    환경 호환성 항목은 --compat-llm 을 켰을 때만 sLLM 에 보낸다."""
+    환경 호환성 항목은 --compat-llm 3 일 때만 sLLM 에 보낸다."""
     pkg = os.path.join(work, "V090_PKG")
     shutil.rmtree(pkg, ignore_errors=True)
     src = ["#include <windows.h>", "#include <stdio.h>", "void A(HWND h, void* p)", "{", "    char buf[80];", "    gets(buf);",
            "    SetWindowLong(h, GWL_USERDATA, (LONG)p);", "}", ""]
     write_bytes(os.path.join(pkg, "Src", "Ui.cpp"), "\r\n".join(src).encode("cp949"))
     srv = _selftest_mock_server()
-    ctx = _make_ctx(_selftest_ns(work, pkg, "http://127.0.0.1:%d/v1" % srv.server_address[1], compat_llm=False,
+    ctx = _make_ctx(_selftest_ns(work, pkg, "http://127.0.0.1:%d/v1" % srv.server_address[1], compat_llm=1,
                                  ask=["SetWindowLong 을 SetWindowLongPtr 로 바꾸고 인덱스와 형 변환도 맞춘다. 주석의 문구는 바꾸지 않는다",
                                       "NoSuchName 호출을 모두 지운다"]))
     _selftest_llm_defaults(ctx)
@@ -7776,8 +8158,8 @@ def _selftest_v090(work, check):
           "SetWindowLongPtr(h, GWLP_USERDATA, (LONG_PTR)p);" in txt and any("사용자 요청: SetWindowLong 을 SetWindowLongPtr 로 바꾸고" in p
           and "[공통 요청]" in p and "주석의 문구" in p for p in srv.prompts))
     check("요청문: 대상을 찾지 못한 요청은 이유와 함께 수동 검토로 남김", "요청의 대상을 찾지 못함" in manual and "ASK-2" in plan)
-    check("환경 호환성: --compat-llm 이 꺼져 있으면 규칙의 sLLM 대상(gets)을 보내지 않고 수동 검토로 둠",
-          "gets(buf);" in txt and "R-T3-GETS-REMOVED" in manual and "--compat-llm" in manual and "끔(기본)" in report)
+    check("환경 호환성: --compat-llm 1(기본)이면 규칙의 sLLM 대상(gets)을 보내지 않고 수동 검토로 둠",
+          "gets(buf);" in txt and "R-T3-GETS-REMOVED" in manual and "--compat-llm 1" in manual and "1단계" in report)
 
 
 def _selftest_v040(work, check):
@@ -7914,6 +8296,145 @@ def cmd_selftest(args):
     return EXIT_OK if n_fail == 0 else EXIT_FAIL
 
 
+# ============================================================================
+# [M13 사용 예]  옵션별 사용 예(vupdate examples)
+# 목적: 옵션마다 실제로 쓰는 경우를 한 줄씩 보인다. 옵션끼리의 조합을 늘어놓지 않고, "기본 명령 + 그 옵션 하나"로 적는다.
+#       문서(23_옵션별_사용예시.md)는 이 표로 만든다(vupdate examples --md). 표의 명령은 시험(tests/test_v092.py)이 모두 돌려 본다.
+# 표기: {PKG} 같은 자리표시는 보여 줄 때 예시 경로로 바뀐다(EX_PATHS). 명령이 "vupdate" 로 시작하면 전체 명령이고,
+#       아니면 기본 명령(EX_BASE) 뒤에 붙이는 부분이다.
+# ============================================================================
+EX_BASE = "vupdate run --package {PKG} --from-vs 2010 --to-vs 2022"
+EX_PATHS = OrderedDict([("PKG", "D:\\src\\PKG_A"), ("OUT", "D:\\work\\runs"), ("ASKFILE", "D:\\work\\asks.txt"),
+                        ("REQ", "D:\\work\\request.json"), ("SERVER", "D:\\work\\server.json"), ("RULES", "D:\\work\\rules.json"),
+                        ("EXC", "D:\\work\\exceptions.json"), ("RUN", "D:\\work\\runs\\PKG_A\\20261126_093000")])
+USAGE = [
+    ("대상", [
+        ("--package", "필수", "", "처리할 패키지 폴더. 원본은 읽기만 하고 결과는 실행 폴더의 out/ 에 쓴다"),
+        ("--out", "결과를 둘 곳 지정", "--out {OUT}", "실행 폴더를 만들 위치. 주지 않으면 지금 폴더의 runs"),
+        ("--only", "일부만 처리", "--only Src/Net/*", "패키지 기준 경로의 와일드카드. 범위 밖 파일은 탐지도 수정도 하지 않는다"),
+        ("--only", "범위 여럿", "--only Src/Net/*,Src/Ui/*", "쉼표로 잇거나 옵션을 여러 번 준다"),
+        ("--exclude", "일부를 뺌", "--exclude ThirdParty/*", "외부 라이브러리, 생성된 코드, HMI 스크립트 폴더 등을 뺄 때"),
+    ]),
+    ("환경값", [
+        ("--from-vs, --to-vs", "필수", "", "2005, 2008, 2010, 2012, 2013, 2015, 2017, 2019, 2022 가운데 원본과 대상. 대상이 원본보다 뒤여야 한다"),
+        ("--cpp-standard", "C++17 로", "--cpp-standard c++17", "c++14(기본), c++17, c++20, c++latest. 대상이 2015 이상일 때만 뜻이 있다"),
+        ("--cpp-standard", "C++20 으로", "--cpp-standard c++20", "c++20 이상이면 준수 모드가 함께 켜진다"),
+        ("--from-cpp-standard", "원본이 이미 C++17", "--cpp-standard c++20 --from-cpp-standard c++17", "원본에서 이미 겪은 언어 표준 규칙을 끈다"),
+        ("--platform", "x64 로 전환", "--platform x64", "keep(기본), x86, x64. x64 면 64비트 규칙이 켜진다"),
+        ("--platform", "x86 을 명시", "--platform x86", "프로젝트 설정 안내에 x86 을 적는다. 64비트 규칙은 켜지지 않는다"),
+        ("--conformance", "준수 모드 켬", "--conformance on", "off(기본), on. on 이면 /permissive- 에서 걸리는 규칙이 켜진다"),
+        ("--charset", "유니코드로 전환", "--charset unicode", "keep(기본), mbcs, unicode"),
+        ("--charset", "MBCS 를 명시", "--charset mbcs", "프로젝트 설정 안내에 멀티바이트를 적는다"),
+        ("--deprecated", "POSIX 이름을 코드에서 고침", "--deprecated fix", "suppress(기본): 설정으로 경고를 끈다. fix: strdup -> _strdup 처럼 이름을 고친다"),
+        ("--from-os, --to-os", "OS 판 올림", "--from-os \"Windows 7\" --to-os \"Windows 11\"", "선택. sLLM 요청의 [환경]과 보고서에 들어가고, 낮은 WINVER 를 대상 OS 의 값으로 올린다"),
+        ("--to-os", "대상 OS 만", "--to-os \"Windows Server 2022\"", "원본을 모르면 대상만 줘도 된다"),
+        ("--from-db, --to-db", "DB 판 올림", "--from-db \"Oracle 11g\" --to-db \"Oracle 19c\"", "선택. sLLM 요청의 [환경]과 보고서에 들어간다"),
+    ]),
+    ("요청", [
+        ("--ask", "요청 하나", "--ask \"WriteLog 호출에 줄 번호 인자를 추가한다\"", "형식 없이 글로 적는다. sLLM 이 의도별로 나누고 도구가 대상을 찾는다"),
+        ("--ask", "한 글에 여러 일", "--ask \"g_data 배열을 구조체로 바꾸고, 주석의 문구는 바꾸지 않는다\"", "수정, 배열 → 구조체, 조건이 섞여 있어도 된다"),
+        ("--ask", "찾기만", "--ask \"strtok 을 쓰는 곳을 찾아 목록으로 낸다\"", "고치지 않고 out/found_*.md 에 목록만 낸다"),
+        ("--ask", "요청 둘(따로 분석)", "--ask \"WriteLog 호출에 줄 번호 인자를 추가한다\" --ask \"g_data 배열을 구조체로 바꾼다\"", "옵션을 여러 번 주면 각각 따로 분석한다"),
+        ("--ask-file", "긴 요청문", "--ask-file {ASKFILE}", "파일 전체가 요청 하나다. # 으로 시작하는 줄은 뺀다"),
+        ("--request", "요청 파일", "--request {REQ}", "배열 → 구조체의 필드 이름을 직접 정할 때 등. 형식은 config/requests/EXAMPLE.json"),
+    ]),
+    ("환경 호환성 항목의 처리 깊이", [
+        ("--compat-llm", "1 (기본)", "--compat-llm 1", "기계적 변경만 한다. 규칙의 수정과 설정 처리까지다. 규칙이 못 고치는 것은 수동 검토 목록에 올린다. sLLM 을 부르지 않는다"),
+        ("--compat-llm", "2", "--compat-llm 2", "1 에 더해, 선언을 읽어 판정하는 기계적 변환까지 한다(지역 char 배열에 쓰는 strcpy, strcat, sprintf 를 보안 CRT 함수로). sLLM 을 부르지 않는다. 조건은 22_추가_0.9.3.md"),
+        ("--compat-llm", "3", "--compat-llm 3", "2 에 더해, 기계적 변경 뒤에 남은 항목 가운데 고치지 않으면 컴파일되지 않는 것(없어진 gets, x64 의 SetWindowLong 등 5개 규칙)을 sLLM 에 보낸다"),
+        ("--compat-llm", "3 에서 보안 CRT 변환만 뺌", "--compat-llm 3 --disable-rule R-T2-CRT-SECURE-LOCAL", "sLLM 에는 보내되 2단계의 보안 CRT 변환은 하지 않는다"),
+    ]),
+    ("sLLM 서버", [
+        ("--llm-endpoint", "주소를 명령줄로", "--llm-endpoint http://10.0.0.5:8000/v1", "주지 않으면 환경변수 VUPDATE_LLM_ENDPOINT, 그다음 서버 설정의 값"),
+        ("--server-config", "서버 설정 파일", "--server-config {SERVER}", "주소, 토큰 한도, 허용 동시 수 등. 주지 않으면 config/server.json"),
+        ("--max-parallel", "동시 요청 수", "--max-parallel 4", "1~8. 서버 설정의 허용 동시 수를 넘지 못한다"),
+        ("--max-calls", "호출 수 상한", "--max-calls 200", "다 쓰면 남은 작업을 대기로 두고 종료 코드 4 로 끝난다"),
+        ("--no-llm", "sLLM 없이", "--no-llm", "규칙 수정만 한다. sLLM 대상은 수동 검토로 간다(요청문도 분석하지 못한다)"),
+    ]),
+    ("규칙", [
+        ("--rules", "추가 규칙 파일", "--rules {RULES}", "제품별 변경을 규칙으로 더할 때. 주지 않으면 config/rules.json 이 있을 때 그것"),
+        ("--disable-rule", "규칙 하나 끔", "--disable-rule R-T2-WINVER-OLD", "규칙 ID 는 vupdate rules 로 본다"),
+        ("--disable-rule", "여럿 끔", "--disable-rule R-T2-WINVER-OLD,R-T1-TR1-NAMESPACE", "쉼표로 잇거나 옵션을 여러 번 준다"),
+        ("--exceptions", "예외 파일", "--exceptions {EXC}", "끌 규칙, 제외할 파일과 줄, 프로젝트 고유 매크로. 형식은 config/EXAMPLE_exceptions.json"),
+    ]),
+    ("실행 제어", [
+        ("--dry-run", "탐지만", "--dry-run", "S0~S2 만 하고 보고서를 낸다. 무엇이 걸리는지 먼저 볼 때"),
+        ("--until", "규칙 적용까지만", "--until S4", "sLLM 을 부르기 전에 멈춘다"),
+        ("--until", "요청문 분석까지만", "--until S5", "out/ask_plan.json 으로 요청이 어떻게 나뉘었는지 확인한 뒤 --resume 으로 잇는다"),
+        ("--resume", "이어서 실행", "vupdate run --resume {RUN}", "대기로 남은 작업이나 --until 로 멈춘 실행을 잇는다. 받아 둔 응답은 다시 묻지 않는다"),
+        ("--resume", "예산을 다시 주고 이어서", "vupdate run --resume {RUN} --max-calls 200", "--max-calls 는 이번 실행에서 새로 보낼 호출 수다"),
+    ]),
+    ("컴파일 검사", [
+        ("--no-compile", "검사하지 않음", "--no-compile", "컴파일러가 있어도 파일 단위 컴파일 검사(L3)를 하지 않는다"),
+        ("--compile-parallel", "동시 수", "--compile-parallel 4", "0 은 CPU 수에 맞춘다(기본)"),
+        ("--vs-path", "Visual Studio 위치", "--vs-path \"C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\"", "자동 탐지가 틀릴 때. 환경변수 VUPDATE_VS_PATH 도 된다"),
+        ("--sdk-path", "Windows SDK 위치", "--sdk-path \"C:\\Program Files (x86)\\Windows Kits\\10\"", "환경변수 VUPDATE_SDK_PATH 도 된다"),
+    ]),
+    ("그 밖의 명령", [
+        ("rules", "이 환경값에서 켜지는 규칙", "vupdate rules --from-vs 2010 --to-vs 2022", "run 과 같은 환경값 옵션을 받는다"),
+        ("rules", "단계에 따라 켜지는 규칙까지", "vupdate rules --from-vs 2010 --to-vs 2022 --compat-llm 2", "2 이상에서 켜지는 규칙(R-T2-CRT-SECURE-LOCAL)이 켜짐으로 나온다"),
+        ("rules", "변경 항목과 처리 방식의 표", "vupdate rules --coverage", ""),
+        ("rules", "규칙의 시험 예 실행", "vupdate rules --test", ""),
+        ("preflight", "환경 점검만", "vupdate preflight --package {PKG}", "컴파일러, SDK, 인코딩, 서버 연결을 본다"),
+        ("status", "진행 상태", "vupdate status --run {RUN}", ""),
+        ("llmcheck", "서버 점검", "vupdate llmcheck --llm-endpoint http://10.0.0.5:8000/v1", "실제 서버가 이 도구가 기대하는 대로 답하는지 본다"),
+        ("selftest", "설치 확인", "vupdate selftest", "샘플 패키지와 모의 sLLM 으로 전 단계를 돌린다"),
+        ("examples", "이 목록", "vupdate examples", "--md 를 주면 마크다운으로 낸다"),
+        ("--version", "판 확인", "vupdate --version", ""),
+    ]),
+    ("함께 쓰는 조합", [
+        ("처음 돌릴 때", "탐지만 먼저", "--dry-run", "보고서로 규모를 본 뒤 옵션 없이 다시 돌린다"),
+        ("요청문", "분석을 확인하고 수정", "--ask \"WriteLog 호출에 줄 번호 인자를 추가한다\" --until S5", "ask_plan.json 을 보고 맞으면 vupdate run --resume 실행폴더"),
+        ("호출을 나눠 보낼 때", "예산과 이어서", "--compat-llm 3 --max-calls 100", "종료 코드 4 면 vupdate run --resume 실행폴더 --max-calls 100 을 되풀이한다"),
+        ("x64 전환", "64비트 규칙과 sLLM", "--platform x64 --compat-llm 3", "SetWindowLong 계열은 3단계에서 sLLM 에 간다. 1, 2단계면 수동 검토 목록에 올린다"),
+        ("컴파일러가 없는 PC", "정적 검사까지만", "--no-compile", "검증 수준이 L2 까지다"),
+    ]),
+]
+
+
+def _ex_show(cmd):
+    """자리표시를 예시 경로로 바꾼다."""
+    for k, v in EX_PATHS.items():
+        cmd = cmd.replace("{%s}" % k, v)
+    return cmd
+
+
+def _ex_full(cmd):
+    """표의 명령을 전체 명령으로 만든다(자리표시는 그대로 둔다)."""
+    return cmd if cmd.startswith("vupdate") else (EX_BASE + (" " + cmd if cmd else ""))
+
+
+def usage_text(md=False):
+    """옵션별 사용 예를 글로 만든다. md 면 마크다운 표."""
+    L = []
+    if md:
+        L += ["아래 표의 \"기본\"은 이 명령이다.", "", "```", _ex_show(EX_BASE), "```", ""]
+        for title, rows in USAGE:
+            L += ["### %s" % title, "", "| 옵션 | 경우 | 명령 | 뜻 |", "|---|---|---|---|"]
+            for opt, case, cmd, note in rows:
+                shown = _ex_show(cmd) if cmd.startswith("vupdate") else ("기본" + (" " + _ex_show(cmd) if cmd else ""))
+                L.append("| %s | %s | `%s` | %s |" % ("`%s`" % opt if (opt.startswith("-") or re.match(r"^[a-z]+$", opt)) else opt, case,
+                                                    shown.replace("|", "\\|"), note.replace("|", "\\|")))
+            L.append("")
+        return "\n".join(L)
+    L += ["[기본 명령]  아래에서 \"기본\"은 이 명령이다.", "  " + _ex_show(EX_BASE), ""]
+    for title, rows in USAGE:
+        L.append("[%s]" % title)
+        for opt, case, cmd, note in rows:
+            shown = _ex_show(cmd) if cmd.startswith("vupdate") else ("기본" + (" " + _ex_show(cmd) if cmd else ""))
+            L.append("  %-20s %s" % (opt, case))
+            L.append("      %s" % shown)
+            if note:
+                L.append("      : %s" % note)
+        L.append("")
+    return "\n".join(L)
+
+
+def cmd_examples(args):
+    print(usage_text(md=bool(getattr(args, "md", False))))
+    return EXIT_OK
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog=APP, description="C++ 버전 업데이트 대응 자동화 %s" % VERSION)
     p.add_argument("--version", action="version", version="%s %s" % (APP, VERSION))
@@ -7921,7 +8442,7 @@ def build_parser():
     p.add_argument("--verbose", action="store_true", help="콘솔에도 상세(DEBUG) 로그 출력")
     sub = p.add_subparsers(dest="cmd")
 
-    r = sub.add_parser("run", help="패키지 하나를 처리한다")
+    r = sub.add_parser("run", help="패키지 하나를 처리한다", epilog="옵션별 사용 예는 'vupdate examples' 로 본다.")
     r.add_argument("--package", help="대상 패키지 폴더")
     r.add_argument("--from-vs", dest="from_vs", help="원본 VS 제품 연도(예: 2008)")
     r.add_argument("--to-vs", dest="to_vs", help="대상 VS 제품 연도(예: 2022)")
@@ -7965,9 +8486,12 @@ def build_parser():
     r.add_argument("--no-compile", dest="no_compile", action="store_true", help="컴파일 검사를 하지 않음")
     r.add_argument("--no-llm", dest="no_llm", action="store_true",
                    help="sLLM 을 쓰지 않는다. 규칙 수정만 하고 sLLM 대상은 수동 검토로 보낸다(요청문도 분석하지 못한다)")
-    r.add_argument("--compat-llm", dest="compat_llm", action="store_true",
-                   help="환경 호환성 항목도 sLLM 에 보낸다(기본은 보내지 않는다). 규칙이 sLLM 대상으로 분류한 것과, "
-                        "설정으로 흡수하던 보안 CRT·Winsock 함수의 사용 줄을 보내 수정을 시도한다. 호출이 크게 늘 수 있으니 --max-calls 와 함께 쓴다")
+    r.add_argument("--compat-llm", dest="compat_llm", nargs="?", const="(값 없음)", default=None, metavar="1|2|3",
+                   help="환경 호환성 항목의 처리 깊이. 위 단계는 아래 단계의 일을 모두 한다. 1(기본): 기계적 변경만 한다(규칙의 수정과 설정 처리). "
+                        "규칙이 고치지 못한 것은 수동 검토 목록에 올린다. 2: 1 에 더해, 선언을 읽어 판정하는 기계적 변환까지 한다"
+                        "(같은 함수의 char 지역 배열에 쓰는 strcpy, strcat, sprintf 를 보안 CRT 함수로. sLLM 을 쓰지 않는다). "
+                        "3: 2 에 더해, 기계적 변경 뒤에 남은 항목 가운데 고치지 않으면 컴파일되지 않는 것(없어진 gets, x64 의 SetWindowLong 등)을 "
+                        "sLLM 에 보낸다. 3 은 호출이 늘 수 있으니 --max-calls 와 함께 쓴다")
     r.add_argument("--compile-parallel", dest="compile_parallel", type=int,
                    help="컴파일 검사 동시 수. 0 은 CPU 수에 맞춤(기본)")
     r.add_argument("--vs-path", dest="vs_path",
@@ -8002,6 +8526,7 @@ def build_parser():
     u.add_argument("--to-os", dest="to_os")
     u.add_argument("--from-db", dest="from_db")
     u.add_argument("--to-db", dest="to_db")
+    u.add_argument("--compat-llm", dest="compat_llm", metavar="1|2|3", help="환경 호환성 항목의 처리 깊이(run 과 같다). 2 이상이면 켜지는 규칙이 있다")
     u.add_argument("--coverage", action="store_true", help="알려진 변경 항목과 처리 방식의 표를 낸다")
     u.add_argument("--test", action="store_true", help="규칙에 붙은 시험 예(잡아야 하는 코드, 잡지 말아야 하는 코드)를 돌린다")
     u.set_defaults(func=cmd_rules)
@@ -8014,6 +8539,10 @@ def build_parser():
                    help="한도를 일부러 넘기는 요청을 보내지 않는다")
     c.set_defaults(func=cmd_llmcheck)
 
+
+    x = sub.add_parser("examples", help="옵션별 사용 예를 본다")
+    x.add_argument("--md", action="store_true", help="마크다운 표로 낸다(문서 23 의 본문)")
+    x.set_defaults(func=cmd_examples)
 
     t = sub.add_parser("selftest", help="설치 확인용 자체 시험(샘플 패키지 + 모의 sLLM)")
     t.add_argument("--dir", help="작업 폴더. 생략하면 임시 폴더")

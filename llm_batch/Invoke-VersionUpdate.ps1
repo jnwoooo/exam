@@ -31,8 +31,9 @@
   .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -Only "Src/Net/*" -UntilStage S5 -Ask "if 문 안에서 로그를 남기는 함수를 찾아 줘"
   (대상 판정까지만 돌려 out\ask_plan.json 으로 어떻게 이해했는지 먼저 본다)
 .EXAMPLE
-  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -CompatLlm -MaxCalls 50
-  (환경 호환성 항목도 sLLM 에 보내 수정을 시도한다. 기본은 기계적 변경과 설정 흡수까지만 한다)
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -CompatLlm 3 -MaxCalls 50
+  (환경 호환성 항목의 처리 깊이. 1: 기계적 변경만(기본), 2: 1 + 선언을 읽어 판정하는 기계적 변환(지역 배열에 쓰는 보안 CRT 호출),
+   3: 2 + 기계적 변경 뒤에 남은 것을 sLLM 에. 옵션별 사용 예는 vupdate examples)
 #>
 param(
     [string]$Package,
@@ -67,7 +68,7 @@ param(
     [switch]$DryRun,
     [switch]$NoCompile,
     [switch]$NoLlm,
-    [switch]$CompatLlm
+    [int]$CompatLlm = 0
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -112,7 +113,7 @@ if ($UntilStage)  { $a += @("--until", $UntilStage) }
 if ($DryRun)      { $a += "--dry-run" }
 if ($NoCompile)   { $a += "--no-compile" }
 if ($NoLlm)       { $a += "--no-llm" }
-if ($CompatLlm)   { $a += "--compat-llm" }
+if ($CompatLlm -ne 0) { $a += @("--compat-llm", "$CompatLlm") }
 
 if (Test-Path $exe) {
     & $exe @a
