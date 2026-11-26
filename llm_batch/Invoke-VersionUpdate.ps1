@@ -32,7 +32,7 @@
   (요청문. 형식 없이 글로 적는다. sLLM 이 의도별로 나누고 도구가 대상을 찾아 수정 요청을 보낸다. 결과는 out\ask_plan.json)
 .EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -Only "Src/Net/*" -UntilStage S5 -Ask "if 문 안에서 로그를 남기는 함수를 찾아 줘"
-  (대상 판정까지만 돌려 out\ask_plan.json 으로 어떻게 이해했는지 먼저 본다)
+  (대상 판정까지만 돌려 out\ask_trace.md 로 모델의 답과 어떻게 이해했는지 먼저 본다)
 .EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -CompatLlm 3 -MaxCalls 50
   (환경 호환성 항목의 처리 깊이. 1: 기계적 변경만(기본), 2: 1 + 선언을 읽어 판정하는 기계적 변환(지역 배열에 쓰는 보안 CRT 호출),

@@ -4,7 +4,7 @@
 ==============================================================================
 vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본)
 ==============================================================================
-버전 : 0.10.1 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
+버전 : 0.10.2 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
               환경 호환성 항목의 sLLM 호출은 --compat-llm 의 단계로 정한다. 당장 쓰지 않는 기능은 뺐다. 17_추가_0.9.0.md)
               0.9.1: OS·DB 의 원본/대상 옵션(--from-os, --to-os, --from-db, --to-db). 18_추가_0.9.1.md
               0.9.2: --compat-llm 을 단계 1|2|3 으로. 막힌 컴파일 검사를 통과로 치지 않는다. 옵션별 사용 예는 vupdate examples.
@@ -15,6 +15,8 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
                       요청 파일의 buffer_fields, record_group. 24_검토_전문버퍼_병렬배열.md, 25_추가_0.10.0.md
               0.10.1: 백업으로 보이는 폴더와 파일(bak, backup, 백업, 복사본, old 폴더, _old·날짜를 붙인 사본 등)을 처리 대상에서 뺀다(기본).
                       쓰이고 있는 것(프로젝트 파일이 참조, 소스가 include)은 빼지 않는다. --backups keep 으로 끈다. 26_추가_0.10.1.md
+              0.10.2: 요청문의 의미 분석 답(원문)과 해석 결과, 의도별 처리 건수(대상, 규칙 수정, sLLM 수정 요청, 미수정과 비고),
+                      처리 단계(--compat-llm 1·2·3)별 건수를 run.log, 보고서, out/ask_trace.md 에 남긴다. 동작은 바꾸지 않았다. 28_추가_0.10.2.md
 목적 : 레거시 C++ 패키지를 새 Visual Studio 환경(예: 2008 -> 2022)에 맞게
        고치는 작업을 한 명령으로 수행한다. 규칙으로 고칠 수 있는 것은 규칙으로,
        규칙으로 못 고치는 것만 sLLM에 맡기고, 결과를 별도 폴더에 낸다.
@@ -115,7 +117,7 @@ from concurrent.futures import ThreadPoolExecutor
 # 목적: 모든 구획이 같이 쓰는 최소한의 도구. 로그 접두어 규칙을 여기서 보장한다.
 # ============================================================================
 APP = "vupdate"
-VERSION = "0.10.1"
+VERSION = "0.10.2"
 
 STAGES = [("S0", "준비"), ("S1", "인벤토리"), ("S2", "탐지"), ("S3", "설정흡수"),
           ("S4", "규칙적용"), ("S5", "영향분석"), ("S6", "sLLM수정"), ("S7", "병합"),
@@ -292,6 +294,8 @@ DEFAULT_SERVER = {
         "word_suffixes": ["s", "er", "ger", "ing", "ging", "ed", "ged"],   # 요청문: 낱말 뒤에 붙어도 같은 낱말로 보는 꼴(log -> logs, logger, logging)
         "ask_max_candidates": 600,   # 요청문: 낱말로 고른 후보 이름의 최대 수(많이 쓰인 순서로 자른다)
         "ask_check_over": 8,         # 요청문: 낱말로 고른 후보가 이 수를 넘으면 sLLM 에 번호로 추리게 한다. 0 이면 묻지 않고 전부 대상으로 한다
+        "ask_log_chars": 6000,       # 요청문: 의미 분석의 답 원문을 run.log 에 적을 때의 글자 수 상한(넘으면 자르고 원문 파일을 알려 준다. 0 이면 적지 않는다)
+        "tally_log_notes": 8,        # 집계: run.log 에 적는 미수정·오류 비고의 수(단계마다, 의도마다. 전체는 보고서와 out/ask_trace.md 에 있다)
         "decl_change_check": True,   # 선언을 없앴는데 다른 줄에서 쓰이거나, 이미 있는 이름을 다시 선언한 수정을 기각한다
         "size_arg_check": True,      # 새로 쓴 sizeof(이름) 의 이름이 포인터로 확정되면 기각한다
         "rule_candidate_min": 3,     # 보고서의 규칙 후보: sLLM 이 같은 수정을 이 횟수 이상 했을 때 알린다
@@ -3313,6 +3317,9 @@ class Ctx:
         self._names = None                        # 아는 이름(코드 + 규칙 지침. 새 이름 검사에 쓴다. 처음 필요할 때 만든다)
         self._code_names = None                   # 코드에 실제로 나오는 이름(요청문 분석에 쓴다)
         self._calls = None                        # 호출 꼴로 쓰인 이름의 색인(요청문 분석에서 낱말로 이름을 고를 때 쓴다)
+        self._ask_calls = []                      # 요청문 분석용 호출의 기록(태그, 성공, 걸린 시간, 호출인지 캐시인지)
+        self._ask_trace = {}                      # 요청문별 의미 분석의 기록(알려 준 이름, 답 원문, 해석하면서 바꾼 것)
+        self._ask_checks = {}                     # 의도별 후보 확인의 기록(남긴 이름)
         self._scrt_vals = {}                      # 배열 크기 식에 나온 이름의 값(보안 CRT 의 기계적 변환에 쓴다. 못 찾은 이름은 None)
         self._scrt_files = None                   # 위의 값을 찾을 소스 목록(처음 필요할 때 만든다)
         self._scrt_raw = None                     # 바이트 단위 함수의 정규식(내장 목록 + 설정의 scrt_raw_calls)
@@ -6486,7 +6493,8 @@ def _contract_excerpt(ft, near_text):
 #       없는 이름은 버리므로 없는 코드가 대상이 되지는 않는다. 못 찾은 의도는 이유와 함께 보고한다(조용히 0건으로 끝내지 않는다).
 # 의도의 종류: modify(찾아서 고침) / find(찾아서 목록만) / array_to_struct(배열을 구조체로. 선언은 도구가 바꾼다)
 #              compat(환경 호환성. 요청문으로는 처리하지 않고 규칙과 --compat-llm 이 맡는다) / constraint(모든 수정에 붙는 조건)
-# 산출: out/ask_plan.json (요청별 분석 결과와 찾은 곳의 수), logs/llm/ask_*.txt (분석 요청과 응답 원문)
+# 산출: out/ask_plan.json (요청별 분석 결과와 찾은 곳의 수), logs/llm/ask_*.txt (분석 요청과 응답 원문. 캐시에서 답한 것도 적는다),
+#       logs/run.log 의 "답|" 줄(답 원문), out/ask_trace.md (요청문 -> 답 -> 의도 -> 대상·수정 요청·미수정)
 # 한계: 분석 프롬프트는 모의 모델로만 시험했다. 실제 sLLM 이 의도를 쓸 만하게 나누는지는 확인하지 못했다.
 #       여기가 흔들리면 ANALYZE_USER 의 설명과 예를 고친다. 의도의 종류를 늘리려면 _ASK_TYPES 와 _analyze_asks 의 갈래를 더한다.
 _ASK_TYPES = ("modify", "find", "array_to_struct", "compat", "constraint")
@@ -6562,17 +6570,23 @@ def _call_index(ctx):
 
 
 def _ask_model(ctx, system, user, tag):
-    """분석용 호출 한 번. 같은 물음은 캐시에서 답한다. 요청과 응답은 logs/llm/<tag>.txt 에 남긴다. 돌려주는 값: (성공, 본문)"""
+    """분석용 호출 한 번. 같은 물음은 캐시에서 답한다. 요청과 응답은 logs/llm/<tag>.txt 에 남긴다(캐시에서 답한 것도 남긴다).
+    호출 정보는 ctx._ask_calls 의 끝에 붙인다. 돌려주는 값: (성공, 본문)"""
     st, llm = ctx.store, ctx.cfg["llm"]
     key = sha256_bytes((llm["model"] + "\0" + system + "\0" + user).encode("utf-8"))
     hit = st.one("SELECT response FROM llm_cache WHERE key=?", (key,))
     if hit is not None:
-        return True, hit
-    ok, content, ms, _info = llm_chat(llm, system, user)
-    ctx.llm_calls += 1
+        ok, content, ms, source = True, hit, 0, "캐시(같은 물음의 앞선 답)"
+    else:
+        ok, content, ms, _info = llm_chat(llm, system, user)
+        ctx.llm_calls += 1
+        source = "호출"
+    if isinstance(content, str):                            # 짝 없는 대리 문자처럼 파일에 쓸 수 없는 글자는 ? 로 바꾼다(로그를 쓰다 멈추지 않게)
+        content = content.encode("utf-8", "replace").decode("utf-8")
     write_text(ctx.p("logs", "llm", "%s.txt" % tag),
-               "[SYSTEM]\n%s\n\n[USER]\n%s\n\n[RESPONSE ok=%s %dms]\n%s\n" % (system, user, ok, ms, content))
-    if ok:
+               "[SYSTEM]\n%s\n\n[USER]\n%s\n\n[RESPONSE ok=%s %dms %s]\n%s\n" % (system, user, ok, ms, source, content))
+    ctx._ask_calls.append({"tag": tag, "ok": bool(ok), "ms": int(ms or 0), "source": source})
+    if ok and hit is None:
         st.x("INSERT OR REPLACE INTO llm_cache(key,response) VALUES(?,?)", (key, content))
         st.commit()
     return ok, content
@@ -6625,22 +6639,42 @@ def _ask_hints(ctx, text):
     return out
 
 
-def _check_intents(obj, text):
+def _check_intents(obj, text, notes=None):
     """모델이 낸 JSON 을 검증해 의도 목록으로 만든다. 돌려주는 값: (의도 목록 또는 None, 어긋난 이유)
-    모르는 종류는 modify 로, 모르는 구문은 any 로 본다. 이름과 낱말은 영문 식별자 꼴만 받는다."""
+    모르는 종류는 modify 로, 모르는 구문은 any 로 본다. 이름과 낱말은 영문 식별자 꼴만 받는다.
+    notes(목록)를 주면 답을 그대로 쓰지 않고 바꾸거나 버린 것을 거기에 적는다(로그와 out/ask_trace.md 에 나온다)."""
+    notes = notes if notes is not None else []
     if not isinstance(obj, dict) or not isinstance(obj.get("intents"), list) or not obj["intents"]:
         return None, "intents 목록이 든 JSON 이 아님"
+    if len(obj["intents"]) > 12:
+        notes.append("의도가 %d개여서 앞의 12개만 씀" % len(obj["intents"]))
     out = []
-    for it in obj["intents"][:12]:
+    for k, it in enumerate(obj["intents"][:12], 1):
         if not isinstance(it, dict):
+            notes.append("%d번째 의도: JSON 객체가 아니어서 버림" % k)
             continue
         typ = str(it.get("type") or "modify").strip().lower()
         con = str(it.get("construct") or "any").strip().lower()
+        raw_names, raw_words = _str_list(it.get("names")), _str_list(it.get("words"))
+        names = _uniq([n for n in raw_names if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", n)])
+        words = _uniq([w.lower() for w in raw_words if re.match(r"^[A-Za-z]{3,}$", w)])
+        if typ not in _ASK_TYPES:
+            notes.append("%d번째 의도: 종류 '%s' 은(는) 모르는 값이어서 modify 로 봄" % (k, typ[:40]))
+        if con not in _ASK_CONSTRUCTS:
+            notes.append("%d번째 의도: 구문 '%s' 은(는) 모르는 값이어서 any 로 봄" % (k, con[:40]))
+        if [n for n in raw_names if n not in names]:
+            notes.append("%d번째 의도: 이름 %s 은(는) 영문 식별자 꼴이 아니어서 버림" % (k, ", ".join("'%s'" % n[:40] for n in raw_names if n not in names)))
+        if [w for w in raw_words if w.lower() not in words]:
+            notes.append("%d번째 의도: 낱말 %s 은(는) 영문 3글자 이상이 아니어서 버림" % (k, ", ".join("'%s'" % w[:40] for w in raw_words if w.lower() not in words)))
+        if len(names) > 30 or len(words) > 8:
+            notes.append("%d번째 의도: 이름은 30개, 낱말은 8개까지만 씀(이름 %d개, 낱말 %d개를 받음)" % (k, len(names), len(words)))
+        if not " ".join(str(it.get("instruction") or "").split()):
+            notes.append("%d번째 의도: instruction 이 비어 있어 요청 원문을 지시로 씀" % k)
         out.append({
             "type": typ if typ in _ASK_TYPES else "modify",
             "instruction": " ".join(str(it.get("instruction") or "").split())[:600] or " ".join(text.split())[:600],
-            "names": _uniq([n for n in _str_list(it.get("names")) if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", n)])[:30],
-            "words": _uniq([w.lower() for w in _str_list(it.get("words")) if re.match(r"^[A-Za-z]{3,}$", w)])[:8],
+            "names": names[:30],
+            "words": words[:8],
             "construct": con if con in _ASK_CONSTRUCTS else "any",
             "files": _uniq([f.replace("\\", "/").strip("/").lower() for f in _str_list(it.get("files")) if f.strip()])[:5]})
     if not out:
@@ -6655,14 +6689,32 @@ def analyze_ask(ctx, ask):
     hint_txt = "\n".join("- %s (%s)" % h for h in hints[:40]) or "(없음)"
     env_txt = "\n".join(env_summary_lines(ctx.env))
     feedback, why = "", ""
+    trace = {"hints": ["%s (%s)" % h for h in hints[:40]], "attempts": []}
+    ctx._ask_trace[ask["id"]] = trace
+    LOG5.info("요청 %s 의미 분석 물음: 요청문 %d자, 모델에 알려 준 이름 %d개%s" % (
+        ask["id"], len(ask["text"]), len(hints[:40]), (" (" + ", ".join(h[0] for h in hints[:20]) + ")") if hints else ""))
     for attempt in (1, 2):
-        ok, content = _ask_model(ctx, ANALYZE_SYSTEM, ANALYZE_USER.format(env=env_txt, text=ask["text"], hints=hint_txt, feedback=feedback),
-                                 "ask_%s_analyze_%d" % (ask["id"], attempt))
+        tag = "ask_%s_analyze_%d" % (ask["id"], attempt)
+        ok, content = _ask_model(ctx, ANALYZE_SYSTEM, ANALYZE_USER.format(env=env_txt, text=ask["text"], hints=hint_txt, feedback=feedback), tag)
+        call = ctx._ask_calls[-1]
+        att = {"n": attempt, "file": "logs/llm/%s.txt" % tag, "source": call["source"], "ms": call["ms"], "ok": bool(ok),
+               "raw": str(content or "")[:20000], "notes": [], "usable": False, "why": ""}
+        trace["attempts"].append(att)
         if not ok:
+            att["why"] = "호출 실패: %s" % str(content)[:160]
+            LOG5.warn("요청 %s 의미 분석 호출 실패(%d차): %s" % (ask["id"], attempt, str(content)[:300]))
             return None, "의미 분석 호출 실패: %s" % str(content)[:160]
-        intents, why = _check_intents(_json_from(content, "intents"), ask["text"])
+        LOG5.info("요청 %s 의미 분석 답(%d차, %s, %dms, %d자). 원문 파일: logs/llm/%s.txt" % (
+            ask["id"], attempt, call["source"], call["ms"], len(str(content or "")), tag))
+        _ask_log_answer(ctx, "요청 %s" % ask["id"], tag, content)
+        intents, why = _check_intents(_json_from(content, "intents"), ask["text"], att["notes"])
+        for n in att["notes"]:
+            LOG5.warn("요청 %s 의미 분석 답을 해석하면서 바꾼 것: %s" % (ask["id"], n))
         if intents:
+            att["usable"] = True
             return intents, ""
+        att["why"] = why
+        LOG5.warn("요청 %s 의미 분석 답(%d차)을 쓸 수 없음: %s%s" % (ask["id"], attempt, why, ". 한 번 다시 묻는다" if attempt == 1 else ""))
         feedback = "\n[다시] 앞의 답은 쓸 수 없었다(%s). [출력 형식]의 JSON 하나만 쓴다.\n" % why
     return None, "모델의 답을 해석하지 못함(%s)" % why
 
@@ -6688,8 +6740,12 @@ def check_candidates(ctx, tag, text, cands):
         listing = "\n".join("%d. %s (%d) 예: %s" % (i, n, c, ex) for i, (n, c, ex) in enumerate(chunk, 1))
         feedback, state = "", "형식"
         for attempt in (1, 2):
-            ok, content = _ask_model(ctx, CHECK_SYSTEM, CHECK_USER.format(text=text, cands=listing, feedback=feedback),
-                                     "ask_%s_check_%d_%d" % (tag, ci, attempt))
+            ctag = "ask_%s_check_%d_%d" % (tag, ci, attempt)
+            ok, content = _ask_model(ctx, CHECK_SYSTEM, CHECK_USER.format(text=text, cands=listing, feedback=feedback), ctag)
+            source = ctx._ask_calls[-1]["source"]
+            if ok:
+                LOG5.info("요청 %s 후보 확인 답(묶음 %d/%d, %d차, %s). 원문 파일: logs/llm/%s.txt" % (tag, ci, len(chunks), attempt, source, ctag))
+                _ask_log_answer(ctx, "요청 %s 후보 확인" % tag, ctag, content)
             if not ok:
                 state = "호출"
                 warns.append("후보 확인 호출 실패(묶음 %d/%d): %s" % (ci, len(chunks), str(content)[:120]))
@@ -6697,10 +6753,18 @@ def check_candidates(ctx, tag, text, cands):
             obj = _json_from(content, "keep")
             if obj is not None and isinstance(obj["keep"], list):
                 nums = sorted({int(x) for x in obj["keep"] if isinstance(x, int) or (isinstance(x, str) and x.isdigit())})
-                keep += [chunk[i - 1][0] for i in nums if 1 <= i <= len(chunk)]
+                kept = [chunk[i - 1][0] for i in nums if 1 <= i <= len(chunk)]
+                keep += kept
                 state = ""
+                ctx._ask_checks.setdefault(tag, []).append({"chunk": ci, "chunks": len(chunks), "cands": len(chunk), "kept": kept,
+                                                            "source": source, "state": ""})
+                LOG5.info("요청 %s 후보 확인(묶음 %d/%d): 후보 %d개 가운데 %d개를 남김%s" % (
+                    tag, ci, len(chunks), len(chunk), len(kept), (" (" + ", ".join(kept[:30]) + ")") if kept else ""))
                 break
             feedback = "\n[다시] 앞의 답은 쓸 수 없었다. {\"keep\": [번호, 번호]} 꼴의 JSON 하나만 쓴다.\n"
+        if state:
+            ctx._ask_checks.setdefault(tag, []).append({"chunk": ci, "chunks": len(chunks), "cands": len(chunk), "kept": [], "source": "-",
+                                                        "state": "호출 실패" if state == "호출" else "답이 형식에 맞지 않음"})
         if state == "형식":
             warns.append("후보 확인의 답이 형식에 맞지 않음(묶음 %d/%d). 이 묶음의 후보는 대상에 넣지 않음" % (ci, len(chunks)))
     return keep, warns
@@ -6803,6 +6867,7 @@ def _analyze_asks(ctx, files):
         plan.append(rec)
         if can_llm:
             intents, why = analyze_ask(ctx, ask)
+            rec["analysis"] = ctx._ask_trace.get(ask["id"])
         else:
             intents, why = None, "sLLM 을 쓸 수 없어 요청을 분석하지 못함(--no-llm 이거나 주소 미설정)"
         if not intents:
@@ -6818,6 +6883,9 @@ def _analyze_asks(ctx, files):
             r = dict(it, id=iid, names=ok_names, names_dropped=[n for n in it["names"] if n not in known], targets=list(ok_names),
                      candidates=0, result="")
             rec["intents"].append(r)
+            LOG5.info("요청 %s [%s] 지시: %s" % (iid, typ, it["instruction"]))
+            LOG5.info("요청 %s [%s] 이름: %s / 낱말: %s / 구문: %s / 파일: %s" % (
+                iid, typ, ", ".join(it["names"]) or "-", ", ".join(it["words"]) or "-", it["construct"], ", ".join(it["files"]) or "-"))
             if r["names_dropped"]:
                 LOG5.warn("요청 %s: 모델이 낸 이름 %s 은(는) 코드에 없어 버립니다" % (iid, ", ".join(r["names_dropped"])))
             if typ == "constraint":
@@ -6895,6 +6963,7 @@ def _analyze_asks(ctx, files):
                     cands = cands[:max_c]
                 if over and len(cands) > over:
                     r["targets"], w2 = check_candidates(ctx, iid, it["instruction"], cands)
+                    r["check"] = ctx._ask_checks.get(iid) or []
                     warns += w2
                 else:
                     r["targets"] = [c[0] for c in cands]
@@ -7027,9 +7096,267 @@ def _user_asks(ctx, files):
     return out
 
 
-def _write_ask_plan(ctx, plan, contracts):
-    """요청문 분석의 결과를 out/ask_plan.json 에 적는다. 무엇으로 이해했고 어디를 찾았는지 사람이 확인하는 파일이다."""
+# ---- 요청 추적과 집계(0.10.2)
+# 목적: 요청문 하나가 의미 분석(sLLM)에서 어떤 의도로 나뉘었고 의도마다 어떤 대상과 수정 요청으로 이어졌는지,
+#       환경 호환성 규칙은 처리 단계(--compat-llm 1·2·3)마다 몇 건이 대상이었고 몇 건이 남았는지를 로그와 보고서에 남긴다.
+# 산출: logs/run.log 의 "답|" 줄과 집계 줄, out/ask_trace.md, 보고서의 "요청문 처리 추적"과 "처리 단계별 집계", meta(ask_plan)
+_ASK_UNRESOLVED_TITLES = ("요청을 분석하지 못함", "요청의 대상을 찾지 못함")
+_STAGE_NAMES = OrderedDict((("설정", "설정 처리(코드는 그대로 두고 프로젝트 설정으로 해결)"), ("1", "1단계 기계적 변경(규칙)"),
+                            ("2", "2단계 선언을 읽어 판정하는 기계적 변환(규칙)"), ("3", "3단계 sLLM 수정"),
+                            ("수동", "규칙도 sLLM 도 고치지 않는 것(수동 검토 전용)")))
+
+
+def _ask_log_answer(ctx, label, tag, content):
+    """모델의 답 원문을 실행 로그에 줄마다 남긴다. limits.ask_log_chars 보다 길면 거기서 자르고 원문 파일을 알려 준다(0 이면 적지 않는다)."""
+    cap, text = int(ctx.cfg["limits"].get("ask_log_chars", 6000) or 0), str(content or "")
+    if cap <= 0:
+        return
+    for line in (text[:cap].splitlines() or [""]):
+        LOG5.info("%s 답| %s" % (label, line))
+    if len(text) > cap:
+        LOG5.info("%s 답| ...(전체 %d자 가운데 %d자만 적음. 원문: logs/llm/%s.txt)" % (label, len(text), cap, tag))
+
+
+def _ids_of(text):
+    return {int(x) for x in str(text or "").split(",") if x.strip().isdigit()}
+
+
+def _tally_rows(ctx, rows, by_rule=False):
+    """이슈 행들을 세어 집계 하나로 만든다. 돌려주는 값의 키:
+    targets 대상 / rule_fixed 규칙이 고침 / llm_req sLLM 에 맡기기로 한 것 / llm_sent 그 가운데 실제로 작업에 넣어 보낸 것 /
+    llm_fixed sLLM 이 고침 / llm_keep sLLM 이 고칠 필요가 없다고 본 것 / merged 다른 수정에 포함된 것 / absorbed 설정으로 처리 /
+    left 미수정 / unresolved 대상을 찾지 못한 요청·이름 / tasks 작업 수 / calls 호출 수 /
+    notes [(구분, 건수, 규칙, 비고, 처음 파일, 줄)] / task_rows [(작업, 파일, 줄, 상태, 시도, 비고)]"""
+    st = ctx.store
+    t = {"targets": 0, "rule_fixed": 0, "llm_req": 0, "llm_sent": 0, "llm_fixed": 0, "llm_keep": 0, "merged": 0, "absorbed": 0,
+         "left": 0, "unresolved": 0, "tasks": 0, "calls": 0, "notes": [], "task_rows": []}
+    ids, groups = set(), OrderedDict()
+    for r in rows:
+        note, rid = (r["note"] or "").strip(), (r["rule_id"] if by_rule else "")
+        if r["title"] in _ASK_UNRESOLVED_TITLES:
+            t["unresolved"] += 1
+            key = ("대상 없음", rid, note or "(비고 없음)")
+        else:
+            t["targets"] += 1
+            ids.add(r["id"])
+            llm, status = int(r["llm"] or 0), r["status"]
+            t["llm_req"] += 1 if llm else 0
+            if status == "fixed":
+                t["llm_fixed" if llm else "rule_fixed"] += 1
+                continue
+            if status == "absorbed":
+                t["absorbed"] += 1
+                continue
+            if status == "skipped":
+                t["llm_keep" if note.startswith("sLLM 이 고치지 않음") else "merged"] += 1
+                continue
+            t["left"] += 1
+            key = ("대기" if status == "pending" else "미수정", rid, note or "(비고 없음)")
+        g = groups.setdefault(key, [0, r["path"] or "", int(r["line"] or 0)])
+        g[0] += 1
+    t["notes"] = [(k[0], g[0], k[1], k[2], g[1], g[2]) for k, g in groups.items()]
+    if ids:
+        sent, task_ids = set(), []
+        for task in st.q("SELECT id, path, start_line, end_line, issue_ids, status, attempts, note FROM tasks ORDER BY id"):
+            hit = ids & _ids_of(task["issue_ids"])
+            if not hit:
+                continue
+            sent |= hit
+            task_ids.append(int(task["id"]))
+            t["task_rows"].append((task["id"], task["path"], "%s~%s" % (task["start_line"], task["end_line"]), task["status"],
+                                   task["attempts"] or 0, (task["note"] or "")[:200]))
+        t["tasks"], t["llm_sent"] = len(task_ids), len(sent)
+        if task_ids:
+            t["calls"] = st.one("SELECT COUNT(*) FROM llm_calls WHERE task_id IN (%s)" % ",".join(str(x) for x in task_ids)) or 0
+    return t
+
+
+def _first_at(note, path, line):
+    """비고 뒤에 붙이는 처음 위치. 비고에 이미 같은 위치가 적혀 있거나 위치가 없으면 붙이지 않는다."""
+    where = "%s:%d" % (path, line) if path else ""
+    return (" (처음 %s)" % where) if where and where not in note else ""
+
+
+def _tally_text(t, ask=True):
+    """집계 한 줄. ask 가 참이면 요청문의 의도, 거짓이면 규칙의 처리 단계에 쓰는 꼴이다."""
+    s = "대상 %d / 규칙 수정 %d / sLLM 수정 요청 %d(보낸 것 %d, 작업 %d, 호출 %d) / sLLM 수정 %d / 미수정 %d" % (
+        t["targets"], t["rule_fixed"], t["llm_req"], t["llm_sent"], t["tasks"], t["calls"], t["llm_fixed"], t["left"])
+    if t["llm_keep"]:
+        s += " / sLLM 이 고칠 필요가 없다고 본 곳 %d" % t["llm_keep"]
+    if t["merged"]:
+        s += " / 다른 수정에 포함 %d" % t["merged"]
+    if t["absorbed"]:
+        s += " / 설정으로 처리 %d" % t["absorbed"]
+    if ask and t["unresolved"]:
+        s += " / 대상을 찾지 못한 이름·요청 %d" % t["unresolved"]
+    return s
+
+
+def _ask_tally(ctx, iid):
+    """요청문의 의도 하나(iid)에서 나온 이슈를 센다. 배열 요청이 만든 ID(iid_2, iid-buf, iid-rec)도 같은 의도로 센다."""
+    rows = ctx.store.q("SELECT id, path, line, rule_id, llm, status, title, note FROM issues WHERE source='request' AND "
+                       "(rule_id=? OR rule_id=? OR rule_id=? OR rule_id LIKE ? ESCAPE '!') ORDER BY path, line, id",
+                       (iid, iid + "-buf", iid + "-rec", iid.replace("!", "!!").replace("%", "!%").replace("_", "!_") + "!_%"))
+    return _tally_rows(ctx, rows)
+
+
+def _stage_tally(ctx):
+    """환경 호환성 규칙의 이슈를 처리 단계별로 센다. 돌려주는 값: [(단계 키, 단계 이름, 집계)] (이슈가 없는 단계는 뺀다)
+    단계: 설정(T0) / 1(글자 꼴만 보는 규칙) / 2(when.compat 이 2 인 규칙) / 3(T3 가운데 sLLM 에 맡기는 것) / 수동(T3 가운데 맡기지 않는 것)"""
+    buckets = OrderedDict((k, []) for k in _STAGE_NAMES)
+    for r in ctx.store.q("SELECT id, path, line, rule_id, tier, llm, status, title, note FROM issues WHERE source<>'request' ORDER BY path, line, id"):
+        rule = ctx.rule_by_id.get(r["rule_id"]) or {}
+        if r["tier"] == "T0":
+            k = "설정"
+        elif r["tier"] == "T3":
+            k = "3" if int(r["llm"] or 0) else "수동"
+        else:
+            k = "2" if int((rule.get("when") or {}).get("compat", 0) or 0) == 2 else "1"
+        buckets[k].append(r)
+    return [(k, _STAGE_NAMES[k], _tally_rows(ctx, rows, by_rule=True)) for k, rows in buckets.items() if rows]
+
+
+def _stage_extra(ctx):
+    """단계 집계에 붙이는 설명 줄: 지금 단계, 보안 CRT 경고 줄 가운데 코드가 그대로 남은 줄 수(설정으로 경고만 끈 것)."""
+    lvl, out = compat_level(ctx), []
+    out.append("지금 단계는 --compat-llm %d 이다(1 기계적 변경만 / 2 선언을 읽는 기계적 변환까지 / 3 sLLM 수정까지)" % lvl)
+    cf = ctx.store.get_meta("scrt_stat", None) or {}
+    if cf.get("seen"):
+        n_no = sum((cf.get("why") or {}).values())
+        out.append("보안 CRT 경고에 걸린 줄 %d곳 가운데 2단계의 조건에 맞는 것은 %d곳이다. 나머지 %d곳은 코드를 바꾸지 않았고 "
+                   "sLLM 에도 보내지 않았다(설정 _CRT_SECURE_NO_WARNINGS 로 경고만 끈다)" % (cf["seen"], cf["seen"] - n_no, n_no))
+    return out
+
+
+def _log_tallies(ctx):
+    """처리 단계별 집계와 요청문의 의도별 집계를 실행 로그에 적는다(S9). 미수정과 오류의 비고는 건수가 많은 것부터 몇 개만 적는다."""
+    cap = int(ctx.cfg["limits"].get("tally_log_notes", 8) or 0)
+    stages = _stage_tally(ctx)
+    if stages:
+        LOG9.info("처리 단계별 집계(환경 호환성 규칙). " + " ".join(_stage_extra(ctx)[:1]))
+        for k, name, t in stages:
+            LOG9.info("  %s: %s" % (name, _tally_text(t, ask=False)))
+            for kind, n, rid, note, path, line in sorted(t["notes"], key=lambda x: -x[1])[:cap]:
+                LOG9.info("    %s 비고(%d건) %s: %s%s" % (kind, n, rid, note[:300], _first_at(note, path, line)))
+        for x in _stage_extra(ctx)[1:]:
+            LOG9.info("  " + x)
+    for rec in ctx.store.get_meta("ask_plan", []) or []:
+        if rec.get("failed"):
+            LOG9.info("요청 %s 집계: 분석하지 못함(%s)" % (rec["id"], rec["failed"]))
+        for r in rec.get("intents") or []:
+            t = _ask_tally(ctx, r["id"])
+            if not (t["targets"] or t["unresolved"]):       # 조건, 환경 호환성, 찾기처럼 이슈를 만들지 않는 의도
+                LOG9.info("요청 %s [%s] 결과: %s" % (r["id"], r["type"], (r.get("result") or "대상 없음")[:300]))
+                continue
+            LOG9.info("요청 %s [%s] 집계: %s" % (r["id"], r["type"], _tally_text(t)))
+            for kind, n, _rid, note, path, line in sorted(t["notes"], key=lambda x: -x[1])[:cap]:
+                LOG9.info("  요청 %s %s 비고(%d건): %s%s" % (r["id"], kind, n, note[:300], _first_at(note, path, line)))
+
+
+def _stage_report_lines(ctx):
+    """보고서 4절에 붙이는 처리 단계별 집계."""
+    stages = _stage_tally(ctx)
+    if not stages:
+        return []
+    L = ["", "### 처리 단계별 집계(--compat-llm)", ""] + ["- " + x for x in _stage_extra(ctx)] + [""]
+    L += _table(["처리 단계", "대상", "규칙 수정", "sLLM 수정 요청", "보낸 것(작업/호출)", "sLLM 수정", "설정으로 처리", "미수정"], [
+        (name, t["targets"], t["rule_fixed"], t["llm_req"], "%d(%d/%d)" % (t["llm_sent"], t["tasks"], t["calls"]), t["llm_fixed"], t["absorbed"],
+         t["left"]) for _k, name, t in stages])
+    notes = [(name.split(" ")[0], kind, n, rid, note, "%s:%d" % (path or "-", line))
+             for _k, name, t in stages for kind, n, rid, note, path, line in sorted(t["notes"], key=lambda x: -x[1])]
+    if notes:
+        L += ["", "미수정과 오류의 비고(건수가 많은 것부터 %d개):" % min(len(notes), 30), ""]
+        L += _table(["처리 단계", "구분", "건수", "규칙", "비고", "처음 위치"], notes[:30])
+    return L
+
+
+def _ask_trace_report_lines(ctx):
+    """보고서에 붙이는 요청문 처리 추적: 요청문 -> 의도 -> 대상과 수정 요청의 건수. 원문과 전체 목록은 out/ask_trace.md 에 있다."""
+    plan = ctx.store.get_meta("ask_plan", []) or []
     if not plan:
+        return []
+    L = ["", "### 요청문 처리 추적", "", "요청문 하나가 sLLM 의 의미 분석에서 어떤 의도로 나뉘었고 의도마다 몇 건이 대상이 되어 몇 건이 고쳐졌는지다. "
+         "모델의 답 원문과 미수정 비고의 전체 목록은 `out/ask_trace.md` 에 있다.", ""]
+    rows, notes = [], []
+    for rec in plan:
+        if rec.get("failed"):
+            rows.append((rec["id"], "-", "분석하지 못함", "-", "-", "-", "-", "-", "-", rec["failed"][:200]))
+        for r in rec.get("intents") or []:
+            t = _ask_tally(ctx, r["id"])
+            names = ", ".join(r.get("names") or [])
+            if r.get("names_dropped"):
+                names += ("; " if names else "") + "코드에 없어 버림: " + ", ".join(r["names_dropped"])
+            if r.get("words"):
+                names += ("; " if names else "") + "낱말: " + ", ".join(r["words"])
+            extra = "".join(" / %s %d" % (lab, t[k]) for k, lab in (("llm_keep", "sLLM 이 고칠 필요가 없다고 본 곳"), ("merged", "다른 수정에 포함")) if t[k])
+            rows.append((rec["id"], r["id"], r["type"], names or "-",
+                         t["targets"], t["rule_fixed"], "%d(%d/%d)" % (t["llm_req"], t["tasks"], t["calls"]), t["llm_fixed"],
+                         t["left"] + t["unresolved"], (r.get("result") or "-")[:300] + extra))
+            notes += [(r["id"], kind, n, note, "%s:%d" % (path or "-", line)) for kind, n, _rid, note, path, line in sorted(t["notes"], key=lambda x: -x[1])[:6]]
+    L += _table(["요청", "의도", "종류", "이름", "대상", "규칙 수정", "sLLM 수정 요청(작업/호출)", "sLLM 수정", "미수정", "처리 경로와 결과"], rows)
+    if notes:
+        L += ["", "미수정과 오류의 비고(의도마다 건수가 많은 것부터 6개):", ""] + _table(["의도", "구분", "건수", "비고", "처음 위치"], notes[:60])
+    return L
+
+
+def _write_ask_trace(ctx, final=False):
+    """out/ask_trace.md: 요청 원문, 의미 분석의 답 원문, 해석된 의도, 의도별 처리 경로와 건수, 미수정 비고, sLLM 작업 목록.
+    S5 에서 한 번(분석까지), S9 에서 한 번(최종 건수) 쓴다. 자료는 meta(ask_plan)에서 읽으므로 이어서 실행해도 남는다."""
+    plan = ctx.store.get_meta("ask_plan", []) or []
+    if not plan:
+        return
+    L = ["# 요청문 처리 추적", "",
+         "요청문 하나가 sLLM 의 의미 분석에서 어떤 의도로 나뉘었고, 의도마다 어떤 대상과 수정 요청으로 이어졌는지 적은 것이다.", "",
+         "- 상태: %s" % ("최종(수정과 검증이 끝난 뒤의 건수)" if final else "분석 직후(S5). 수정 결과의 건수는 실행이 끝나면 다시 쓴다"),
+         "- 물음과 답의 전체 원문: `logs/llm/ask_*.txt`",
+         "- 건수의 뜻: 대상(의도가 가리킨 코드의 자리) / 규칙 수정(sLLM 없이 고친 것) / sLLM 수정 요청(sLLM 에 맡기기로 한 자리. 괄호 안은 실제로 보낸 자리, 작업 수, 호출 수) / "
+         "sLLM 수정(받아들인 것) / 미수정(수동 검토로 남은 것)"]
+    for rec in plan:
+        L += ["", "## %s" % rec["id"], "", "**요청 원문**", ""] + ["> " + x for x in (rec["text"].splitlines() or [""])]
+        an = rec.get("analysis")
+        L += ["", "**의미 분석(sLLM)**", ""]
+        if not an:
+            L.append("- 호출하지 않음: %s" % (rec.get("failed") or "-"))
+        else:
+            L.append("- 모델에 알려 준 이름(요청 원문의 영문 이름 가운데 코드에 실제로 있는 것) %d개: %s" % (len(an["hints"]), ", ".join(an["hints"]) or "없음"))
+            for a in an["attempts"]:
+                L.append("- %d차 답: %s, %dms, %d자, %s. 원문 `%s`" % (
+                    a["n"], a["source"], a["ms"], len(a["raw"]),
+                    "쓸 수 있음" if a["usable"] else ("쓸 수 없음(%s)" % (a["why"] or "-")), a["file"]))
+                L += ["", "~~~~text"] + [x.replace("~~~~", "~~~ ~") for x in (a["raw"].splitlines() or ["(빈 답)"])] + ["~~~~", ""]
+                L += ["  - 해석하면서 바꾼 것: " + n for n in a["notes"]]
+        if rec.get("failed"):
+            L += ["", "- **분석하지 못함**: %s" % rec["failed"]]
+        its = rec.get("intents") or []
+        if not its:
+            continue
+        L += ["", "**해석된 의도 %d개**(요청문 1건 -> 의도 %d개)" % (len(its), len(its)), ""]
+        L += _table(["의도", "종류", "지시", "이름", "버린 이름(코드에 없음)", "낱말", "구문", "파일"], [
+            (r["id"], r["type"], r["instruction"], ", ".join(r.get("names") or []) or "-", ", ".join(r.get("names_dropped") or []) or "-",
+             ", ".join(r.get("words") or []) or "-", r.get("construct") or "any", ", ".join(r.get("files") or []) or "-") for r in its])
+        for r in its:
+            t = _ask_tally(ctx, r["id"])
+            L += ["", "### %s [%s]" % (r["id"], r["type"]), "", "- 지시: %s" % r["instruction"], "- 처리 경로와 결과: %s" % (r.get("result") or "-")]
+            L += ["- 알아 둘 것: " + w for w in r.get("warnings") or []]
+            for c in r.get("check") or []:
+                L.append("- 후보 확인(sLLM, 묶음 %d/%d, %s): 후보 %d개 가운데 %d개를 남김%s" % (
+                    c["chunk"], c["chunks"], c["source"], c["cands"], len(c["kept"]),
+                    (": " + ", ".join(c["kept"][:40])) if c["kept"] else (" (%s)" % c["state"] if c["state"] else "")))
+            L.append("- 집계: " + _tally_text(t))
+            if t["notes"]:
+                L += ["", "미수정과 오류의 비고:", ""] + _table(["구분", "건수", "비고", "처음 위치"], [
+                    (kind, n, note, "%s:%d" % (path or "-", line)) for kind, n, _rid, note, path, line in sorted(t["notes"], key=lambda x: -x[1])[:60]])
+            if t["task_rows"]:
+                L += ["", "수정 요청(sLLM 작업). 물음과 답은 `logs/llm/task번호_*` 에 있다:", ""]
+                L += _table(["작업", "파일", "줄", "상태", "시도", "비고"], t["task_rows"][:80])
+    write_text(ctx.p("out", "ask_trace.md"), "\n".join(L) + "\n")
+
+
+def _write_ask_plan(ctx, plan, contracts):
+    """요청문 분석의 결과를 out/ask_plan.json 에 적는다. 무엇으로 이해했고 어디를 찾았는지 사람이 확인하는 파일이다.
+    같은 내용을 meta(ask_plan)에 넣고 out/ask_trace.md(읽기 쉬운 꼴)를 쓴다."""
+    if not plan:
+        ctx.store.set_meta("ask_plan", [])
         return
     by_id = {a["id"]: a for a in ctx.request.get("asks") or []}
     by_con = {c["id"]: c for c in contracts}
@@ -7048,8 +7375,11 @@ def _write_ask_plan(ctx, plan, contracts):
                     ", ".join("%s %d" % (k.strip(), v) for k, v in (sx_.get("left") or {}).items()) or "없음")
     write_text(ctx.p("out", "ask_plan.json"), json.dumps(
         {"_설명": "요청문(--ask)을 sLLM 이 의도별로 나눈 결과와, 도구가 그 의도로 코드에서 찾은 곳의 수다. "
-                  "분석 요청과 응답의 원문은 logs/llm/ask_*.txt 에 있다.", "asks": plan}, ensure_ascii=False, indent=2))
-    LOG5.info("요청문 분석 결과: %s" % ctx.p("out", "ask_plan.json"))
+                  "분석 요청과 응답의 원문은 logs/llm/ask_*.txt 에 있고, 각 요청의 analysis 에도 답 원문(raw)이 있다. "
+                  "의도별 건수는 out/ask_trace.md 에 있다.", "asks": plan}, ensure_ascii=False, indent=2))
+    ctx.store.set_meta("ask_plan", plan)
+    _write_ask_trace(ctx, final=False)
+    LOG5.info("요청문 분석 결과: %s (읽기 쉬운 꼴: %s)" % (ctx.p("out", "ask_plan.json"), ctx.p("out", "ask_trace.md")))
 
 
 # ---- 환경 호환성 항목의 처리 깊이(--compat-llm 1|2|3) --------------------------------------------------------
@@ -9137,7 +9467,7 @@ def prompt_version(ctx):
 def _extra_report_lines(ctx):
     """보고서 7절 뒤에 붙는 부분: 변경 계약(E3, E4, E6), 빌드 로그에서 넣은 이슈(F8), 예외로 건너뛴 탐지(C11),
     규칙 후보(C12). 해당하는 것이 없으면 그 부분은 내지 않는다."""
-    st, L = ctx.store, []
+    st, L = ctx.store, _ask_trace_report_lines(ctx)
     cons = st.get_meta("contracts", []) or []
     if cons:
         L += ["", "### 변경 계약(요청사항)", "", "요청사항으로 바뀌는 선언과 그 사용처의 처리 결과다. 컴파일러 없이 글자로 분석한 "
@@ -9228,6 +9558,8 @@ def _extra_report_lines(ctx):
 def s9_report(ctx):
     st, env = ctx.store, ctx.env
     out = ctx.p("out")
+    _write_ask_trace(ctx, final=True)                       # 요청문 -> 의도 -> 대상·수정 요청·미수정(최종 건수)
+    _log_tallies(ctx)                                       # 처리 단계별, 의도별 집계를 실행 로그에 적는다
     shutil.rmtree(os.path.join(out, "diff"), ignore_errors=True)
 
     # --- diff ---
@@ -9371,6 +9703,7 @@ def s9_report(ctx):
     R += ["", "## 4. 이슈(탐지 결과)", ""] + _table(["규칙/요청", "단계", "탐지", "수정됨", "설정 흡수", "수동 검토"], [
         (r["rule_id"], r["tier"], r["n"], r["fixed"] or 0, r["absorbed"] or 0, r["manual"] or 0) for r in rstat])
     R += ["", "단계별 상태:", ""] + _table(["단계", "상태", "건수"], [(r["tier"], r["status"], r["n"]) for r in istat])
+    R += _stage_report_lines(ctx)
     R += ["", "## 5. 수정 레코드", ""] + (_table(["출처", "상태", "건수"], [(r["origin"], r["status"], r["n"]) for r in estat])
                                        if estat else ["없음."])
     R += ["", "## 6. sLLM 사용", "", "- 호출 %d회(실패 %d회), 소요 %.1f초" % (calls["n"], calls["fail"], calls["ms"] / 1000.0),
@@ -10544,7 +10877,7 @@ USAGE = [
     ("실행 제어", [
         ("--dry-run", "탐지만", "--dry-run", "S0~S2 만 하고 보고서를 낸다. 무엇이 걸리는지 먼저 볼 때"),
         ("--until", "규칙 적용까지만", "--until S4", "sLLM 을 부르기 전에 멈춘다"),
-        ("--until", "요청문 분석까지만", "--until S5", "out/ask_plan.json 으로 요청이 어떻게 나뉘었는지 확인한 뒤 --resume 으로 잇는다"),
+        ("--until", "요청문 분석까지만", "--until S5", "out/ask_trace.md 로 모델의 답과 요청이 어떻게 나뉘었는지 확인한 뒤 --resume 으로 잇는다"),
         ("--resume", "이어서 실행", "vupdate run --resume {RUN}", "대기로 남은 작업이나 --until 로 멈춘 실행을 잇는다. 받아 둔 응답은 다시 묻지 않는다"),
         ("--resume", "예산을 다시 주고 이어서", "vupdate run --resume {RUN} --max-calls 200", "--max-calls 는 이번 실행에서 새로 보낼 호출 수다"),
     ]),
@@ -10568,7 +10901,7 @@ USAGE = [
     ]),
     ("함께 쓰는 조합", [
         ("처음 돌릴 때", "탐지만 먼저", "--dry-run", "보고서로 규모를 본 뒤 옵션 없이 다시 돌린다"),
-        ("요청문", "분석을 확인하고 수정", "--ask \"WriteLog 호출에 줄 번호 인자를 추가한다\" --until S5", "ask_plan.json 을 보고 맞으면 vupdate run --resume 실행폴더"),
+        ("요청문", "분석을 확인하고 수정", "--ask \"WriteLog 호출에 줄 번호 인자를 추가한다\" --until S5", "out/ask_trace.md 를 보고 맞으면 vupdate run --resume 실행폴더"),
         ("구조 분석", "탐지 결과를 먼저 봄", "--request {REQ} --until S5", "out/struct_scan.md 에 버퍼별 문장 표와 병렬 배열 묶음이 나온다. 맞으면 vupdate run --resume 실행폴더"),
         ("호출을 나눠 보낼 때", "예산과 이어서", "--compat-llm 3 --max-calls 100", "종료 코드 4 면 vupdate run --resume 실행폴더 --max-calls 100 을 되풀이한다"),
         ("x64 전환", "64비트 규칙과 sLLM", "--platform x64 --compat-llm 3", "SetWindowLong 계열은 3단계에서 sLLM 에 간다. 1, 2단계면 수동 검토 목록에 올린다"),
