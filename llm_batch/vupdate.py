@@ -4,19 +4,22 @@
 ==============================================================================
 vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본)
 ==============================================================================
-버전 : 0.10.2 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
+버전 : 0.10.3 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
               환경 호환성 항목의 sLLM 호출은 --compat-llm 의 단계로 정한다. 당장 쓰지 않는 기능은 뺐다. 17_추가_0.9.0.md)
               0.9.1: OS·DB 의 원본/대상 옵션(--from-os, --to-os, --from-db, --to-db). 18_추가_0.9.1.md
               0.9.2: --compat-llm 을 단계 1|2|3 으로. 막힌 컴파일 검사를 통과로 치지 않는다. 옵션별 사용 예는 vupdate examples.
               0.9.3: 단계를 처리의 깊이로 다시 나눴다. 1: 기계적 변경만, 2: 1 + 선언을 읽어 판정하는 기계적 변환(보안 CRT),
                      3: 2 + 기계적 변경 뒤에 남은 것을 sLLM 에. 22_추가_0.9.3.md, 23_옵션별_사용예시.md
               0.10.0: 구조 분석. 전문 버퍼의 위치 접근(숫자 인덱스, 포인터 위치, 커서 증가)을 기존 구조체의 필드 접근으로,
-                      한 함수의 지역 병렬 배열을 구조체의 배열로 바꾼다. 전부 규칙이고 sLLM 을 쓰지 않는다.
+                      한 함수의 지역 병렬 배열을 구조체의 배열로 바꾼다. 확정한 것은 규칙으로 바꾼다(0.10.3 부터 전문 버퍼의 남은 자리는 sLLM 에 맡긴다).
                       요청 파일의 buffer_fields, record_group. 24_검토_전문버퍼_병렬배열.md, 25_추가_0.10.0.md
               0.10.1: 백업으로 보이는 폴더와 파일(bak, backup, 백업, 복사본, old 폴더, _old·날짜를 붙인 사본 등)을 처리 대상에서 뺀다(기본).
                       쓰이고 있는 것(프로젝트 파일이 참조, 소스가 include)은 빼지 않는다. --backups keep 으로 끈다. 26_추가_0.10.1.md
               0.10.2: 요청문의 의미 분석 답(원문)과 해석 결과, 의도별 처리 건수(대상, 규칙 수정, sLLM 수정 요청, 미수정과 비고),
                       처리 단계(--compat-llm 1·2·3)별 건수를 run.log, 보고서, out/ask_trace.md 에 남긴다. 동작은 바꾸지 않았다. 28_추가_0.10.2.md
+              0.10.3: --compat-llm 3 은 1, 2단계 뒤에 남은 사용 중단 경고 줄을 모두 sLLM 에 보낸다. 요청문의 구조 변환은 규칙이 못 정한
+                      자리를 sLLM 에 맡긴다. 요청 연결, 멤버 구조체의 sizeof, 값으로 채우는 묶음, include 경로, 보고서의 보장 문구를 고쳤다.
+                      29_추가_0.10.3.md
 목적 : 레거시 C++ 패키지를 새 Visual Studio 환경(예: 2008 -> 2022)에 맞게
        고치는 작업을 한 명령으로 수행한다. 규칙으로 고칠 수 있는 것은 규칙으로,
        규칙으로 못 고치는 것만 sLLM에 맡기고, 결과를 별도 폴더에 낸다.
@@ -35,7 +38,7 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
   vupdate run --resume <실행 폴더>                 (대기로 남은 작업을 이어서 보냄)
   vupdate run ... --ask "WriteLog 호출에 줄 번호 인자를 추가하고 g_data 배열을 구조체로 바꾼다"   (요청문. 형식 없이 글로 적는다)
   vupdate run ... --compat-llm 3                  (환경 호환성 항목의 처리 깊이. 1: 기계적 변경만(기본), 2: 1 + 선언을 읽어 판정하는
-                                                   기계적 변환(지역 배열에 쓰는 보안 CRT 호출), 3: 2 + 남은 것을 sLLM 에)
+                                                   기계적 변환(지역 배열에 쓰는 보안 CRT 호출), 3: 2 + 남은 것을 sLLM 의 판단에 맡김)
   vupdate run ... --request req.json              (요청 파일. 전문 버퍼의 위치 접근을 기존 구조체의 필드로(buffer_fields),
                                                    지역 병렬 배열을 구조체의 배열로(record_group). 규칙만 쓴다. 25_추가_0.10.0.md)
   vupdate run ... --backups keep                  (백업으로 보이는 폴더와 파일도 처리한다. 기본은 skip: 빼고 out/backup_excluded.md 에 목록을 낸다)
@@ -117,7 +120,7 @@ from concurrent.futures import ThreadPoolExecutor
 # 목적: 모든 구획이 같이 쓰는 최소한의 도구. 로그 접두어 규칙을 여기서 보장한다.
 # ============================================================================
 APP = "vupdate"
-VERSION = "0.10.2"
+VERSION = "0.10.3"
 
 STAGES = [("S0", "준비"), ("S1", "인벤토리"), ("S2", "탐지"), ("S3", "설정흡수"),
           ("S4", "규칙적용"), ("S5", "영향분석"), ("S6", "sLLM수정"), ("S7", "병합"),
@@ -1588,6 +1591,22 @@ RULES = [
      "title": "POSIX 이름 함수를 밑줄 이름으로 치환",
      "when": {"since": 2005, "standing": True, "deprecated": "fix"},
      "pattern": r"(?<![\w.>:])(%s)\s*\(" % _NONSTDC, "group": 1, "action": {"type": "prefix", "text": "_"}},
+    {"id": "R-T3-CRT-SECURE-REST", "tier": "T3", "category": "CRT", "llm": True, "soft": True, "detector": "crt_rest",
+     "title": "보안 CRT 경고(C4996)가 남은 호출을 sLLM 의 판단으로(--compat-llm 3)",
+     "when": {"since": 2005, "standing": True, "compat": 3},
+     "guidance": "이 호출은 사용 중단 경고(C4996) 대상이다. 보안 함수로 바꿔도 동작이 같다고 판단되면 바꾼다. 보안 함수의 이름은 옛 이름 뒤에 _s 만 "
+                 "붙인 것이다(strcpy -> strcpy_s, _itoa -> _itoa_s). 크기 인자는 쓰는 대상이 이 조각이나 [참고]에 선언이 보이는 배열일 때만 "
+                 "sizeof(배열) 로 준다. 다음은 고치지 않는다: 대상이 포인터나 함수 인자여서 크기를 알 수 없는 것, 버퍼의 중간 위치(buf + n, &buf[n])나 "
+                 "끝에 0 이 없는 고정 길이 필드에 쓰는 것, strncpy 와 strncat(끝의 0 과 채움이 달라진다), 반환값을 쓰는 호출(보안 함수는 반환 "
+                 "타입이 다르다), fopen·localtime·gmtime·ctime·strtok·getenv·sscanf 처럼 문장의 구조가 달라지는 것. 고칠 줄이 없으면 NO_CHANGE 를 쓴다. "
+                 "(고치지 않은 줄의 경고는 프로젝트 설정으로 꺼진다)"},
+    {"id": "R-T3-WINSOCK-REST", "tier": "T3", "category": "Windows API", "llm": True, "soft": True, "detector": "winsock_rest",
+     "title": "사용 중단된 Winsock 주소 변환 함수를 sLLM 의 판단으로(--compat-llm 3)",
+     "when": {"since": 2013, "compat": 3},
+     "guidance": "inet_addr 과 inet_ntoa 는 사용 중단 경고(C4996) 대상이다. 결과를 받는 변수와 그 사용처가 이 조각 안에 모두 보일 때만 고친다. "
+                 "inet_addr(문자열) 의 결과를 주소 변수에 넣는 문장은 inet_pton(AF_INET, 문자열, &주소변수) 로 고친다(반환값의 뜻이 다르다: 1 이 성공). "
+                 "inet_ntoa(주소) 는 이 조각에 선언이 보이는 char 배열이 있을 때만 inet_ntop(AF_INET, &주소, 배열, sizeof(배열)) 로 고친다. "
+                 "반환값을 바로 비교하거나 다른 함수에 넘기는 꼴, 확실하지 않은 꼴은 고치지 않는다. 고칠 줄이 없으면 NO_CHANGE 를 쓴다."},
     {"id": "R-T0-WINSOCK-DEPR", "tier": "T0", "category": "Windows API", "collapse": True,
      "title": "사용 중단된 Winsock 함수 사용(C4996)", "when": {"since": 2013},
      "pattern": r"(?<![\w.>:])(?:inet_addr|inet_ntoa|gethostbyname|gethostbyaddr|WSAAsyncSelect)\s*\(",
@@ -2569,7 +2588,39 @@ def _det_scrt_local(rule, doc, env=None):
     return hits
 
 
-_DETECTORS = {"scrt_local": _det_scrt_local, "tech": _det_tech, "literal_ident": _det_literal_ident, "snprintf_macro": _det_snprintf_macro,
+# ---- 3단계(--compat-llm 3): 1, 2단계 뒤에 남은 사용 중단 경고 줄을 sLLM 의 판단에 맡긴다(0.10.3)
+_CRT_REST_POSIX = r"(?<![\w.>:])(?:itoa|ltoa|ultoa|strlwr|strupr)\s*\("     # 밑줄 이름으로 바꾼 뒤에도 보안 CRT 경고가 남는 POSIX 이름
+
+
+def _det_crt_rest(rule, doc, env=None):
+    """보안 CRT 경고(C4996)에 걸린 호출 전부. 이슈의 범위는 여는 괄호 한 글자다.
+    그래야 이름만 바꾸는 규칙(itoa -> _itoa)의 수정과 겹치지 않고, 2단계가 바꾼 호출(이름부터 첫 인자까지)과는 겹쳐서 저절로 빠진다."""
+    if _DET["pattern"] is None:
+        _DET["pattern"] = next(r["pattern"] for r in RULES if r["id"] == "R-T0-CRT-SECURE")
+    hits, seen = [], set()
+    for pat in (_DET["pattern"], _CRT_REST_POSIX):
+        for m in _rx(pat).finditer(doc.code):
+            if doc.code[m.start():m.end()].rstrip("( \t\r\n") == "gets" or m.end() in seen:
+                continue                                      # gets 는 없어진 함수다. R-T3-GETS-REMOVED 가 맡는다
+            seen.add(m.end())
+            la, lb = doc.line_span(doc.line_of(m.start()))
+            hits.append({"start": m.end() - 1, "end": m.end(), "detail": doc.text[la:lb].strip()[:120]})
+    return sorted(hits, key=lambda h: h["start"])
+
+
+def _det_winsock_rest(rule, doc, env=None):
+    """사용 중단된 Winsock 주소 변환 함수(inet_addr, inet_ntoa). 새 함수는 <ws2tcpip.h> 에 있으므로 그 헤더를 이미 include 한 파일만 대상이다
+    (조각 단위의 수정으로는 include 를 더할 수 없다)."""
+    if not re.search(r"#\s*include\s*[<\"]\s*ws2tcpip\.h", doc.text, re.I):
+        return []
+    hits = []
+    for m in _rx(r"(?<![\w.>:])(?:inet_addr|inet_ntoa)\s*\(").finditer(doc.code):
+        la, lb = doc.line_span(doc.line_of(m.start()))
+        hits.append({"start": m.end() - 1, "end": m.end(), "detail": doc.text[la:lb].strip()[:120]})
+    return hits
+
+
+_DETECTORS = {"crt_rest": _det_crt_rest, "winsock_rest": _det_winsock_rest, "scrt_local": _det_scrt_local, "tech": _det_tech, "literal_ident": _det_literal_ident, "snprintf_macro": _det_snprintf_macro,
               "stdint_typedef": _det_stdint_typedef, "narrowing_char_init": _det_narrowing_char_init,
               "guarded_decl": _det_guarded_decl, "guard_macro": _det_guard_macro, "winver_old": _det_winver_old,
               "dyn_except_spec": _det_dyn_except_spec}
@@ -2604,8 +2655,8 @@ def rule_hits(rule, doc, env=None):
 # ----------------------------------------------------------------------------
 KNOWN_CHANGES = [
     # (기준, 분류, 변경 항목, 처리 방식, 규칙 ID 또는 오류 코드, 비고)
-    ("2005", "CRT", "보안 CRT 함수 사용 중단 경고(C4996)", "설정", "R-T0-CRT-SECURE, R-T2-CRT-SECURE-LOCAL",
-     "설정으로 경고를 끈다. --compat-llm 2 이상이면 지역 char 배열에 쓰는 호출만 규칙으로 바꾼다"),
+    ("2005", "CRT", "보안 CRT 함수 사용 중단 경고(C4996)", "설정", "R-T0-CRT-SECURE, R-T2-CRT-SECURE-LOCAL, R-T3-CRT-SECURE-REST",
+     "설정으로 경고를 끈다. --compat-llm 2 이상이면 지역 char 배열에 쓰는 호출만 규칙으로 바꾸고, 3 이면 남은 호출을 sLLM 의 판단에 맡긴다"),
     ("2005", "CRT", "POSIX 이름 함수 사용 중단(strdup 등)", "규칙", "R-T0-CRT-NONSTDC, R-T1-CRT-NONSTDC", "방침에 따라 설정 또는 치환"),
     ("2005", "CRT", "swprintf 에 크기 인자 필요", "오류표", "C4996, C2664", "인자 수를 세어야 해서 규칙으로 잡지 않는다"),
     ("2005", "CRT", "time_t 가 64비트", "없음", "", "빌드는 된다. 구조체 크기와 파일 형식이 달라질 수 있어 동작 확인 대상"),
@@ -2631,7 +2682,8 @@ KNOWN_CHANGES = [
     ("2012", "링크", "x86 에서 /SAFESEH 기본", "오류표", "LNK2026", ""),
     ("2012", "언어", "초기화되지 않은 포인터 검사 강화", "오류표", "C4703", ""),
     ("2012", "MFC", "MFC 클래스의 함수 시그니처 변경 다수", "오류표", "C2511, C2555, C2664", "재정의한 함수에서만 난다. 컴파일해야 알 수 있다"),
-    ("2013", "SDK", "Winsock 구 함수 사용 중단(C4996)", "설정", "R-T0-WINSOCK-DEPR", ""),
+    ("2013", "SDK", "Winsock 구 함수 사용 중단(C4996)", "설정", "R-T0-WINSOCK-DEPR, R-T3-WINSOCK-REST",
+     "설정으로 경고를 끈다. --compat-llm 3 이면 <ws2tcpip.h> 를 include 한 파일의 inet_addr, inet_ntoa 를 sLLM 의 판단에 맡긴다"),
     ("2013", "SDK", "GetVersionEx 사용 중단", "규칙", "R-T3-GETVERSIONEX", "탐지만. 동작 확인 대상"),
     ("2013", "CRT", "C99 수학 함수 추가(자체 round 등과 충돌)", "규칙", "R-T2-C99-MATH-MACRO, R-T3-C99-MATH-FUNC", "매크로는 가드, 함수는 탐지만"),
     ("2013", "표준 라이브러리", "std::min, std::max 에 <algorithm> 필요", "오류표", "C2039, C3861", ""),
@@ -3268,8 +3320,11 @@ def project_checks(projects):
     return list(found.values())
 
 
-def cl_flags_for(env, cfg, proj_dir):
-    """프로젝트 구성에서 cl 옵션을 만든다."""
+def cl_flags_for(env, cfg, proj_dir, alt_dir=None, extra_dirs=()):
+    """프로젝트 구성에서 cl 옵션을 만든다.
+    alt_dir: 원본 패키지에서의 프로젝트 폴더. 상대 include 경로를 스냅샷 기준으로 넣은 뒤 원본 기준의 폴더도 더한다(0.10.3).
+             스냅샷에는 패키지 폴더 밖의 헤더(..\\..\\Common\\Inc)와 복사하지 않은 파일이 없기 때문이다. 원본은 읽기만 한다.
+    extra_dirs: 끝에 더할 폴더(원본에서의 소스 폴더. "../x.h" 꼴의 include 를 찾는다)."""
     flags = []
     if env["cpp_standard"]:
         flags.append("/std:" + env["cpp_standard"])
@@ -3281,6 +3336,10 @@ def cl_flags_for(env, cfg, proj_dir):
             if "$(" in inc:
                 continue
             flags.append("/I" + (inc if os.path.isabs(inc) else os.path.normpath(os.path.join(proj_dir, inc))))
+            if alt_dir and not os.path.isabs(inc):
+                alt = os.path.normpath(os.path.join(alt_dir, inc))
+                if os.path.isdir(alt) and ("/I" + alt) not in flags:
+                    flags.append("/I" + alt)
         for d in cfg["defines"]:
             if "$(" not in d:
                 flags.append("/D" + d)
@@ -3292,6 +3351,9 @@ def cl_flags_for(env, cfg, proj_dir):
         flags.append({"0": "/MT", "1": "/MTd", "2": "/MD", "3": "/MDd"}.get(cfg["runtime"], "/MT"))
         if cfg["use_mfc"] == "2":
             flags.append("/D_AFXDLL")
+    for d in extra_dirs:
+        if d and os.path.isdir(d) and ("/I" + d) not in flags:
+            flags.append("/I" + d)
     return flags
 
 
@@ -3560,18 +3622,34 @@ def s0_prepare(ctx):
     stat = {"mode": "skip" if skip_bk else "keep", "files": 0, "source": 0, "dirs": [], "single": [], "kept": [], "seen": len(cands),
             "seen_source": sum(1 for c in cands if c[2] == "source")}
     per_dir = OrderedDict()
-    for src, rel, kind, (top, why) in cands:
-        low, keep_why = rel.lower(), ""
+    kept_idx, inc_more, grew = set(), set(), bool(skip_bk)
+    while grew:                                               # (0.10.3) 되살린 헤더가 include 하는 헤더도 되살린다(더 되살릴 것이 없을 때까지)
+        grew = False
+        for idx, (src, rel, kind, (top, why)) in enumerate(cands):
+            if idx in kept_idx:
+                continue
+            low, base, keep_why = rel.lower(), os.path.basename(rel).lower(), ""
+            if low in proj_refs:
+                keep_why = "백업이 아닌 프로젝트 파일이 참조함"
+            elif low.endswith(_BK_HEADER_EXT) and base in inc_names and base not in live_names:
+                keep_why = "백업이 아닌 소스가 include 하고, 같은 이름의 헤더가 백업 밖에 없음"
+            elif low.endswith(_BK_HEADER_EXT) and base in inc_more and base not in live_names:
+                keep_why = "되살린 헤더가 include 하고, 같은 이름의 헤더가 백업 밖에 없음"
+            if not keep_why:
+                continue
+            kept_idx.add(idx)
+            data = take(src, rel, kind)
+            stat["kept"].append((rel, (("폴더 %s: " % top) if top else "") + why, keep_why))
+            if data is not None and kind == "source":
+                new = {os.path.basename(x.decode("latin-1").replace("\\", "/")).lower() for x in _BK_INC_RX.findall(data)} - inc_names - inc_more
+                if new:
+                    inc_more |= new
+                    grew = True
+    for idx, (src, rel, kind, (top, why)) in enumerate(cands):
+        if idx in kept_idx:
+            continue
         if not skip_bk:
-            keep_why = "--backups keep"
-        elif low in proj_refs:
-            keep_why = "백업이 아닌 프로젝트 파일이 참조함"
-        elif low.endswith(_BK_HEADER_EXT) and os.path.basename(low) in inc_names and os.path.basename(low) not in live_names:
-            keep_why = "백업이 아닌 소스가 include 하고, 같은 이름의 헤더가 백업 밖에 없음"
-        if keep_why:
             take(src, rel, kind)
-            if skip_bk:
-                stat["kept"].append((rel, (("폴더 %s: " % top) if top else "") + why, keep_why))
             continue
         try:
             size = os.path.getsize(src)
@@ -4041,7 +4119,9 @@ _SX_CALLS = {"memcpy": ((0,), (1,), 2, False, True), "memmove": ((0,), (1,), 2, 
              "memcmp": ((), (0, 1), 2, False, True), "strncpy": ((0,), (1,), 2, False, False), "_mbsncpy": ((0,), (1,), 2, False, False),
              "strncmp": ((), (0, 1), 2, False, False), "_strnicmp": ((), (0, 1), 2, False, False), "strnicmp": ((), (0, 1), 2, False, False),
              "strcpy": ((0,), (1,), "lit", True, False), "lstrcpy": ((0,), (1,), "lit", True, False), "strcat": ((0,), (1,), None, True, False),
-             "sprintf": ((0,), (), "fmt", True, False), "wsprintf": ((0,), (), "fmt", True, False), "wsprintfA": ((0,), (), "fmt", True, False)}
+             "sprintf": ((0,), (), "fmt", True, False), "wsprintf": ((0,), (), "fmt", True, False), "wsprintfA": ((0,), (), "fmt", True, False),
+             # (0.10.3) 보안 CRT 꼴: 대상, 대상의 크기, 원본, 길이
+             "memcpy_s": ((0,), (2,), 3, False, True), "memmove_s": ((0,), (2,), 3, False, True), "strncpy_s": ((0,), (2,), 3, True, False)}
 _SX_CALL_RX = re.compile(r"(?<![\w.>])(?:::)?(%s)\s*\(" % "|".join(sorted(_SX_CALLS)))
 _SX_CHAIN = r"[A-Za-z_]\w*(?:\s*(?:->|\.)\s*[A-Za-z_]\w*)*"
 _SX_KW = re.compile(r"\s*(if|else|for|while|do|switch|case|default|return|break|continue|goto)\b")
@@ -4447,7 +4527,24 @@ class _SxFn:
         for name in re.findall(r"[A-Za-z_]\w*", (dc or {}).get("type", "")):
             if name in self.sx["by_name"]:
                 return self.sx["by_name"][name]
-        return None
+        return self.outer_struct(var)[0] if dc is None else None
+
+    def outer_struct(self, var):
+        """지역 변수가 아닌 이름(메서드가 속한 클래스의 멤버, 파일 범위 변수)의 (구조체 항목, 선언 정보). 찾지 못하면 (None, None) (0.10.3)"""
+        cache = self.__dict__.setdefault("_outer", {})
+        if var not in cache:
+            e, r = None, None
+            try:
+                r = lookup_decl(self.ctx, self.d.rel, self.s, self.blk["open"] + 1, var)
+            except Exception:
+                r = None
+            if r and r.get("kind") in ("member", "global"):
+                for name in re.findall(r"[A-Za-z_]\w*", str(r.get("text") or "").split("(")[0]):
+                    if name in self.sx["by_name"]:
+                        e = self.sx["by_name"][name]
+                        break
+            cache[var] = (e, r)
+        return cache[var]
 
     def sizeof(self, inner):
         t = " ".join(inner.split())
@@ -4466,10 +4563,14 @@ class _SxFn:
             if dc is not None:                                 # 지역 구조체 변수: sizeof(변수) 는 구조체의 크기다(포인터는 아니다)
                 e = self.decl_struct(name)
                 return e["size"] if (e is not None and e["ok"] and not dc["ptr"] and not dc["dims"]) else None
+            e, r = self.outer_struct(name)                     # 클래스의 멤버나 파일 범위의 구조체 변수: sizeof(변수) 는 구조체의 크기다
+            if e is not None and e["ok"] and r and not r.get("is_array") and not r.get("is_pointer"):
+                return e["size"]
             sizes = self.sx["msizes"].get(name)                # 클래스의 멤버 배열로 본다. 이름이 같은 멤버의 크기가 모두 같을 때만 쓴다
             return next(iter(sizes)) if sizes and len(sizes) == 1 else None
         if re.match(r"^[A-Za-z_ ]+$", t) and _sx_base_size(t) is not None:
             return _sx_base_size(t)
+        t = re.sub(r"^([A-Za-z_]\w*)\s*(?:\[[^\[\]]*\]\s*)+(?=(?:->|\.))", r"\1", t)     # 구조체 배열의 요소: arr[i].필드 -> arr.필드
         m = re.match(r"^([A-Za-z_]\w*)\s*(?:->|\.)\s*([A-Za-z_][\w.\s>-]*)$", t)
         if m:
             path = re.sub(r"\s*(?:->|\.)\s*", ".", m.group(2).strip())
@@ -5055,6 +5156,8 @@ def _sx_sites(d, arrs, a, b, consts):
                 (total is not None and const_value(re.sub(r"\bsizeof\s*\(\s*(\w+)\s*\)", lambda q: str(_SX_SIZES.get(q.group(1), q.group(0))), ln), consts) == total)
             if _SX_ZERO.match(val) and ok_len:
                 x.update(cls="zero", a=sa, b=st1 + 1, call=zm.group(1), val=val)
+            elif ok_len and re.match(r"^(?:'(?:\\.|[^'\\])'|0[xX][0-9a-fA-F]+|\d+)$", val):
+                x.update(cls="fill", a=sa, b=st1 + 1, call=zm.group(1), val=val)      # (0.10.3) 0 이 아닌 상수로 채운다(공백 초기화 등)
             else:
                 x["stmt"] = " ".join(s[sa:sb].split())[:80]
         elif j < len(s) and s[j] == "[":
@@ -5077,7 +5180,7 @@ def _sx_sites(d, arrs, a, b, consts):
         wide = [(x["a"], x["b"]) for x in out[n] if x["cls"] == "count"]
         for x in out[n]:
             key = (x["cls"], x["a"], x["b"])
-            if x["cls"] == "zero" and key in seen:
+            if x["cls"] in ("zero", "fill") and key in seen:
                 continue
             if x["cls"] == "sub" and any(a <= x["a"] < b for a, b in wide):
                 continue                                       # 요소 수 식 안의 이름[0] 은 그 식에 포함된다
@@ -5136,7 +5239,7 @@ def _sx_plan_group(ctx, d, blk, blocks, arrs, sites, dup_names, opts):
             g["counts"][x["cls"]] = g["counts"].get(x["cls"], 0) + 1
             if x["cls"] == "bare":
                 blocked.append((x["line"], "이름을 통째로 사용(%s): %s" % (n, x.get("stmt", ""))))
-            elif x["cls"] == "zero":
+            elif x["cls"] in ("zero", "fill"):
                 zero.append(x)
     mw = _sx_macro_words(ctx)
     for x in arrs:
@@ -5178,9 +5281,10 @@ def _sx_plan_group(ctx, d, blk, blocks, arrs, sites, dup_names, opts):
             clusters[-1].append(x)
         else:
             clusters.append([x])
+    # (0.10.3) 덩어리가 묶음의 모든 배열을 같은 값으로 채우면 문장 하나로, 아니면(일부만 채우거나 값이 다르면) 레코드마다 도는 반복문으로 바꾼다
     for cl in clusters:
-        if sorted(x["name"] for x in cl) != sorted(names):
-            blocked.append((cl[0]["line"], "묶음의 일부만 0 으로 지움(%s). 한 문장으로 바꿀 수 없다" % ", ".join(x["name"] for x in cl)))
+        cl_vals = {"0" if x["cls"] == "zero" else " ".join(x["val"].split()) for x in cl}
+        cl[0]["_whole"] = sorted(x["name"] for x in cl) == sorted(names) and len(cl_vals) == 1
     blocked[:] = list(OrderedDict.fromkeys(blocked))
     used = set(re.findall(r"(?<!\w)[A-Za-z_]\w*", s[blk["head"]:blk["close"]])) | set(opts.get("_taken") or ())   # 같은 함수의 다른 묶음이 쓴 이름도 피한다
     hung = any(re.match(r"^(?:sz|str|n|l|dw|b|c|by|f|d|p|w)[A-Z]", n) for n in names)
@@ -5229,13 +5333,34 @@ def _sx_plan_group(ctx, d, blk, blocks, arrs, sites, dup_names, opts):
             elif x["cls"] == "count":
                 edits.append((x["a"], x["b"], "sizeof(%s) / sizeof(%s[0])" % (var, var), "요소 수(sizeof 나눗셈)"))
     for cl in clusters:
+        whole = cl[0].get("_whole")
+        what = "0 으로 지우는 문장을 하나로" if (whole and cl[0]["cls"] == "zero") else ("값으로 채우는 문장을 하나로" if whole else "채우는 문장을 레코드별 반복문으로")
         for i, x in enumerate(cl):
-            if i == 0:
-                new = ("memset(%s, %s, sizeof(%s));" % (var, x["val"], var)) if x["call"] == "memset" else "ZeroMemory(%s, sizeof(%s));" % (var, var)
-                edits.append((x["a"], x["b"], new, "0 으로 지우는 문장을 하나로"))
-            else:
+            if i > 0:
                 da, db = _sx_del_span(d, x["a"], x["b"])
-                edits.append((da, db, "", "0 으로 지우는 문장을 하나로"))
+                edits.append((da, db, "", what))
+                continue
+            if whole:
+                new = ("memset(%s, %s, sizeof(%s));" % (var, x["val"], var)) if x["call"] == "memset" else "ZeroMemory(%s, sizeof(%s));" % (var, var)
+            else:
+                # 배열마다 채우던 것을 레코드마다 그 필드를 채우는 것으로 바꾼다. 채워지는 바이트는 원본과 같다
+                iv, k2 = "iRec", 2
+                while iv in used or iv in names or iv == var:
+                    iv, k2 = "iRec%d" % k2, k2 + 1
+                used.add(iv)
+                ind2 = d.text[d.text.rfind("\n", 0, x["a"]) + 1:x["a"]]
+                ind2 = ind2 if not ind2.strip() else ind
+                body = []
+                for y in cl:
+                    fld = "%s[%s].%s" % (var, iv, y["name"])
+                    ref = fld if len(by_name[y["name"]]["dims"]) > 1 else "&" + fld
+                    body.append(("memset(%s, %s, sizeof(%s));" % (ref, y["val"], fld)) if y["call"] == "memset" else "ZeroMemory(%s, sizeof(%s));" % (ref, fld))
+                is_c = d.rel.lower().endswith(".c")
+                loop = ["for (%s%s = 0; %s < (%s); %s++)" % ("" if is_c else "int ", iv, iv, g["rows"], iv), "{"] + [step + b2 for b2 in body] + ["}"]
+                if is_c:                                       # C 파일: 반복 변수를 블록의 처음에 선언한다(C89 에서도 된다)
+                    loop = ["{", step + "int %s;" % iv] + [step + z for z in loop] + ["}"]
+                new = ("\n" + ind2).join(loop)
+            edits.append((x["a"], x["b"], new, what))
     edits.sort(key=lambda e: (e[0], e[1]))
     for p, q in zip(edits, edits[1:]):
         if q[0] < p[1]:
@@ -5647,6 +5772,9 @@ def _sx_request(ctx, ft, files):
     st, kind = ctx.store, ft["type"]
     res, sx = _sx_scan(ctx, files), _sx_structs(ctx)
     apply_on = ft.get("apply", True) is not False
+    # (0.10.3) 규칙이 위치나 길이를 확정하지 못한 자리는 sLLM 에 맡긴다. 요청에 "llm": "off" 를 주거나 --no-llm 이면 맡기지 않는다
+    llm_on = apply_on and str(ft.get("llm", "on")).lower() not in ("off", "false", "0", "no") and \
+        (not ctx.opts.get("no_llm")) and bool(ctx.cfg["llm"].get("endpoint"))
     targets = [str(x) for x in (ft.get("targets") or [])]
     sql_i = ("INSERT INTO issues(path,start,end,line,source,rule_id,tier,llm,title,detail,after,review,status,note) "
              "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
@@ -5671,7 +5799,8 @@ def _sx_request(ctx, ft, files):
     def manual(rel, a, line, title, detail, note):
         st.x(sql_i, (rel, a, a, line, "request", ft["id"], "T3", 0, title, detail[:300], None, 0, "manual", note[:600]))
 
-    stat = {"kind": kind, "apply": apply_on, "base": OrderedDict(), "target": OrderedDict(), "done": OrderedDict(), "left": OrderedDict(), "where": []}
+    stat = {"kind": kind, "apply": apply_on, "base": OrderedDict(), "target": OrderedDict(), "done": OrderedDict(), "left": OrderedDict(), "where": [],
+            "llm": 0}
 
     def bump(box, key, n=1):
         stat[box][key] = stat[box].get(key, 0) + n
@@ -5719,6 +5848,25 @@ def _sx_request(ctx, ft, files):
                         bump("left", "버퍼 전체를 다루는 문장(그대로 둠)")
                 for r in left:
                     bump("left", re.sub(r"\d+", "N", re.split(r"[:(.]", r["out"])[0].strip()) or "그 밖")
+                sent = [r for r in left if r["st"] in ("nopos", "nolen")] if llm_on else []
+                if sent:
+                    cands = _sx_llm_cands(ctx, ft, d.struct[fn.blk["head"]:fn.blk["close"]], sx)
+                    if not cands:
+                        for r in sent:
+                            r["out"] += " (필드 표를 줄 기존 구조체 후보가 없어 sLLM 에 보내지 않음. 요청 파일의 struct 로 지정한다)"
+                        sent = []
+                    else:
+                        ft["_llm_structs"] = [n for n in OrderedDict.fromkeys((ft.get("_llm_structs") or []) + [e["names"][-1] for e in cands])][:12]
+                for r in sent:
+                    la, lb = d.line_span(r["line"])
+                    st.x(sql_i, (f["rel"], r["a"], r["b"], r["line"], "request", ft["id"], "T3", 1, _SX_LLM_TITLE, d.text[la:lb].strip()[:160], None, 1,
+                                 "open", ("규칙이 확정하지 못해 sLLM 의 판단에 맡김(검토 필요): " + r["out"])[:300]))
+                    r["out"] += " -> sLLM 에 수정 요청"
+                if sent:
+                    stat["llm"] += len(sent)
+                    stat["where"].append("%s:%d %s() 버퍼 %s: sLLM 에 수정 요청 %d곳(줄 %s)" % (
+                        f["rel"], sent[0]["line"], f["func"], buf, len(sent), ", ".join(str(r["line"]) for r in sent[:12]) + (" 외" if len(sent) > 12 else "")))
+                    left = [r for r in left if r not in sent]
                 if left:
                     why = OrderedDict()
                     for r in left:
@@ -5777,7 +5925,8 @@ def _sx_request(ctx, ft, files):
                  ", ".join("%s %d" % kv for kv in stat["base"].items()) or "없음", ", ".join("%s %d" % kv for kv in stat["target"].items()) or "없음",
                  ", ".join("%s %d" % kv for kv in stat["done"].items()) or "없음",
                  ", ".join("%s %d" % (k.strip(), v) for k, v in stat["left"].items()) or "없음"))
-    note = ["전부 규칙으로 처리했다(sLLM 에 보내지 않음)." if apply_on else "탐지와 보고만 했다.", "문장별 표: out/struct_scan.md"]
+    note = [("확정한 것은 규칙으로 바꿨다. 규칙이 위치나 길이를 확정하지 못한 %d곳은 sLLM 에 수정을 요청했다(검토 필요)." % stat["llm"]) if stat["llm"]
+            else ("전부 규칙으로 처리했다(sLLM 에 보낸 것 없음)." if apply_on else "탐지와 보고만 했다."), "문장별 표: out/struct_scan.md"]
     if kind == "buffer_fields":
         note.insert(1, "버퍼와 전문 길이, 송수신 호출은 건드리지 않았다. 위치와 길이가 기존 구조체의 필드와 같은 접근만 바꿨다.")
     else:
@@ -5838,7 +5987,7 @@ def _sx_write_scan(ctx):
         L.append("- 위치로 접근하는 전문 버퍼를 찾지 못했다.")
     L += ["", "## 2. 지역 병렬 배열의 묶음", ""]
     for g in res["groups"]:
-        lab = {"sub": "첨자 접근", "sizeof": "sizeof(이름)", "count": "요소 수(sizeof 나눗셈)", "zero": "0 으로 지우는 문장", "bare": "이름을 통째로 사용"}
+        lab = {"sub": "첨자 접근", "sizeof": "sizeof(이름)", "count": "요소 수(sizeof 나눗셈)", "zero": "0 으로 지우는 문장", "fill": "값으로 채우는 문장", "bare": "이름을 통째로 사용"}
         L += ["### %s:%d %s()" % (g["rel"], g["line"], g["func"]), "",
               "- 배열: %s" % ", ".join("`%s %s%s`" % (x["type"], x["name"], "".join("[%s]" % q for q in x["dims"])) for x in g["arrays"]),
               "- 레코드 수: `%s` / 사용처: %s" % (g["rows"], ", ".join("%s %d" % (lab[k], v) for k, v in g["counts"].items()) or "없음"),
@@ -6825,6 +6974,10 @@ def _auto_array_feature(ctx, fid, text, name, files):
         # 문자열의 배열(char [행][길이])이다. 이름[i][0] 같은 접근을 근거로 글자 위치를 필드로 쪼개면 뜻이 틀린 구조체가 된다
         return None, ("배열 %s 은(는) 문자열의 배열로 보임(%s [행][길이]). 글자 위치를 필드로 쪼개지 않는다"
                       "(열을 필드로 삼으려면 --request 파일의 mapping 으로 준다)" % (name, etype))
+    if not consts and not two_d and _sx_base_size(etype) == 1:
+        # 글자 버퍼(char [길이])다. buf[5] = 0 같은 접근을 근거로 글자 위치를 필드로 쪼개면 뜻이 틀린 구조체가 된다(0.10.3)
+        return None, ("배열 %s 은(는) 글자 버퍼로 보임(%s [길이]). 글자 위치를 필드로 쪼개지 않는다"
+                      "(필드로 삼으려면 --request 파일의 mapping 으로 준다)" % (name, etype))
     if not consts and nums and not two_d and [c for c in idents if c not in vals]:
         # 숫자 인덱스와 변수 인덱스가 같이 쓰인다. 인덱스가 레코드 번호라는 뜻이므로 숫자를 필드 번호로 삼지 않는다
         return None, ("배열 %s 의 인덱스가 변수(%s)로도 쓰여 레코드 번호로 보임. 숫자 인덱스를 필드로 삼지 않는다"
@@ -6923,8 +7076,11 @@ def _analyze_asks(ctx, files):
                     r["result"] += "배열 요청으로 처리: " + "; ".join(made) + ". "
                 has_sx = bool(res["groups"]) or any(f["fn"].rows for f in res["fns"])
                 where = "; ".join("%s: %s. 코드에 %d곳(처음 %s:%d)" % (n, w, c, p or "-", l) for n, w, p, l, c in failed)
-                real = [x for x in failed if not x[1].startswith("이름 ")]      # 배열 선언은 있는데 필드로 삼지 못한 이름: 사용자가 가리킨 실제 배열이다
-                if sx_names or (not made and not real and has_sx):
+                real = [x for x in failed if not x[1].startswith("이름 ")]      # 배열 선언은 있는데 필드로 삼지 못한 이름
+                # (0.10.3) 그 가운데 표로 쓰이는 배열(문자열의 배열, 레코드 번호로 쓰는 배열)만 사용자가 가리킨 실제 대상으로 본다. 그때는 다른 대상으로 넓히지 않는다.
+                # 글자 버퍼나 인덱스로 쓰이지 않는 배열은 일반 낱말(TC 등)이 우연히 지역 배열의 이름과 같은 것일 수 있어 구조 분석으로 넘어간다
+                tables = [x for x in real if "문자열의 배열로 보임" in x[1] or "레코드 번호로 보임" in x[1]]
+                if sx_names or (not made and not tables and has_sx):
                     for suffix, t in (("-buf", "buffer_fields"), ("-rec", "record_group")):
                         ft = {"id": iid + suffix, "type": t, "targets": list(sx_names), "_auto": True, "_text": it["instruction"]}
                         req["features"].append(ft)
@@ -6935,6 +7091,15 @@ def _analyze_asks(ctx, files):
                         r["result"] += "요청문의 이름 가운데 대상이 아닌 것: " + where
                     LOG5.info("요청 %s [배열 -> 구조체]: %s" % (iid, r["result"]))
                     note(iid, "요청문(배열 -> 구조체)", "요청문: %s / %s" % (it["instruction"], r["result"]))
+                elif not made and can_llm and [n for n in ok_names if n not in {x[0] for x in real}]:
+                    # 구조 분석의 대상도 표 변환의 대상도 없다. 요청문의 이름이 쓰인 줄을 일반 수정 요청으로 sLLM 에 맡긴다(0.10.3).
+                    # 배열 선언이 있는데 표 변환이 뜻에 맞지 않는 이름(문자열 배열, 레코드 번호)은 맡기지 않는다: 선언과 사용처를 함께 바꿔야 하는 일이다
+                    free_names = [n for n in ok_names if n not in {x[0] for x in real}]
+                    r["result"] = ("구조 분석과 표 변환의 대상을 찾지 못해, 이름(%s)이 쓰인 줄을 일반 수정 요청으로 sLLM 에 맡김. " % ", ".join(free_names)) + \
+                        (("참고: " + where) if where else "")
+                    LOG5.info("요청 %s [배열 -> 구조체]: %s" % (iid, r["result"]))
+                    req["asks"].append({"id": iid, "ask": ask["id"], "type": "modify", "targets": free_names, "text": it["instruction"],
+                                        "orig": ask["text"], "files": it["files"], "where": it["construct"], "action": "modify"})
                     for n, w, p, l, c in real:
                         _ask_unresolved(ctx, iid, "요청의 대상을 찾지 못함", it["instruction"], "%s. 코드에 %d곳(처음 %s:%d)" % (w, c, p or "-", l), p, l)
                 elif not made:
@@ -7147,7 +7312,7 @@ def _tally_rows(ctx, rows, by_rule=False):
             if status == "absorbed":
                 t["absorbed"] += 1
                 continue
-            if status == "skipped":
+            if status == "skipped" and not note.startswith("보내지 않음"):
                 t["llm_keep" if note.startswith("sLLM 이 고치지 않음") else "merged"] += 1
                 continue
             t["left"] += 1
@@ -7223,8 +7388,16 @@ def _stage_extra(ctx):
     cf = ctx.store.get_meta("scrt_stat", None) or {}
     if cf.get("seen"):
         n_no = sum((cf.get("why") or {}).values())
-        out.append("보안 CRT 경고에 걸린 줄 %d곳 가운데 2단계의 조건에 맞는 것은 %d곳이다. 나머지 %d곳은 코드를 바꾸지 않았고 "
-                   "sLLM 에도 보내지 않았다(설정 _CRT_SECURE_NO_WARNINGS 로 경고만 끈다)" % (cf["seen"], cf["seen"] - n_no, n_no))
+        out.append("보안 CRT 경고에 걸린 줄 %d곳 가운데 2단계의 조건에 맞는 것은 %d곳이다. 나머지 %d곳은 %s" % (
+            cf["seen"], cf["seen"] - n_no, n_no,
+            "3단계의 sLLM 대상이다(규칙 R-T3-CRT-SECURE-REST. 보낸 수와 결과는 3단계의 집계에 있다. 고치지 않은 줄의 경고는 설정 _CRT_SECURE_NO_WARNINGS 로 꺼진다)" if lvl >= 3
+            else "코드를 바꾸지 않았다(설정 _CRT_SECURE_NO_WARNINGS 로 경고만 끈다. --compat-llm 3 이면 sLLM 에 보낸다)"))
+    ren = ctx.store.q("SELECT after, COUNT(*) AS n FROM edits WHERE origin='rule' AND ref='R-T1-CRT-NONSTDC' AND status IN (?,?,?) GROUP BY after", _LIVE)
+    n_all, n_sec = sum(r["n"] for r in ren), sum(r["n"] for r in ren if r["after"] in ("_itoa", "_ltoa", "_ultoa", "_strlwr", "_strupr"))
+    if n_all:
+        out.append("POSIX 이름을 밑줄 이름으로 바꾼 %d곳 가운데 %d곳(_itoa, _ltoa, _ultoa, _strlwr, _strupr)은 이름의 경고만 없어지고 "
+                   "보안 CRT 경고(C4996)는 남는다. %s" % (n_all, n_sec, "이 줄들도 3단계의 sLLM 대상이다" if lvl >= 3
+                                                   else "설정으로 경고만 끈다(--compat-llm 3 이면 sLLM 에 보낸다)"))
     return out
 
 
@@ -7365,7 +7538,7 @@ def _write_ask_plan(ctx, plan, contracts):
             a, c = by_id.get(r["id"]), by_con.get(r["id"])
             if a is not None:
                 r["sites"], r["files_hit"] = a.get("_sites", 0), a.get("_files", 0)
-                r["result"] = r["result"] or ("%s %d곳(파일 %d개)" % ("찾은 곳" if a["action"] == "find" else "sLLM 대상", r["sites"], r["files_hit"]))
+                r["result"] = (r["result"] + " / " if r["result"] else "") + ("%s %d곳(파일 %d개)" % ("찾은 곳" if a["action"] == "find" else "sLLM 대상", r["sites"], r["files_hit"]))
             elif c is not None and c.get("type") == "array_to_struct":
                 r["result"] += " / " + ("적용함" if c.get("applied") else "적용하지 않음: " + " / ".join(c.get("reasons") or []))
             for c2 in [by_con[k] for k in (r["id"] + "-buf", r["id"] + "-rec") if k in by_con]:
@@ -7392,7 +7565,7 @@ def _write_ask_plan(ctx, plan, contracts):
 # 누가 바꿔도 결함이 된다(21_실코드시험_결함분석.md). 설정으로만 해결한다.
 _COMPAT_HELP = ("--compat-llm 에는 단계 1, 2, 3 가운데 하나를 준다. 1: 기계적 변경만 한다(기본). "
                 "2: 1 에 더해, 선언을 읽어 판정하는 기계적 변환(지역 배열에 쓰는 보안 CRT 호출)까지 한다. "
-                "3: 2 에 더해, 기계적 변경 뒤에 남은 항목(고치지 않으면 컴파일되지 않는 것)을 sLLM 에 보낸다")
+                "3: 2 에 더해, 기계적 변경 뒤에 남은 항목(고치지 않으면 컴파일되지 않는 것과, 남은 사용 중단 경고 줄)을 sLLM 의 판단에 맡긴다")
 
 
 def compat_level_of(v, default=1):
@@ -7415,8 +7588,11 @@ def compat_level(ctx):
 
 
 def _soft_issue(ctx, issue):
-    """고치지 않아도 되는 대상인가. 요청문의 의도로 찾은 줄이 그렇다(모델이 판단해 그대로 둘 수 있다)."""
-    return issue["source"] == "request" and any(a["id"] == issue["rule_id"] for a in ctx.request.get("asks") or [])
+    """고치지 않아도 되는 대상인가(모델이 판단해 그대로 둘 수 있다). 요청문의 의도로 찾은 줄과,
+    설정으로도 해결되는 규칙(soft: 3단계의 남은 사용 중단 경고 줄)이 그렇다."""
+    if issue["source"] == "request":
+        return any(a["id"] == issue["rule_id"] for a in ctx.request.get("asks") or [])
+    return bool((ctx.rule_by_id.get(issue["rule_id"]) or {}).get("soft"))
 
 
 def _mark_unchanged(ctx, issue_ids, note, failed=False):
@@ -7425,11 +7601,13 @@ def _mark_unchanged(ctx, issue_ids, note, failed=False):
       그 밖(규칙의 sLLM 대상, 배열 요청의 사용처): 수동 검토"""
     st = ctx.store
     for iid in issue_ids:
-        row = st.q("SELECT source, rule_id FROM issues WHERE id=?", (iid,))
+        row = st.q("SELECT source, rule_id, note FROM issues WHERE id=?", (iid,))
         if row and not failed and _soft_issue(ctx, row[0]):
             st.x("UPDATE issues SET status='skipped', note=? WHERE id=?", ("sLLM 이 고치지 않음(수정 불필요로 판단)", iid))
         else:
-            st.x("UPDATE issues SET status='manual', note=? WHERE id=?", (note, iid))
+            old = (row[0]["note"] or "") if row else ""
+            keep = (" (규칙이 남긴 사유: %s)" % old.split("): ", 1)[1]) if old.startswith("규칙이 확정하지 못해 sLLM 의 판단에 맡김") and "): " in old else ""
+            st.x("UPDATE issues SET status='manual', note=? WHERE id=?", ((note + keep)[:600], iid))
 
 
 def s5_impact(ctx):
@@ -7813,6 +7991,177 @@ def _mark_manual(ctx, issue_ids, note):
         ctx.store.x("UPDATE issues SET status='manual', note=? WHERE id=?", (note, iid))
 
 
+# ---- 0.10.3: 규칙이 정하지 못한 자리를 sLLM 에 맡길 때의 지침과 검사, 보고서의 보장 문구
+_SX_LLM_TITLE = "요청사항: 전문 버퍼의 위치 접근을 기존 구조체의 필드 접근으로(sLLM 의 판단)"
+
+
+def _sx_llm_cands(ctx, ft, text, sx):
+    """sLLM 에 필드 표를 줄 구조체 후보(많아야 4개). 요청이 지정한 구조체, text(함수 본문이나 조각)에 이름이 나온 구조체,
+    text 에 나온 필드 이름을 둘 이상 가진 구조체 순서다. 배치를 확정한 구조체만 준다(위치를 말할 수 있어야 하므로)."""
+    names = set(re.findall(r"[A-Za-z_]\w*", text or ""))
+    forced = ft.get("struct")
+    forced = set(str(v) for v in forced.values()) if isinstance(forced, dict) else ({str(forced)} if forced else set())
+    alias = {sx["ptrs"][a] for a in names if a in (sx.get("ptrs") or {})}
+    out = []
+    for e in sx["list"]:
+        if not e.get("ok"):
+            continue
+        en = set(e["names"])
+        common = len({x["path"].split(".")[-1] for x in e["nodes"] if x.get("leaf")} & names)
+        score = (1000 if forced & en else 0) + (100 if (names | alias) & en else 0) + common
+        if score >= 100 or common >= 2:
+            out.append((score, e))
+    out.sort(key=lambda x: (-x[0], x[1]["names"][-1]))
+    return [e for _s, e in out[:4]]
+
+
+def _sx_llm_guidance(ctx, ft, near_text):
+    """전문 버퍼의 남은 자리(위치나 길이를 규칙이 확정하지 못한 접근)를 sLLM 에 맡길 때의 지침. 후보 구조체의 필드 표를 붙인다."""
+    sx = _sx_structs(ctx)
+    cands = _sx_llm_cands(ctx, ft, near_text, sx)
+    if not cands:                                           # 조각에는 이름이 없다: 요청을 만들 때 함수에서 고른 후보를 쓴다
+        cands = [sx["by_name"][n] for n in (ft.get("_llm_structs") or []) if n in sx["by_name"]][:4]
+    tables = "; ".join("%s(크기 %d): %s" % (e["names"][-1], e["size"], " ".join(
+        "%s[%d..%d)" % (x["path"], x["off"], x["off"] + x["size"]) for x in e["nodes"] if x.get("leaf"))[:700]) for e in cands)
+    how = ("이 조각에 그 구조체를 겹쳐 보는 포인터나 구조체 변수가 이미 있으면 그것의 필드를 쓴다. 없으면 ((구조체*)버퍼)->필드 꼴로 쓴다(버퍼가 const 면 const 구조체*)."
+           if ft.get("cast") == "add" else
+           "이 조각에 그 구조체를 겹쳐 보는 포인터나 구조체 변수가 이미 있으면 그것의 필드를 쓴다. 없으면 그 줄은 고치지 않는다(새 포인터나 캐스팅을 추가하지 않는다).")
+    text = " ".join(str(ft.get("_text") or "").split())
+    return ("%s이 조각의 [수정 대상 줄]은 전문 버퍼의 위치를 숫자나 커서로 직접 계산해 접근한다. 도구가 위치나 길이를 확정하지 못해 판단을 맡기는 줄이다. "
+            "아래 기존 구조체의 필드와 위치·길이가 정확히 같은 접근만 그 필드의 접근으로 고친다. 구조체와 필드[시작..끝): %s. %s "
+            "버퍼의 선언, 전문 길이, 송수신 호출, 커서를 올리는 문장은 그대로 둔다. 위치가 실행 중에 정해지거나 필드와 맞는지 확실하지 않으면 그 줄은 그대로 둔다. "
+            "고칠 줄이 하나도 없으면 NO_CHANGE 를 쓴다."
+            % (("요청: %s " % (text if text.endswith((".", "다", "요")) else text + ".")) if text else "", tables or "(후보 없음)", how))
+
+
+def _sizeof_pointer_check(ctx, t, edits):
+    """보안 CRT 함수(_s)의 크기 인자로 sizeof(이름)이나 _countof(이름)을 새로 썼는데 그 이름이 배열이 아니면 기각 사유를 돌려준다.
+    포인터나 함수 인자의 sizeof 는 버퍼의 크기가 아니라 포인터의 크기다(문법은 맞고 값이 틀린 수정)."""
+    aux = (t.get("plan") or {}).get("aux")
+    if not aux:
+        return []
+    bad, big = [], (t["plan"].get("big") or ())
+    for e in edits:
+        if not re.search(r"\w_s\s*\(", e["after"]):
+            continue
+        for m in re.finditer(r"\b(?:sizeof|_countof)\s*\(\s*([A-Za-z_]\w*)\s*\)", e["after"]):
+            name = m.group(1)
+            if name in bad or re.search(r"\b(?:sizeof|_countof)\s*\(\s*%s\s*\)" % re.escape(name), e["before"]):
+                continue
+            try:
+                r = lookup_decl(ctx, t["path"], aux["struct1"], e["start"], name, big)
+            except Exception:
+                r = None
+            if r and r.get("certain", True) and r.get("kind") in ("local", "param", "member", "global") and \
+                    (r.get("is_pointer") or (r["kind"] in ("local", "param") and not r.get("is_array"))):
+                bad.append(name)
+    if not bad:
+        return []
+    return ["크기 인자에 포인터의 sizeof 를 썼다: %s. 이 이름은 배열이 아니라 포인터(또는 함수 인자)여서 sizeof 가 버퍼의 크기가 아니다. "
+            "버퍼의 크기를 알 수 없는 호출은 고치지 않는다(NO_CHANGE)" % ", ".join(bad[:4])]
+
+
+# 3단계에서 sLLM 이 새로 써도 되는 보안 CRT 함수와 그 대상 인자의 번호. 이 표 밖의 함수는 동작이나 문장의 구조가 달라져 받지 않는다
+# (strncpy_s: 끝의 0 과 채움 / fopen_s: 공유 불가 / localtime_s: 결과를 받는 방식 / 넓은 글자 함수: 크기의 단위)
+_SCRT_LLM_OK = {"strcpy_s": 0, "strcat_s": 0, "sprintf_s": 0, "vsprintf_s": 0, "gets_s": 0, "_strlwr_s": 0, "_strupr_s": 0,
+                "_itoa_s": 1, "_ltoa_s": 1, "_ultoa_s": 1, "_i64toa_s": 1, "_ui64toa_s": 1}
+
+
+def _secure_convert_check(ctx, t, edits):
+    """3단계(R-T3-CRT-SECURE-REST)의 작업에서 sLLM 이 새로 쓴 보안 CRT 호출이 도구가 확인할 수 있는 꼴인지 본다.
+    받는 꼴은 하나다: 표에 있는 함수이고, 대상이 이름 하나이며 그 선언이 배열이고, 크기 인자가 sizeof(대상) 또는 _countof(대상).
+    실제 코드에서 나온 결함(고정 길이 필드에 NUL 을 더 쓰는 것, 공간 부족, 잘림, 없는 이름)이 이 검사에서 걸린다."""
+    plan = t.get("plan") or {}
+    aux = plan.get("aux")
+    if not aux or not any(str(g).startswith("- [R-T3-CRT-SECURE-REST]") for g in plan.get("guidance") or []):
+        return []
+    why, big = [], (plan.get("big") or ())
+    for e in edits:
+        after = mask_code(e["after"])[0]
+        for m in re.finditer(r"(?<![\w.>:])(\w+_s)\s*\(", after):
+            new = m.group(1)
+            if re.search(r"(?<![\w.>:])%s\s*\(" % re.escape(new), e["before"]):
+                continue                                      # 원래 있던 호출이다
+            if new not in _SCRT_LLM_OK:
+                why.append("%s: 이 함수로 바꾸면 동작이나 문장의 구조가 달라진다" % new)
+                continue
+            cl = _paren_close(after, m.end() - 1)
+            args = [after[a:b].strip() for a, b in _split_top(after, m.end(), cl)] if cl > 0 else []
+            k = _SCRT_LLM_OK[new]
+            if len(args) < k + 2:
+                why.append("%s: 인자의 수가 맞지 않는다" % new)
+                continue
+            dest, size = args[k], args[k + 1]
+            if not re.match(r"^[A-Za-z_]\w*$", dest):
+                why.append("%s: 대상(%s)이 이름 하나가 아니다. 구조체의 필드나 버퍼의 중간 위치는 끝에 0 이 들어갈 자리가 없을 수 있다" % (new, dest[:30]))
+                continue
+            if not re.match(r"^(?:sizeof|_countof)\s*\(\s*%s\s*\)$" % re.escape(dest), size):
+                why.append("%s: 크기 인자는 sizeof(%s) 여야 한다(%s 를 썼다)" % (new, dest, size[:30]))
+                continue
+            try:
+                r = lookup_decl(ctx, t["path"], aux["struct1"], e["start"], dest, big)
+            except Exception:
+                r = None
+            if not r or not r.get("is_array") or r.get("is_pointer") or r.get("certain") is False:
+                why.append("%s: 대상 %s 의 선언이 배열임을 확인하지 못했다" % (new, dest))
+    if not why:
+        return []
+    return ["보안 함수로 바꾼 꼴을 받을 수 없다: %s. 대상이 선언이 보이는 배열이고 크기를 sizeof(배열) 로 줄 수 있는 호출만 고치고, "
+            "나머지는 고치지 않는다(NO_CHANGE)" % "; ".join(list(OrderedDict.fromkeys(why))[:4])]
+
+
+def _blocked_header_lines(ctx):
+    """컴파일 검사를 막은 헤더(원본의 C1083)의 이름과 분류. 보고서 2절에 붙인다."""
+    st, by = ctx.store, OrderedDict()
+    for r in st.q("SELECT path, detail FROM verifications WHERE level='L3' AND result LIKE '미수행%' ORDER BY id"):
+        m = re.search(r"C1083[^']*'([^']+)'", r["detail"] or "")
+        by.setdefault(m.group(1) if m else "(헤더 이름을 읽지 못함)", set()).add(r["path"])
+    if not by:
+        return []
+    names = {}
+    for r in st.q("SELECT path, kind, status FROM files"):
+        names.setdefault(os.path.basename(r["path"]).lower(), []).append((r["path"], r["kind"], r["status"]))
+    rows = []
+    for h, paths in by.items():
+        base = os.path.basename(h.replace("\\", "/")).lower()
+        hit = names.get(base) or []
+        if any(k == "backup" for _p, k, _s in hit):
+            what = "백업으로 보여 뺀 파일이다(%s). 쓰는 파일이면 --backups keep 으로 돌리거나 이름을 바꾼다" % next(p for p, k, _s in hit if k == "backup")
+        elif hit:
+            what = "패키지 안에 있다(%s). 프로젝트의 include 경로가 이 폴더를 가리키지 않거나, 경로에 풀지 못한 매크로($(...))가 있다" % hit[0][0]
+        elif base.endswith(("_i.h", "_h.h", "_p.h", ".tlh", ".tli")):
+            what = "빌드할 때 만들어지는 파일로 보인다(MIDL, #import). 한 번 빌드한 뒤의 폴더에서 돌리면 찾는다"
+        else:
+            what = "패키지와 프로젝트의 include 경로에서 찾지 못했다. 패키지 밖의 헤더면 프로젝트의 include 경로에 그 폴더가 있는지 확인한다"
+        rows.append((h, len(paths), what))
+    return ["", "컴파일 검사를 막은 헤더(원본을 컴파일할 때의 C1083):", ""] + _table(["헤더", "막힌 변경 파일", "분류와 할 일"], rows)
+
+
+def _guarantee_lines(ctx, grade_txt):
+    """보고서 2절의 보장 범위. 등급(할 수 있는 검사)이 아니라 실제로 한 검사의 결과에서 문장을 만든다."""
+    if ctx.grade != "나":
+        return ["- " + grade_txt.get(ctx.grade, "")]
+    st, last = ctx.store, {}
+    changed = [r["path"] for r in st.q("SELECT path FROM files WHERE status IN ('변경됨','부분수정') ORDER BY path")]
+    for r in st.q("SELECT path, result FROM verifications WHERE level='L3' ORDER BY id"):
+        last[r["path"]] = r["result"] or ""
+    n_ok = sum(1 for p in changed if last.get(p, "").startswith("통과"))
+    n_skip = sum(1 for p in changed if last.get(p, "").startswith("미수행"))
+    n_bad = sum(1 for p in changed if last.get(p, "").startswith("불합격"))
+    n_none = len(changed) - n_ok - n_skip - n_bad
+    L = ["- 파일 단위 컴파일 검사를 할 수 있는 환경이다. 등급은 할 수 있는 검사를 뜻하고, 실제로 한 검사는 다음과 같다.",
+         "- 변경 파일 %d개: 컴파일 검사 통과 %d개, 미수행 %d개, 새 오류가 남은 것 %d개, 검사하지 않은 것 %d개(헤더이거나 컴파일 검사를 껐을 때)"
+         % (len(changed), n_ok, n_skip, n_bad, n_none)]
+    if n_ok:
+        L.append("- 통과한 %d개는 새 컴파일 오류가 없음을 확인했다. 링크 성공은 보장하지 않는다." % n_ok)
+        if n_skip or n_none or n_bad:
+            L.append("- 나머지 %d개의 보장 범위는 정적 검사까지다(알려진 패턴의 처리와 새 구문 오류가 없음)." % (n_skip + n_none + n_bad))
+    else:
+        L.append("- **컴파일 검사로 확인한 변경 파일이 없다.** 보장 범위는 정적 검사까지다(알려진 패턴의 처리와 새 구문 오류가 없음). "
+                 "컴파일과 링크 성공은 보장하지 않는다.")
+    return L + _blocked_header_lines(ctx)
+
+
 def _request_guidance(ctx, rid, near_text=""):
     """규칙 카탈로그에 없는 ID 의 이슈에 붙일 수정 지침. 요청문의 의도와 배열 요청이 여기서 나온다."""
     for a in ctx.request.get("asks") or []:
@@ -7833,6 +8182,9 @@ def _request_guidance(ctx, rid, near_text=""):
             if orig and orig != " ".join(a["text"].split()):
                 g += " (요청 원문: %s)" % orig[:300]
             return g
+    for ft in ctx.request.get("features", []):
+        if ft.get("id") == rid and ft.get("type") == "buffer_fields":
+            return _sx_llm_guidance(ctx, ft, near_text)
     for ft in ctx.request.get("features", []):
         if ft.get("id") == rid and ft.get("type") == "array_to_struct":
             names = set(re.findall(r"[A-Za-z_]\w*", near_text or ""))
@@ -8526,6 +8878,11 @@ def s6_llm(ctx):
     elif not llm.get("endpoint"):
         skip = "sLLM 주소 미설정"
     if skip:
+        soft = [r["id"] for r in RULES if r.get("soft")]
+        if soft:                                  # (0.10.3) 남은 사용 중단 경고 줄: 고치지 않아도 설정으로 경고가 꺼진다. 수동 검토 목록을 채우지 않는다
+            st.x("UPDATE issues SET status='skipped', note=? WHERE source='rule' AND tier='T3' AND llm=1 AND status='open' AND rule_id IN (%s)"
+                 % ",".join("?" * len(soft)), ("보내지 않음: %s. 고치지 않아도 경고는 설정으로 꺼진다" % skip,) + tuple(soft))
+            n_open = st.one("SELECT COUNT(*) FROM issues WHERE tier='T3' AND llm=1 AND status='open'") or 0
         LOG6.warn("%s. 대상 이슈 %d건을 수동 검토로 보냅니다" % (skip, n_open))
         st.x("UPDATE issues SET status='manual', note=? WHERE tier='T3' AND llm=1 AND status='open'", (skip,))
         st.commit()
@@ -9100,6 +9457,20 @@ def _handle_response(ctx, t, ok, content, kind=""):
         if b["start"] < a["end"]:
             t["feedback"] = "- 수정 블록끼리 범위가 겹친다."
             return "재요청", "수정 블록끼리 겹침"
+    dropped, kept = [], []
+    for e in edits:                               # (0.10.3) 보안 함수의 크기 인자와 바꾼 꼴: 걸린 블록만 뺀다
+        try:
+            why = _sizeof_pointer_check(ctx, t, [e]) + _secure_convert_check(ctx, t, [e])
+        except Exception:
+            why = []
+        if why:
+            dropped.append((e, why[0]))
+        else:
+            kept.append(e)
+    if dropped and not kept:
+        t["feedback"] = "\n".join("- " + w for _e, w in dropped[:4])
+        return "재요청", "수정 블록 기각: " + "; ".join(list(OrderedDict.fromkeys(w for _e, w in dropped))[:2])
+    edits = kept
     try:
         more, memos = _edit_checks(ctx, t, edits)
     except Exception as e:                        # 추가 검사는 보조 수단이다. 검사 자체가 실패하면 기록하고 넘어간다
@@ -9115,8 +9486,14 @@ def _handle_response(ctx, t, ok, content, kind=""):
     if len(missed) == len(t["issue_ids"]):
         t["feedback"] = "- 수정 블록이 [수정 대상 줄]을 바꾸지 않았다. 대상 줄을 SEARCH 에 넣어 고친다."
         return "재요청", "수정 블록이 대상 줄을 건드리지 않음"
-    if missed:
-        _mark_unchanged(ctx, missed, "sLLM 응답에 이 지점의 수정이 없음. 사람이 확인해야 함")
+    drop_ids = []
+    if dropped:                                   # 뺀 블록이 고치려던 지점: 사유와 함께 수동 검토로 남긴다
+        dsp = [(bisect.bisect_right(t["ls1"], e["start"]), bisect.bisect_right(t["ls1"], max(e["start"], e["end"] - 1))) for e, _w in dropped]
+        drop_ids = [i["id"] for line, i in t["plan"]["members"] if i["id"] in missed and any(a <= line <= b for a, b in dsp)]
+        if drop_ids:
+            _mark_unchanged(ctx, drop_ids, ("sLLM 의 수정을 받지 않음: " + "; ".join(OrderedDict.fromkeys(w for _e, w in dropped)))[:500], failed=True)
+    if [x for x in missed if x not in drop_ids]:
+        _mark_unchanged(ctx, [x for x in missed if x not in drop_ids], "sLLM 응답에 이 지점의 수정이 없음. 사람이 확인해야 함")
     ids = ",".join(str(x) for x in t["issue_ids"] if x not in missed)
     for k, e in enumerate(edits):
         memo = ([("분할 순차 %d/%d" % (t["part"], t["parts"]))] if t.get("group") else []) + list(memos.get(k) or [])
@@ -9304,7 +9681,9 @@ def _compile_run(ctx, plan):
 
     def run(base):
         root = ctx.p(*base)
-        flags = cl_flags_for(ctx.env, cfg, os.path.join(root, *pdir.split("/")) if pdir else root)
+        orig_proj = os.path.join(ctx.package, *pdir.split("/")) if pdir else ctx.package
+        orig_src = os.path.dirname(os.path.join(ctx.package, *rel.split("/")))
+        flags = cl_flags_for(ctx.env, cfg, os.path.join(root, *pdir.split("/")) if pdir else root, orig_proj, (orig_src,))
         src = os.path.join(root, *rel.split("/"))
         ran, diags, raw = run_cl_syntax(ctx.tools, src, os.path.dirname(src), flags, tmo, plan["arch"])
         write_text(ctx.p("logs", "compile", base[-1], rel.replace("/", "__") + ".log"), raw)
@@ -9500,7 +9879,8 @@ def _extra_report_lines(ctx):
     sxc = [c for c in cons if c.get("type") in ("buffer_fields", "record_group") and c.get("sx")]
     if sxc:
         L += ["", "### 구조 분석(전문 버퍼의 필드 접근, 지역 병렬 배열의 묶음)", "",
-              "전문 처리 문장과 병렬 배열 묶음을 따로 센다. 수정은 전부 규칙이고 sLLM 에 보내지 않았다. 버퍼와 전문 길이, 송수신 호출은 건드리지 않았다. "
+              "전문 처리 문장과 병렬 배열 묶음을 따로 센다. 위치와 길이를 확정한 것은 규칙으로 바꾸고, 전문 버퍼에서 확정하지 못한 자리는 sLLM 에 수정을 요청한다"
+              "(요청의 llm: off 나 --no-llm 이면 보내지 않는다). 규칙은 버퍼와 전문 길이, 송수신 호출을 건드리지 않는다. "
               "글자 수준의 분석이므로 바꾼 곳은 모두 검토 대상이다. 문장별 표는 out/struct_scan.md 에 있다.", ""]
         fmt = lambda box: ", ".join("%s %d" % (k.strip(), v) for k, v in (box or {}).items()) or "없음"
         rows = []
@@ -9508,7 +9888,7 @@ def _extra_report_lines(ctx):
             live = st.one("SELECT COUNT(*) FROM edits WHERE origin='request' AND ref=? AND status IN (?,?,?)", (c["id"],) + _LIVE) or 0
             rej = st.one("SELECT COUNT(*) FROM edits WHERE origin='request' AND ref=? AND status='rejected'", (c["id"],)) or 0
             rows.append((c["id"], "전문 처리 문장" if c["type"] == "buffer_fields" else "병렬 배열 묶음", fmt(c["sx"]["base"]), fmt(c["sx"]["target"]),
-                         fmt(c["sx"]["done"]), "0건", "수정 레코드 %d건%s" % (live, (", 병합·검증에서 빠짐 %d건" % rej) if rej else ""), fmt(c["sx"]["left"])))
+                         fmt(c["sx"]["done"]), "%d곳" % int(c["sx"].get("llm") or 0), "수정 레코드 %d건%s" % (live, (", 병합·검증에서 빠짐 %d건" % rej) if rej else ""), fmt(c["sx"]["left"])))
         L += _table(["요청", "구분", "기준(코드에서 탐지)", "요청 대상", "규칙으로 바꿈", "sLLM 요청", "실제 반영", "미처리"], rows)
         where = [(c["id"], w) for c in sxc for w in c["sx"]["where"]]
         if where:
@@ -9527,7 +9907,8 @@ def _extra_report_lines(ctx):
               "- 바꾼 곳은 버퍼가 모자랄 때의 동작이 달라진다(옛 함수는 넘쳐 썼고, 보안 함수는 프로그램을 끝낸다). Debug 빌드에서는 문자열 뒤의 "
               "남는 자리가 0xFE 로 채워진다. 버퍼 전체를 넘겨 쓰는 자체 함수가 있으면 설정 limits.scrt_raw_calls 에 그 이름을 적어 대상에서 뺀다. 모두 검토 대상이다.",
               "- 이 변환만 끄려면 `--disable-rule %s` 를 준다." % _SCRT_RULE,
-              "- 바꾸지 않은 %d곳은 설정(_CRT_SECURE_NO_WARNINGS)으로 경고가 꺼지므로 빌드에는 지장이 없다. sLLM 에도 보내지 않는다. 사유:" % n_no]
+              "- 바꾸지 않은 %d곳은 설정(_CRT_SECURE_NO_WARNINGS)으로 경고가 꺼지므로 빌드에는 지장이 없다. %s 2단계가 바꾸지 않은 사유:"
+              % (n_no, "3단계이므로 이 줄들은 sLLM 대상이다(보낸 수와 결과는 처리 단계별 집계의 3단계)." if compat_level(ctx) >= 3 else "--compat-llm 3 이면 sLLM 에 보낸다.")]
         if cf.get("why"):
             L += [""] + _table(["바꾸지 않은 사유", "줄 수", "예"], [
                 (_SCRT_WHY.get(k, k), n, " / ".join((cf.get("samples") or {}).get(k, [])[:2])) for k, n in cf["why"].items()])
@@ -9697,7 +10078,7 @@ def s9_report(ctx):
     cov = coverage_summary()
     R += ["", "알려진 변경 항목 %d건의 처리 방식: %s. 목록은 `vupdate rules --coverage`."
           % (sum(cov.values()), ", ".join("%s %d건" % kv for kv in cov.items()))]
-    R += ["", "## 2. 환경 등급과 보장 범위", "", "- 환경 등급: **%s**" % ctx.grade, "- " + grade_txt.get(ctx.grade, ""),
+    R += ["", "## 2. 환경 등급과 보장 범위", "", "- 환경 등급: **%s**" % ctx.grade] + _guarantee_lines(ctx, grade_txt) + [
           "- 상세는 `preflight.md` 참조.", "", "## 3. 파일 처리 결과", ""]
     R += _table(["상태", "파일 수"], [(r["status"], r["n"]) for r in fstat])
     R += ["", "## 4. 이슈(탐지 결과)", ""] + _table(["규칙/요청", "단계", "탐지", "수정됨", "설정 흡수", "수동 검토"], [
@@ -10858,7 +11239,7 @@ USAGE = [
     ("환경 호환성 항목의 처리 깊이", [
         ("--compat-llm", "1 (기본)", "--compat-llm 1", "기계적 변경만 한다. 규칙의 수정과 설정 처리까지다. 규칙이 못 고치는 것은 수동 검토 목록에 올린다. sLLM 을 부르지 않는다"),
         ("--compat-llm", "2", "--compat-llm 2", "1 에 더해, 선언을 읽어 판정하는 기계적 변환까지 한다(지역 char 배열에 쓰는 strcpy, strcat, sprintf 를 보안 CRT 함수로). sLLM 을 부르지 않는다. 조건은 22_추가_0.9.3.md"),
-        ("--compat-llm", "3", "--compat-llm 3", "2 에 더해, 기계적 변경 뒤에 남은 항목 가운데 고치지 않으면 컴파일되지 않는 것(없어진 gets, x64 의 SetWindowLong 등 5개 규칙)을 sLLM 에 보낸다"),
+        ("--compat-llm", "3", "--compat-llm 3", "2 에 더해, 기계적 변경 뒤에 남은 항목을 sLLM 의 판단에 맡긴다: 고치지 않으면 컴파일되지 않는 것(없어진 gets, x64 의 SetWindowLong 등)과 남은 사용 중단 경고 줄(보안 CRT, Winsock). 도구가 확인할 수 있는 꼴의 수정만 받는다. 29_추가_0.10.3.md"),
         ("--compat-llm", "3 에서 보안 CRT 변환만 뺌", "--compat-llm 3 --disable-rule R-T2-CRT-SECURE-LOCAL", "sLLM 에는 보내되 2단계의 보안 CRT 변환은 하지 않는다"),
     ]),
     ("sLLM 서버", [
@@ -11011,8 +11392,8 @@ def build_parser():
                    help="환경 호환성 항목의 처리 깊이. 위 단계는 아래 단계의 일을 모두 한다. 1(기본): 기계적 변경만 한다(규칙의 수정과 설정 처리). "
                         "규칙이 고치지 못한 것은 수동 검토 목록에 올린다. 2: 1 에 더해, 선언을 읽어 판정하는 기계적 변환까지 한다"
                         "(같은 함수의 char 지역 배열에 쓰는 strcpy, strcat, sprintf 를 보안 CRT 함수로. sLLM 을 쓰지 않는다). "
-                        "3: 2 에 더해, 기계적 변경 뒤에 남은 항목 가운데 고치지 않으면 컴파일되지 않는 것(없어진 gets, x64 의 SetWindowLong 등)을 "
-                        "sLLM 에 보낸다. 3 은 호출이 늘 수 있으니 --max-calls 와 함께 쓴다")
+                        "3: 2 에 더해, 기계적 변경 뒤에 남은 항목을 sLLM 의 판단에 맡긴다(고치지 않으면 컴파일되지 않는 것: 없어진 gets, x64 의 SetWindowLong 등. "
+                        "그리고 남은 사용 중단 경고 줄: 보안 CRT, Winsock). 3 은 호출이 늘 수 있으니 --max-calls 와 함께 쓴다")
     r.add_argument("--compile-parallel", dest="compile_parallel", type=int,
                    help="컴파일 검사 동시 수. 0 은 CPU 수에 맞춤(기본)")
     r.add_argument("--vs-path", dest="vs_path",

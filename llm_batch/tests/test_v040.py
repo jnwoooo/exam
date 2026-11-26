@@ -79,7 +79,7 @@ for rid, pos, neg in CASES:
         bad.append("%s(잡음 %d, 잘못 잡음 %d)" % (rid, n_pos, n_neg))
 print("새 규칙 %d개 시험. 어긋난 것: %s" % (len(CASES), ", ".join(bad) or "없음"))
 check("새 규칙 %d개: 잡아야 할 코드를 잡고 비슷한 다른 코드는 잡지 않음" % len(CASES), not bad and len(CASES) == 21)
-check("내장 규칙이 66개(0.4.0 의 38개 + 0.6.0 의 DB·HMI 27개 + 0.9.3 의 보안 CRT 기계적 변환 1개)", len(V.RULES) == 66 and len({r["id"] for r in V.RULES}) == 66)
+check("내장 규칙이 68개(0.4.0 의 38개 + 0.6.0 의 DB·HMI 27개 + 0.9.3 의 보안 CRT 기계적 변환 1개 + 0.10.3 의 3단계 sLLM 규칙 2개)", len(V.RULES) == 68 and len({r["id"] for r in V.RULES}) == 68)
 
 # 자동 수정 결과
 h = hits("R-T2-AUTO-STORAGE", "auto int i;")[0]

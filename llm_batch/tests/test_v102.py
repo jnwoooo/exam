@@ -167,8 +167,11 @@ check("로그: 의도별 집계 줄", "요청 ASK-1-1 [modify] 집계: 대상 3 
 check("로그: 처리 단계별 집계 줄(1단계 itoa, 2단계 strcpy, 3단계 gets 가 sLLM 으로 고쳐짐)",
       "처리 단계별 집계(환경 호환성 규칙)" in log and re.search(r"1단계 기계적 변경\(규칙\): 대상 1 / 규칙 수정 1 ", log) is not None
       and re.search(r"2단계 선언을 읽어 판정하는 기계적 변환\(규칙\): 대상 1 / 규칙 수정 1 ", log) is not None
-      and re.search(r"3단계 sLLM 수정: 대상 1 / 규칙 수정 0 / sLLM 수정 요청 1\(보낸 것 1, 작업 \d+, 호출 \d+\) / sLLM 수정 1 / 미수정 0", log) is not None)
-check("로그: 보안 CRT 경고 줄 가운데 코드가 그대로 남은 줄 수", "보안 CRT 경고에 걸린 줄" in log.split("처리 단계별 집계", 1)[1] and "sLLM 에도 보내지 않았다" in log)
+      and re.search(r"3단계 sLLM 수정: 대상 4 / 규칙 수정 0 / sLLM 수정 요청 4\(보낸 것 3, 작업 \d+, 호출 \d+\) / sLLM 수정 1 / 미수정 0 / "
+                    r"sLLM 이 고칠 필요가 없다고 본 곳 2 / 다른 수정에 포함 1", log) is not None)
+check("로그: 보안 CRT 경고 줄 가운데 2단계가 바꾸지 않은 줄은 3단계의 sLLM 대상이라고 적고, 이름만 바꾼 곳(_itoa)은 보안 CRT 경고가 남는다고 적음",
+      "보안 CRT 경고에 걸린 줄" in log.split("처리 단계별 집계", 1)[1] and "3단계의 sLLM 대상이다" in log
+      and "POSIX 이름을 밑줄 이름으로 바꾼 1곳 가운데 1곳(_itoa, _ltoa, _ultoa, _strlwr, _strupr)은 이름의 경고만 없어지고" in log)
 
 # ------------------------------------------------------------------ 5-2. 단계 1: 3단계 대상은 보내지 않고 비고와 함께 남는다
 m = Mock(lambda n, user: RAW_GOOD, edit_fix)

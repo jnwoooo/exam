@@ -550,8 +550,8 @@ cF, tF = cli("run", "--package", pkg, "--ask", "MES 전문 Data 배열을 TC 별
              "--from-vs", "2010", "--to-vs", "2022", "--no-compile")
 srcF = out_text(os.path.join(work, "F"), "changed", "Src", "MesProc.cpp")
 planF = out_text(os.path.join(work, "F"), "ask_plan.json")
-check("요청문(일반 명칭): 배열 의도가 구조 분석으로 넘어가 요청 파일과 같은 결과가 나옴. 모델 호출은 분석 1회",
-      srcF == srcA and mock.calls == 1 and "구조 분석으로 처리" in planF and "ASK-1-1-buf" in planF and "코드에서 탐지된 전체" in planF)
+check("요청문(일반 명칭): 배열 의도가 구조 분석으로 넘어가 요청 파일과 같은 결과가 나옴. 모델 호출은 분석 1회와 규칙이 확정하지 못한 자리의 수정 요청(0.10.3)",
+      srcF == srcA and mock.calls >= 2 and "구조 분석으로 처리" in planF and "ASK-1-1-buf" in planF and "코드에서 탐지된 전체" in planF)
 issF = rows(os.path.join(work, "F"), "SELECT path, line FROM issues WHERE source='request' AND status='manual'")
 check("요청문(일반 명칭): 미처리 기록에 파일과 줄이 남음", issF and all(i["path"] and i["line"] > 0 for i in issF))
 mock.close()
@@ -964,9 +964,12 @@ check("경계: 0 으로 지우는 문장 사이에 묶음과 무관한 문장이
 check("경계: 한 함수에 묶음이 둘이면 이름이 겹치지 않게 따로 만듦",
       "struct EdgeTwoGroupsRec" in srcJ and "} stRec[3];" in srcJ and "struct EdgeTwoGroupsRec2" in srcJ and "} stRec2[2];" in srcJ
       and "stRec[i].szA, stRec[i].nA, stRec2[i].szB, stRec2[i].nB" in srcJ)
-check("경계: 일부만 0 으로 지우는 묶음, 0 이 아닌 초기화 목록, 조건문 안의 memset 은 묶음 전체를 그대로 두고 사유를 남김",
-      "char szP[3][6];" in srcJ and "int nId[3] = {7, 8, 9};" in srcJ and "memset(nC, 0, sizeof(nC));" in srcJ and "char szC[2][6];" in srcJ
-      and "묶음의 일부만 0 으로 지움(szP)" in scanJ and "초기화 목록이 있는 선언(nId)" in scanJ and "이름을 통째로 사용(nC)" in scanJ)
+check("경계: 0 이 아닌 초기화 목록, 조건문 안의 memset 은 묶음 전체를 그대로 두고 사유를 남김",
+      "int nId[3] = {7, 8, 9};" in srcJ and "memset(nC, 0, sizeof(nC));" in srcJ and "char szC[2][6];" in srcJ
+      and "초기화 목록이 있는 선언(nId)" in scanJ and "이름을 통째로 사용(nC)" in scanJ)
+check("경계: 일부만 0 으로 지우는 묶음은 레코드마다 그 필드를 지우는 반복문으로 바꿈(0.10.3. C 파일이라 반복 변수를 블록의 처음에 선언)",
+      "char szP[3][6];" not in srcJ and "struct EdgeBlockedPartRec" in srcJ and "int iRec;" in srcJ
+      and "for (iRec = 0; iRec < (3); iRec++)" in srcJ and "memset(stRec[iRec].szP, 0, sizeof(stRec[iRec].szP));" in srcJ)
 check("경계: 배열 전체를 이어진 메모리로 다루는 문장, 매크로가 이름으로 가리키는 배열이 있으면 묶음을 그대로 둠",
       "char szS[2][6];" in srcJ and "memset(szS[0], 'x', sizeof(szS));" in srcJ and "char szM[2][6];" in srcJ
       and "행 하나(szS)에 행보다 긴 길이를 줌" in scanJ and "이름 szM 이(가) 매크로의 본문에 나옴" in scanJ)

@@ -142,11 +142,13 @@ check("2단계: sLLM 을 부르지 않고, 지역 char 배열에 쓰는 strcpy, 
       res["2"][1] == 0 and all(x in res["2"][2] for x in MECH) and "gets(buf);" in res["2"][2] and "R-T3-GETS-REMOVED" in res["2"][4]
       and "2단계" in res["2"][3] and res["2"][0] == 1)
 src3 = res["3"][2]
-check("3단계: 2단계의 기계적 변환을 한 뒤, 규칙이 못 고친 gets 만 sLLM 에 보내 고침(보안 CRT 줄은 sLLM 에 가지 않음)",
-      res["3"][1] >= 1 and all(x in src3 for x in MECH) and "fgets(buf, sizeof(buf), stdin);" in src3 and res["3"][0] == 0
-      and targets_of(res["3"][5]) == ["gets(buf);"] and "3단계" in res["3"][3])
-check("2, 3단계: 포인터에 쓰는 strcpy 와 strncpy 는 어느 단계에서도 바꾸지 않고 수동 검토로도 올리지 않음. 보고서에 사유별 줄 수가 나옴",
-      all("strcpy(dst, src);" in res[k][2] and "strncpy(dst, src, 8);" in res[k][2] and "strcpy(dst" not in res[k][4] for k in ("2", "3"))
+check("3단계: 2단계의 기계적 변환 뒤에 남은 것(gets 와 2단계의 조건에 맞지 않은 보안 CRT 줄)을 sLLM 에 보내고, gets 가 고쳐짐(0.10.3)",
+      res["3"][1] >= 1 and all(x in src3 for x in MECH) and "fgets(buf, sizeof(buf), stdin);" in src3
+      and sorted(set(targets_of(res["3"][5]))) == ["gets(buf);", "strcpy(dst, src);", "strncpy(dst, src, 8);"] and "3단계" in res["3"][3])
+check("2단계: 포인터에 쓰는 strcpy 와 strncpy 는 바꾸지 않고 수동 검토로도 올리지 않음. 3단계: sLLM 이 포인터에 sizeof 를 쓴 수정을 내면 "
+      "그 블록만 받지 않고 사유와 함께 남김(같은 작업의 gets 수정은 받음). 보고서에 사유별 줄 수가 나옴",
+      all("strcpy(dst, src);" in res[k][2] and "strncpy(dst, src, 8);" in res[k][2] for k in ("2", "3")) and "strcpy(dst" not in res["2"][4]
+      and "크기 인자에 포인터의 sizeof 를 썼다: dst" in res["3"][4] and "strncpy(dst" not in res["3"][4]
       and "보안 CRT 경고에 걸린 줄 5곳 가운데 조건에 맞는 3곳을 규칙으로 바꿨다" in res["2"][3] and "대상 함수가 아님" in res["2"][3]
       and "지역 배열이 아님" in res["2"][3])
 check("3단계: sLLM 이 받는 조각에는 이미 기계적 변환이 반영돼 있음(기계적 변경 뒤에 맡김)",
@@ -339,10 +341,13 @@ code, _t = cli(*BASE, "--compat-llm", "3", "--package", pkg, "--llm-endpoint", m
 m.close()
 src, report = out_of(os.path.join(work, "rd"), "changed", "Src", "mes_send.c"), out_of(os.path.join(work, "rd"), "report.md")
 got_lines = src.split("\r\n")
-check("실코드 결함: 3단계에서도 고정 길이 필드의 복사·서식, strncat, fopen 줄은 sLLM 에 가지 않음(호출 0회. 8곳 가운데 1곳만 규칙으로 바꿈)",
-      m.calls == 0 and "8곳 가운데 조건에 맞는 1곳을 규칙으로 바꿨다" in report)
+man_rd = out_of(os.path.join(work, "rd"), "manual_review.md")
+check("실코드 결함: 3단계는 남은 줄을 sLLM 에 보내지만, 실제 코드에서 나온 결함과 같은 수정(고정 길이 필드의 복사·서식, strncat, fopen)은 "
+      "받지 않고 사유와 함께 남김(8곳 가운데 1곳만 규칙으로 바꿈, 7곳은 미수정)",
+      m.calls >= 1 and "8곳 가운데 조건에 맞는 1곳을 규칙으로 바꿨다" in report and man_rd.count("| R-T3-CRT-SECURE-REST |") == 7
+      and "보안 함수로 바꾼 꼴을 받을 수 없다" in man_rd)
 check("실코드 결함: 결과에서 바뀐 줄은 지역 배열의 strcpy 하나뿐이고, 나머지 줄은 원본과 같음",
-      code == 0 and [i for i, (a, b) in enumerate(zip(RD, got_lines)) if a != b] == [RD.index("    strcpy(path, \"D:\\\\MES\\\\\");")]
+      code == 1 and [i for i, (a, b) in enumerate(zip(RD, got_lines)) if a != b] == [RD.index("    strcpy(path, \"D:\\\\MES\\\\\");")]
       and "    strcpy_s(path, sizeof(path), \"D:\\\\MES\\\\\");" in got_lines)
 
 # ------------------------------------------------------------------ 7. 옵션별 사용 예

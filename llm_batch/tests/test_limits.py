@@ -315,7 +315,7 @@ code, text = cli("rules", "--from-vs", "2015", "--to-vs", "2022")
 line = {l.split()[0]: l for l in text.splitlines() if l.startswith("R-")}
 check("I: rules 명령이 환경값에서 켜지는 규칙과 꺼진 이유를 보여 줌",
       code == 0 and "꺼짐" in line.get("R-T2-MAKE-PAIR", "") and "원본 VS 2015 에서 이미 겪은 문제" in line.get("R-T2-MAKE-PAIR", "")
-      and "켜짐" in line.get("R-T0-CRT-SECURE", "") and "규칙 66개 중 켜짐" in text)
+      and "켜짐" in line.get("R-T0-CRT-SECURE", "") and "규칙 68개 중 켜짐" in text)
 code, text = cli("run", "--compat-llm", "3", "--package", pkg, "--from-vs", "2008", "--to-vs", "2022", "--platform", "arm")
 check("I: 잘못된 --platform 값은 입력 오류(종료 코드 3)", code == 3 and "platform" in text)
 srv.shutdown()

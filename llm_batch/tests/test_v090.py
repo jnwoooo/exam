@@ -597,10 +597,11 @@ m = Mock(compat_responder)
 code, text = cli(*BASE, "--compat-llm", "3", "--package", pkg, "--llm-endpoint", m.url, "--out", os.path.join(work, "k3"))
 m.close()
 src, report, manual = out_of(os.path.join(work, "k3"), "changed", "Src", "Copy.cpp"), out_of(os.path.join(work, "k3"), "report.md"), out_of(os.path.join(work, "k3"), "manual_review.md")
-check("환경 호환성(3단계): 2단계의 기계적 변환 뒤에 규칙의 sLLM 대상(gets)을 sLLM 에 보내 고침. 포인터에 쓰는 strcpy 는 그대로 둠",
+check("환경 호환성(3단계): 2단계의 기계적 변환 뒤에 남은 것(gets, 포인터에 쓰는 strcpy)을 sLLM 에 보냄. gets 는 고쳐지고, 포인터에 sizeof 를 쓴 "
+      "수정은 그 블록만 받지 않아 strcpy 는 그대로 남음(0.10.3)",
       m.calls >= 1 and "strcpy_s(buf, sizeof(buf), src);" in src and "fgets(buf, sizeof(buf), stdin);" in src and "strcpy(dst, src);" in src
-      and "strcpy(dst" not in manual and "보안 CRT 함수의 기계적 변환" in report and "지역 배열이 아님" in report and code == 0
-      and "strcpy" not in "\n".join(re.findall(r"- \d+번째 줄 \[[^\]]+\]: (.+)", "\n".join(m.prompts))))
+      and "크기 인자에 포인터의 sizeof 를 썼다" in manual and "보안 CRT 함수의 기계적 변환" in report and "지역 배열이 아님" in report and code == 1
+      and "strcpy(dst, src);" in "\n".join(re.findall(r"- \d+번째 줄 \[[^\]]+\]: (.+)", "\n".join(m.prompts))))
 code, text = cli(*BASE, "--compat-llm", "--package", pkg, "--out", os.path.join(work, "k4"))
 code2, text2 = cli(*BASE, "--compat-llm", "5", "--package", pkg, "--out", os.path.join(work, "k4"))
 check("환경 호환성: --compat-llm 에 값을 주지 않거나 1, 2, 3 이 아닌 값을 주면 입력 오류(단계의 뜻을 알려 줌)",
