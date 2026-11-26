@@ -4,7 +4,7 @@
 ==============================================================================
 vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본)
 ==============================================================================
-버전 : 0.10.0 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
+버전 : 0.10.1 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
               환경 호환성 항목의 sLLM 호출은 --compat-llm 의 단계로 정한다. 당장 쓰지 않는 기능은 뺐다. 17_추가_0.9.0.md)
               0.9.1: OS·DB 의 원본/대상 옵션(--from-os, --to-os, --from-db, --to-db). 18_추가_0.9.1.md
               0.9.2: --compat-llm 을 단계 1|2|3 으로. 막힌 컴파일 검사를 통과로 치지 않는다. 옵션별 사용 예는 vupdate examples.
@@ -13,6 +13,8 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
               0.10.0: 구조 분석. 전문 버퍼의 위치 접근(숫자 인덱스, 포인터 위치, 커서 증가)을 기존 구조체의 필드 접근으로,
                       한 함수의 지역 병렬 배열을 구조체의 배열로 바꾼다. 전부 규칙이고 sLLM 을 쓰지 않는다.
                       요청 파일의 buffer_fields, record_group. 24_검토_전문버퍼_병렬배열.md, 25_추가_0.10.0.md
+              0.10.1: 백업으로 보이는 폴더와 파일(bak, backup, 백업, 복사본, old 폴더, _old·날짜를 붙인 사본 등)을 처리 대상에서 뺀다(기본).
+                      쓰이고 있는 것(프로젝트 파일이 참조, 소스가 include)은 빼지 않는다. --backups keep 으로 끈다. 26_추가_0.10.1.md
 목적 : 레거시 C++ 패키지를 새 Visual Studio 환경(예: 2008 -> 2022)에 맞게
        고치는 작업을 한 명령으로 수행한다. 규칙으로 고칠 수 있는 것은 규칙으로,
        규칙으로 못 고치는 것만 sLLM에 맡기고, 결과를 별도 폴더에 낸다.
@@ -34,6 +36,7 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
                                                    기계적 변환(지역 배열에 쓰는 보안 CRT 호출), 3: 2 + 남은 것을 sLLM 에)
   vupdate run ... --request req.json              (요청 파일. 전문 버퍼의 위치 접근을 기존 구조체의 필드로(buffer_fields),
                                                    지역 병렬 배열을 구조체의 배열로(record_group). 규칙만 쓴다. 25_추가_0.10.0.md)
+  vupdate run ... --backups keep                  (백업으로 보이는 폴더와 파일도 처리한다. 기본은 skip: 빼고 out/backup_excluded.md 에 목록을 낸다)
   vupdate examples                               (옵션별 사용 예 전체)
 
 [이 파일의 구획]  수정할 때는 해당 구획만 고친다. 구획 사이의 호출은
@@ -46,7 +49,7 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
   M05 규칙      규칙 카탈로그(T0~T3)와 탐지 함수
   M06 sLLM연결  토큰 추정과 보정, HTTP 호출, 오류 분류(한도 초과/과부하/거절)
   M07 컴파일    Visual Studio 찾기, cl /Zs 호출(환경 등급 '나'에서만)
-  S0  준비      환경 점검(03_확인사항 자동화), 원본 스냅샷
+  S0  준비      환경 점검(03_확인사항 자동화), 원본 스냅샷, 백업으로 보이는 폴더와 파일 가려내기
   S1  인벤토리  파일 분류, 인코딩, 함수 경계, include 수집
   S2  탐지      규칙 스캔 -> 이슈
   S3  설정흡수  코드 변경 없이 옵션/매크로로 해결할 항목 정리
@@ -112,7 +115,7 @@ from concurrent.futures import ThreadPoolExecutor
 # 목적: 모든 구획이 같이 쓰는 최소한의 도구. 로그 접두어 규칙을 여기서 보장한다.
 # ============================================================================
 APP = "vupdate"
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 
 STAGES = [("S0", "준비"), ("S1", "인벤토리"), ("S2", "탐지"), ("S3", "설정흡수"),
           ("S4", "규칙적용"), ("S5", "영향분석"), ("S6", "sLLM수정"), ("S7", "병합"),
@@ -674,7 +677,7 @@ def collect_opts(args, saved=None):
     이어서 실행할 때(saved 가 None 이 아닐 때)는 처음 실행의 값에서 시작하고, 명령줄에 다시 준 값만 덮어쓴다.
     처리 범위(only, exclude)와 호출자는 처음 실행의 값을 그대로 쓴다(중간에 바꾸면 앞 단계 결과와 어긋난다)."""
     o = {"no_llm": False, "no_compile": False, "compat_llm": 1, "only": [], "exclude": [], "caller": "",
-         "max_parallel": 0, "compile_parallel": -1, "disable_rules": [], "exceptions": ""}
+         "max_parallel": 0, "compile_parallel": -1, "disable_rules": [], "exceptions": "", "backups": "skip"}
     if saved is not None:
         o.update({k: saved[k] for k in o if k in saved})
     for k in ("no_llm", "no_compile"):
@@ -704,12 +707,16 @@ def collect_opts(args, saved=None):
                 raise UserInputError("%s이 없습니다: %s" % (what, p))
             o[key] = os.path.abspath(p) if p else ""
     only, excl = _split_patterns(getattr(args, "only", None)), _split_patterns(getattr(args, "exclude", None))
+    bk = getattr(args, "backups", None)
     if saved is not None:
         if (only and only != o["only"]) or (excl and excl != o["exclude"]):
             LOGC.warn("이어서 실행할 때는 처리 범위(--only, --exclude)를 바꿀 수 없습니다. 처음 실행의 값을 씁니다")
+        if bk and bk != o["backups"]:
+            LOGC.warn("이어서 실행할 때는 백업 처리(--backups)를 바꿀 수 없습니다. 처음 실행의 값(%s)을 씁니다" % o["backups"])
         o["caller"] = o["caller"] or default_caller()
     else:
         o["only"], o["exclude"] = only, excl
+        o["backups"] = bk or "skip"                # 백업으로 보이는 폴더와 파일: skip(빼기, 기본) / keep(그대로 처리)
         o["caller"] = (getattr(args, "caller", None) or "").strip() or default_caller()
     return o
 
@@ -3369,6 +3376,114 @@ def decide_grade(tools):
     return "가"
 
 
+# ----------------------------------------------------------------------------
+# 백업으로 보이는 폴더와 파일 (0.10.1. 26_추가_0.10.1.md)
+# 목적: 패키지 안에 남아 있는 백업(복사해 둔 폴더, 이름에 bak·old·날짜를 붙인 파일)을 처리 대상에서 뺀다.
+#       백업까지 읽으면 같은 구조체와 함수가 두 번 정의된 것으로 보여 분석이 막히고, 쓰지 않는 코드에 탐지와 호출이 든다.
+# 판정: 이름만 본다(backup_reason). 확실한 표시(bak, backup, 백업, 복사본, 'Copy of', ' - Copy', 이중 확장자, old 폴더)는 그것만으로,
+#       약한 표시(_old, _org, _copy, 날짜, (2), ...Old)는 그 표시를 뗀 이름이 같은 폴더에 있을 때만 백업으로 본다.
+# 되살림: 이름은 백업 같아도 쓰이고 있으면 빼지 않는다(s0_prepare).
+#       (1) 백업이 아닌 프로젝트 파일(.sln, .vcxproj, .vcproj, .dsp)이 그 파일을 참조한다
+#       (2) 백업이 아닌 소스가 그 헤더를 include 하고, 같은 이름의 헤더가 백업 밖에는 없다
+# 끄기: --backups keep.  산출: files(kind='backup', status='백업제외'), meta(backup_stat), out/backup_excluded.md
+# 한계: 이름으로만 본다. 이름에 표시가 없는 백업(예: Src2)은 못 찾는다. 그런 것은 --exclude 로 뺀다.
+# ----------------------------------------------------------------------------
+_BK_TOKEN_RX = re.compile(r"^(?:bak\d*|bkup\d*|backup\d*|backups)$")
+_BK_KO = ("백업", "복사본", "구버전")
+_BK_COPY_RX = re.compile(r"^(?:copy of .+|.+ - copy(?: \(\d+\))?|복사본 - .+)$")
+_BK_EXT = (".bak", ".old", ".orig", ".org", ".backup", ".bk")
+_BK_WEAK = (
+    (re.compile(r"^(?P<base>.+?)[_\-. ](?P<mark>(?:backup|back|old|org|orig|original|copy|cpy|prev|previous|save|sav)\d*)$", re.I), "word"),
+    (re.compile(r"^(?P<base>.+?)[_\-. ]?(?P<mark>(?:19|20)\d{2}[-_.]?\d{2}[-_.]?\d{2}(?:[_\-. ]?\d{4,6})?)$"), "date8"),
+    (re.compile(r"^(?P<base>.+?)[_\-](?P<mark>\d{6})$"), "date6"),
+    (re.compile(r"^(?P<base>.+?) ?(?P<mark>\(\d+\))$"), "word"),
+    (re.compile(r"^(?P<base>.+?[a-z0-9])(?P<mark>(?:Backup|Bak|Old|Org|Orig)\d*)$"), "word"),
+)
+_BK_HEADER_EXT = (".h", ".hh", ".hpp", ".hxx", ".inl")
+_BK_REF_RX = re.compile(r'(?:Include|RelativePath)\s*=\s*"([^"\r\n]+)"|^[ \t]*SOURCE=[ \t]*"?([^"\r\n]+?)"?[ \t]*$'
+                        r'|"([^"\r\n]+\.(?:vcxproj|vcproj|dsp))"', re.M)
+_BK_INC_RX = re.compile(rb'^[ \t]*#[ \t]*include[ \t]*[<"]([^>"\r\n]+)[>"]', re.M)
+
+
+def _bk_date_ok(digits):
+    """숫자 6자리(YYMMDD)나 8자리 이상(YYYYMMDD...)이 날짜로 읽히는가"""
+    d = re.sub(r"\D", "", digits)
+    mm, dd = (d[2:4], d[4:6]) if len(d) == 6 else (d[4:6], d[6:8])
+    return mm.isdigit() and dd.isdigit() and 1 <= int(mm) <= 12 and 1 <= int(dd) <= 31
+
+
+def backup_reason(name, is_dir, siblings):
+    """이름이 백업으로 보이면 그 까닭을, 아니면 빈 글을 돌려준다. siblings 는 같은 폴더에 있는 같은 종류(폴더끼리, 파일끼리)의 이름들(소문자)이다.
+    확실한 표시는 이름만으로 판정하고, 약한 표시는 그 표시를 뗀 이름이 같은 폴더에 있을 때만 백업으로 본다
+    (Report_2023.cpp 나 Threshold.cpp 같은 보통 이름을 빼지 않기 위한 것이다)."""
+    stem, ext = (name, "") if is_dir else os.path.splitext(name)
+    low = stem.lower()
+    if not is_dir and (ext.lower() in _BK_EXT or name.endswith("~")):
+        return "확장자가 %s" % (ext.lower() or "~")
+    if is_dir and low.lstrip("_.~#") == "old":
+        return "폴더 이름이 old"
+    tokens = [t for t in re.split(r"[\s_\-.()\[\]]+", low) if t]
+    for t in tokens:
+        if _BK_TOKEN_RX.match(t) and (is_dir or len(tokens) >= 2):      # 파일 이름 전체가 Backup 인 것(Backup.cpp)은 기능 이름일 수 있어 빼지 않는다
+            return "이름에 %s" % t
+    for w in _BK_KO:
+        if w in stem:
+            return "이름에 %s" % w
+    if _BK_COPY_RX.match(low):
+        return "복사본의 이름 꼴"
+    if not is_dir and low.endswith(_BK_EXT):
+        return "이중 확장자(%s%s)" % (os.path.splitext(stem)[1].lower(), ext.lower())
+    for rx, kind in _BK_WEAK:
+        m = rx.match(stem)
+        if not m:
+            continue
+        if kind in ("date8", "date6") and not _bk_date_ok(m.group("mark")):
+            continue
+        base = m.group("base").rstrip("_-. ")
+        if base and (base + ext).lower() in siblings and (base + ext).lower() != name.lower():
+            return "같은 폴더에 %s 이(가) 있고 이름 끝에 %s" % (base + ext, m.group("mark"))
+    return ""
+
+
+def _bk_project_refs(rel, data):
+    """프로젝트 파일(또는 솔루션)이 참조하는 파일의 경로들(패키지 기준, 소문자). 매크로($(..))가 든 경로와 패키지 밖은 뺀다."""
+    out = set()
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("cp949", "replace")
+    base = os.path.dirname(rel)
+    for m in _BK_REF_RX.finditer(text):
+        ref = (m.group(1) or m.group(2) or m.group(3) or "").strip()
+        if not ref or "$(" in ref or "%(" in ref or "*" in ref:
+            continue
+        p = norm_rel(os.path.normpath(os.path.join(base, ref.replace("\\", "/"))))
+        if not p.startswith(".."):
+            out.add(p.lower())
+    return out
+
+
+def _bk_write_report(ctx, stat):
+    """백업으로 보여 뺀 것의 목록을 out/backup_excluded.md 에 쓴다."""
+    L = ["# 백업으로 보여 처리하지 않은 폴더와 파일", "",
+         "- 이름만 보고 판정했다. 확실한 표시(bak, backup, 백업, 복사본, 'Copy of', 이중 확장자, old 폴더)는 그것만으로, 약한 표시(_old, _org, 날짜, (2) 등)는 "
+         "그 표시를 뗀 이름이 같은 폴더에 있을 때만 백업으로 봤다.",
+         "- 여기 있는 파일은 읽지 않았다(탐지, 수정, 구조 분석, 이름 색인 모두). 스냅샷에도 복사하지 않았다.",
+         "- 잘못 뺀 것이 있으면 `--backups keep` 으로 전부 처리하고, 진짜 백업은 `--exclude` 로 뺀다.", "",
+         "파일 %d개(소스 %d개)를 뺐다." % (stat["files"], stat["source"]), ""]
+    if stat["dirs"]:
+        L += ["## 폴더", ""] + _table(["폴더", "파일 수", "까닭"], [(d, n, w) for d, w, n in stat["dirs"]]) + [""]
+    if stat["single"]:
+        L += ["## 파일(위의 폴더 밖)", ""] + _table(["파일", "까닭"], stat["single"][:3000])
+        if len(stat["single"]) > 3000:
+            L.append("- 그 밖 %d개는 manifest.csv 에 있다" % (len(stat["single"]) - 3000))
+        L.append("")
+    if stat["kept"]:
+        L += ["## 이름은 백업 같지만 쓰이고 있어 처리한 파일", ""] + _table(["파일", "백업으로 보인 까닭", "처리한 까닭"], stat["kept"][:1000]) + [""]
+    os.makedirs(ctx.p("out"), exist_ok=True)
+    write_text(ctx.p("out", "backup_excluded.md"), "\n".join(L) + "\n")
+
+
 def s0_prepare(ctx):
     st = ctx.store
     LOG0.info("환경 점검 시작")
@@ -3384,34 +3499,107 @@ def s0_prepare(ctx):
 
     LOG0.info("원본 스냅샷 생성: %s" % ctx.package)
     st.x("DELETE FROM files")
-    run_abs = os.path.abspath(ctx.run_dir)
-    n_copy = n_skip = 0
-    rows = []
+    run_abs, pkg_abs = os.path.abspath(ctx.run_dir), os.path.abspath(ctx.package)
+    skip_bk = (ctx.opts.get("backups") or "skip") != "keep"
+    counts = {"copy": 0, "skip": 0}
+    rows, entries, dir_bk = [], [], {"": None}
+    # 1) 파일 목록을 만들며 이름으로 백업 후보를 가린다. 백업 폴더 아래의 것은 모두 후보다
     for root, dirs, names in os.walk(ctx.package):
         dirs[:] = sorted(d for d in dirs if d not in _SKIP_DIRS
                          and not os.path.abspath(os.path.join(root, d)) == run_abs)
+        rel_dir = "" if os.path.abspath(root) == pkg_abs else norm_rel(os.path.relpath(root, ctx.package))
+        mine = dir_bk.get(rel_dir)
+        low_dirs, low_names = {d.lower() for d in dirs}, {n.lower() for n in names}
+        for d in dirs:
+            child = (rel_dir + "/" + d) if rel_dir else d
+            why = "" if mine else backup_reason(d, True, low_dirs)
+            dir_bk[child] = mine or ((child, why) if why else None)
         for name in sorted(names):
             src = os.path.join(root, name)
             rel = norm_rel(os.path.relpath(src, ctx.package))
-            kind = classify(rel)
-            try:
-                size = os.path.getsize(src)
-                if kind in ("source", "project", "text"):
-                    data = read_bytes(src)
-                    write_bytes(ctx.snap(rel), data)
-                    rows.append((rel, size, sha256_bytes(data), kind, "대기", ""))
-                    n_copy += 1
-                else:
-                    rows.append((rel, size, "", kind, "제외", "수정 대상이 아닌 종류(%s)" % kind))
-                    n_skip += 1
-            except OSError as e:
-                LOG0.warn("파일을 읽지 못해 제외합니다: %s (%s)" % (rel, e))
-                rows.append((rel, 0, "", kind, "제외", "읽기 실패: %s" % e))
+            why = "" if mine else backup_reason(name, False, low_names)
+            entries.append((src, rel, classify(rel), mine or (("", why) if why else None)))
+
+    def take(src, rel, kind):
+        """파일 하나를 목록에 넣는다. 소스, 프로젝트, 글 파일은 스냅샷에 복사한다. 돌려주는 값: 읽은 바이트(복사하지 않았으면 None)"""
+        try:
+            size = os.path.getsize(src)
+            if kind in ("source", "project", "text"):
+                data = read_bytes(src)
+                write_bytes(ctx.snap(rel), data)
+                rows.append((rel, size, sha256_bytes(data), kind, "대기", ""))
+                counts["copy"] += 1
+                return data
+            rows.append((rel, size, "", kind, "제외", "수정 대상이 아닌 종류(%s)" % kind))
+            counts["skip"] += 1
+        except OSError as e:
+            LOG0.warn("파일을 읽지 못해 제외합니다: %s (%s)" % (rel, e))
+            rows.append((rel, 0, "", kind, "제외", "읽기 실패: %s" % e))
+        return None
+
+    # 2) 후보가 아닌 파일을 복사하면서, 프로젝트 파일이 참조하는 경로와 소스가 include 하는 헤더 이름을 모은다
+    proj_refs, inc_names, live_names, cands = set(), set(), set(), []
+    for src, rel, kind, bk in entries:
+        if bk is not None:
+            cands.append((src, rel, kind, bk))
+            continue
+        data = take(src, rel, kind)
+        live_names.add(os.path.basename(rel).lower())
+        if data is not None and kind == "project":
+            proj_refs |= _bk_project_refs(rel, data)
+        elif data is not None and kind == "source":
+            inc_names.update(os.path.basename(x.decode("latin-1").replace("\\", "/")).lower() for x in _BK_INC_RX.findall(data))
+    # 3) 후보 가운데 쓰이고 있는 것은 되살리고, 나머지는 백업으로 뺀다(읽지도 복사하지도 않는다)
+    stat = {"mode": "skip" if skip_bk else "keep", "files": 0, "source": 0, "dirs": [], "single": [], "kept": [], "seen": len(cands),
+            "seen_source": sum(1 for c in cands if c[2] == "source")}
+    per_dir = OrderedDict()
+    for src, rel, kind, (top, why) in cands:
+        low, keep_why = rel.lower(), ""
+        if not skip_bk:
+            keep_why = "--backups keep"
+        elif low in proj_refs:
+            keep_why = "백업이 아닌 프로젝트 파일이 참조함"
+        elif low.endswith(_BK_HEADER_EXT) and os.path.basename(low) in inc_names and os.path.basename(low) not in live_names:
+            keep_why = "백업이 아닌 소스가 include 하고, 같은 이름의 헤더가 백업 밖에 없음"
+        if keep_why:
+            take(src, rel, kind)
+            if skip_bk:
+                stat["kept"].append((rel, (("폴더 %s: " % top) if top else "") + why, keep_why))
+            continue
+        try:
+            size = os.path.getsize(src)
+        except OSError:
+            size = 0
+        rows.append((rel, size, "", "backup", "백업제외", "백업으로 보여 처리하지 않음(%s%s)" % (("폴더 %s: " % top) if top else "", why)))
+        stat["files"] += 1
+        stat["source"] += 1 if kind == "source" else 0
+        if top:
+            per_dir.setdefault(top, [why, 0])[1] += 1
+        else:
+            stat["single"].append((rel, why))
+    stat["dirs"] = [(d, w, n) for d, (w, n) in per_dir.items()]
     st.many("INSERT INTO files(path,size,sha256,kind,status,note) VALUES(?,?,?,?,?,?)", rows)
+    st.set_meta("backup_stat", stat)
     st.commit()
     if not rows:
         raise UserInputError("패키지 폴더에 파일이 없습니다: %s" % ctx.package)
-    LOG0.info("스냅샷 완료: 복사 %d개, 복사 제외(바이너리 등) %d개" % (n_copy, n_skip))
+    LOG0.info("스냅샷 완료: 복사 %d개, 복사 제외(바이너리 등) %d개" % (counts["copy"], counts["skip"]))
+    root_why = backup_reason(os.path.basename(pkg_abs), True, set())
+    if root_why:
+        LOG0.warn("패키지 폴더의 이름이 백업으로 보입니다(%s). 지정한 폴더이므로 그대로 처리합니다" % root_why)
+    if not skip_bk:
+        if stat["seen"]:
+            LOG0.info("백업으로 보이는 파일 %d개(소스 %d개)가 있습니다. --backups keep 이어서 그대로 처리합니다" % (stat["seen"], stat["seen_source"]))
+    elif stat["files"] or stat["kept"]:
+        _bk_write_report(ctx, stat)
+        LOG0.warn("백업으로 보이는 파일 %d개(소스 %d개, 폴더 %d곳 포함)를 처리 대상에서 뺐습니다. 목록과 까닭: %s (빼지 않으려면 --backups keep)"
+                  % (stat["files"], stat["source"], len(stat["dirs"]), ctx.p("out", "backup_excluded.md")))
+        for d, w, n in stat["dirs"][:8]:
+            LOG0.info("  백업 폴더: %s (%s, 파일 %d개)" % (d, w, n))
+        if stat["kept"]:
+            LOG0.info("이름은 백업 같지만 쓰이고 있어 처리하는 파일 %d개(예: %s)" % (len(stat["kept"]), stat["kept"][0][0]))
+        if stat["source"] and not any(r[3] == "source" for r in rows):
+            LOG0.warn("소스가 모두 백업으로 판정됐습니다. 판정이 틀렸으면 --backups keep 으로 다시 실행합니다")
 
 
 # ============================================================================
@@ -9130,6 +9318,13 @@ def s9_report(ctx):
         opt_lines.append("처리 범위: only=%s, exclude=%s. 범위 밖 파일은 탐지와 수정을 하지 않았다(범위 안팎에 걸친 "
                          "변경의 일관성은 확인하지 않는다)" % (", ".join(o.get("only") or []) or "(전체)",
                                                     ", ".join(o.get("exclude") or []) or "(없음)"))
+    bks = st.get_meta("backup_stat", None) or {}
+    if bks.get("mode") == "keep" and bks.get("seen"):
+        opt_lines.append("백업으로 보이는 파일 %d개(소스 %d개)도 그대로 처리했다(--backups keep)" % (bks["seen"], bks.get("seen_source", 0)))
+    elif bks.get("files") or bks.get("kept"):
+        opt_lines.append("백업으로 보이는 파일 %d개(소스 %d개, 폴더 %d곳 포함)를 처리 대상에서 뺐다(--backups skip, 기본). 읽지 않았으므로 탐지와 수정, 구조 분석에 "
+                         "들지 않는다. 이름은 백업 같지만 쓰이고 있어 처리한 파일 %d개. 목록과 까닭: `backup_excluded.md`. 빼지 않으려면 --backups keep"
+                         % (bks["files"], bks["source"], len(bks.get("dirs") or []), len(bks.get("kept") or [])))
     opt_lines.append("환경 호환성 항목의 처리 깊이(--compat-llm): %d단계. %s" % (compat_level(ctx), {
         1: "기계적 변경만 했다(기본). 규칙의 수정과 설정 처리까지다",
         2: "1 에 더해, 선언을 읽어 판정하는 기계적 변환(지역 배열에 쓰는 보안 CRT 호출)까지 했다. sLLM 에는 보내지 않았다",
@@ -10298,6 +10493,8 @@ USAGE = [
         ("--only", "일부만 처리", "--only Src/Net/*", "패키지 기준 경로의 와일드카드. 범위 밖 파일은 탐지도 수정도 하지 않는다"),
         ("--only", "범위 여럿", "--only Src/Net/*,Src/Ui/*", "쉼표로 잇거나 옵션을 여러 번 준다"),
         ("--exclude", "일부를 뺌", "--exclude ThirdParty/*", "외부 라이브러리, 생성된 코드, HMI 스크립트 폴더 등을 뺄 때"),
+        ("--backups", "백업도 처리", "--backups keep", "skip(기본): 백업으로 보이는 폴더와 파일(bak, backup, 백업, 복사본, old 폴더, _old·날짜를 붙인 사본 등)을 처리 대상에서 빼고 out/backup_excluded.md 에 목록을 낸다. keep: 빼지 않는다"),
+        ("--backups", "일부 백업만 뺌", "--backups keep --exclude Backup/*", "자동 판정이 맞지 않을 때: 판정을 끄고 뺄 곳을 직접 적는다"),
     ]),
     ("환경값", [
         ("--from-vs, --to-vs", "필수", "", "2005, 2008, 2010, 2012, 2013, 2015, 2017, 2019, 2022 가운데 원본과 대상. 대상이 원본보다 뒤여야 한다"),
@@ -10459,6 +10656,9 @@ def build_parser():
     r.add_argument("--only", action="append", metavar="패턴",
                    help="처리할 파일 범위. 패키지 기준 경로의 와일드카드. 여러 번 또는 쉼표로. 예: Src/Net/*")
     r.add_argument("--exclude", action="append", metavar="패턴", help="처리에서 뺄 파일 범위. 예: ThirdParty/*")
+    r.add_argument("--backups", choices=["skip", "keep"], default=None,
+                   help="백업으로 보이는 폴더와 파일(bak, backup, 백업, 복사본, old 폴더, _old·날짜를 붙인 사본 등)의 처리. "
+                        "skip(기본): 처리 대상에서 빼고 out/backup_excluded.md 에 목록을 낸다. keep: 빼지 않는다")
     r.add_argument("--server-config", dest="server_config", help="서버 설정 파일. 기본 config/server.json")
     r.add_argument("--rules", help="추가 규칙 파일. 기본 config/rules.json")
     r.add_argument("--llm-endpoint", dest="llm_endpoint",

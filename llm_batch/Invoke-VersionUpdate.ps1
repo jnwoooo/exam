@@ -20,6 +20,9 @@
   .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -FromOs "Windows 7" -ToOs "Windows 11" -FromDb "Oracle 11g" -ToDb "Oracle 19c"
   (OS 와 DB 의 원본/대상. 선택이다. sLLM 요청의 [환경]과 보고서에 들어가고, 낮은 WINVER 를 대상 OS 의 값으로 올린다)
 .EXAMPLE
+  .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -Backups keep
+  (백업으로 보이는 폴더와 파일도 처리한다. 주지 않으면 skip: 빼고 out\backup_excluded.md 에 목록을 낸다)
+.EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Resume D:\work\runs\PKG_A\20261124_101500
 .EXAMPLE
   .\Invoke-VersionUpdate.ps1 -Package D:\src\PKG_A -FromVs 2008 -ToVs 2022 -MaxCalls 200
@@ -56,6 +59,7 @@ param(
     [string[]]$DisableRule,
     [string[]]$Only,
     [string[]]$Exclude,
+    [string]$Backups,
     [string]$LlmEndpoint,
     [int]$MaxParallel = 0,
     [int]$CompileParallel = -1,
@@ -102,6 +106,7 @@ if ($ToDb)        { $a += @("--to-db", $ToDb) }
 if ($Request)     { $a += @("--request", $Request) }
 foreach ($p in $Only)    { if ($p) { $a += @("--only", $p) } }
 foreach ($p in $Exclude) { if ($p) { $a += @("--exclude", $p) } }
+if ($Backups)     { $a += @("--backups", $Backups) }
 if ($LlmEndpoint) { $a += @("--llm-endpoint", $LlmEndpoint) }
 if ($MaxParallel -gt 0) { $a += @("--max-parallel", "$MaxParallel") }
 if ($CompileParallel -ge 0) { $a += @("--compile-parallel", "$CompileParallel") }
