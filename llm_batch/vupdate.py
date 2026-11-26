@@ -4,7 +4,7 @@
 ==============================================================================
 vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본)
 ==============================================================================
-버전 : 0.10.5 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
+버전 : 0.10.7 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
               환경 호환성 항목의 sLLM 호출은 --compat-llm 의 단계로 정한다. 당장 쓰지 않는 기능은 뺐다. 17_추가_0.9.0.md)
               0.9.1: OS·DB 의 원본/대상 옵션(--from-os, --to-os, --from-db, --to-db). 18_추가_0.9.1.md
               0.9.2: --compat-llm 을 단계 1|2|3 으로. 막힌 컴파일 검사를 통과로 치지 않는다. 옵션별 사용 예는 vupdate examples.
@@ -24,6 +24,10 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
                       남은 자리를 sLLM 에 맡기는 단계와 기록(추적 파일, 집계)의 오류가 실행을 멈추지 않게 했다. 30_추가_0.10.4.md
               0.10.5: 이름이 없어 대상에서 뺀 구조체를 조용히 빼지 않는다. 어느 파일 몇째 줄의 구조체를 왜 뺐는지 run.log, out/struct_scan.md,
                       보고서의 구조 분석 절에 남긴다. 30_추가_0.10.4.md 의 5절
+              0.10.6: 구조 분석 요청을 처리하다 난 오류를 그 함수(버퍼, 묶음) 하나나 그 요청 하나의 범위로 가둔다. 실행은 끝까지 가고,
+                      오류가 난 자리는 바꾸지 않고 사유와 함께 남긴다. 31_점검_0.10.5.md
+              0.10.7: 요청문의 이름이 코드에 없을 때 단계별로 넓혀 찾는다(--ask-match 1 정확히 / 2 대소문자 무시 / 3 낱말 단위 / 4 글자 포함).
+                      sLLM 단계에서 응답을 받는 대로 진행 상황을 로그에 남기고 답을 캐시에 넣는다. 33_추가_0.10.7.md
 목적 : 레거시 C++ 패키지를 새 Visual Studio 환경(예: 2008 -> 2022)에 맞게
        고치는 작업을 한 명령으로 수행한다. 규칙으로 고칠 수 있는 것은 규칙으로,
        규칙으로 못 고치는 것만 sLLM에 맡기고, 결과를 별도 폴더에 낸다.
@@ -46,6 +50,8 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
   vupdate run ... --request req.json              (요청 파일. 전문 버퍼의 위치 접근을 기존 구조체의 필드로(buffer_fields),
                                                    지역 병렬 배열을 구조체의 배열로(record_group). 규칙만 쓴다. 25_추가_0.10.0.md)
   vupdate run ... --backups keep                  (백업으로 보이는 폴더와 파일도 처리한다. 기본은 skip: 빼고 out/backup_excluded.md 에 목록을 낸다)
+  vupdate run ... --ask "..." --ask-match 3 --until S5   (요청문의 이름을 넓혀 찾는다. 1 정확히(기본) / 2 대소문자 무시 / 3 낱말 단위 / 4 글자 포함.
+                                                   먼저 --until S5 로 out/ask_trace.md 에서 무엇이 잡히는지 본다)
   vupdate examples                               (옵션별 사용 예 전체)
 
 [이 파일의 구획]  수정할 때는 해당 구획만 고친다. 구획 사이의 호출은
@@ -117,14 +123,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ============================================================================
 # [M01 공통]  상수, 로그, 작은 유틸
 # 목적: 모든 구획이 같이 쓰는 최소한의 도구. 로그 접두어 규칙을 여기서 보장한다.
 # ============================================================================
 APP = "vupdate"
-VERSION = "0.10.5"
+VERSION = "0.10.7"
 
 STAGES = [("S0", "준비"), ("S1", "인벤토리"), ("S2", "탐지"), ("S3", "설정흡수"),
           ("S4", "규칙적용"), ("S5", "영향분석"), ("S6", "sLLM수정"), ("S7", "병합"),
@@ -301,6 +307,11 @@ DEFAULT_SERVER = {
         "word_suffixes": ["s", "er", "ger", "ing", "ging", "ed", "ged"],   # 요청문: 낱말 뒤에 붙어도 같은 낱말로 보는 꼴(log -> logs, logger, logging)
         "ask_max_candidates": 600,   # 요청문: 낱말로 고른 후보 이름의 최대 수(많이 쓰인 순서로 자른다)
         "ask_check_over": 8,         # 요청문: 낱말로 고른 후보가 이 수를 넘으면 sLLM 에 번호로 추리게 한다. 0 이면 묻지 않고 전부 대상으로 한다
+        "ask_match_level": 1,        # 요청문: 이름을 찾는 범위. 1 정확히 같은 이름만 / 2 대소문자만 다른 이름까지 / 3 그 낱말이 든 모든 이름까지 / 4 그 글자가 든 모든 이름까지(--ask-match 가 우선)
+        "ask_widen_max": 30,         # 요청문: 이름 하나를 넓혀 찾았을 때 대상으로 삼는 이름의 최대 수(많이 쓰인 순서로 자른다)
+        "progress_every": 10,        # sLLM 단계: 응답을 이만큼 받을 때마다 진행 상황을 로그에 적는다
+        "progress_sec": 60,          # sLLM 단계: 응답이 뜸해도 이 시간(초)마다 한 번은 진행 상황을 적는다(응답이 올 때 적는다)
+        "soft_retry": 0,             # sLLM 단계: 고치지 않아도 설정으로 해결되는 줄(3단계의 남은 사용 중단 경고)만 든 작업의 답이 모두 걸러졌을 때 다시 물을지(0 묻지 않음, 1 물음)
         "ask_log_chars": 6000,       # 요청문: 의미 분석의 답 원문을 run.log 에 적을 때의 글자 수 상한(넘으면 자르고 원문 파일을 알려 준다. 0 이면 적지 않는다)
         "tally_log_notes": 8,        # 집계: run.log 에 적는 미수정·오류 비고의 수(단계마다, 의도마다. 전체는 보고서와 out/ask_trace.md 에 있다)
         "decl_change_check": True,   # 선언을 없앴는데 다른 줄에서 쓰이거나, 이미 있는 이름을 다시 선언한 수정을 기각한다
@@ -688,7 +699,7 @@ def collect_opts(args, saved=None):
     이어서 실행할 때(saved 가 None 이 아닐 때)는 처음 실행의 값에서 시작하고, 명령줄에 다시 준 값만 덮어쓴다.
     처리 범위(only, exclude)와 호출자는 처음 실행의 값을 그대로 쓴다(중간에 바꾸면 앞 단계 결과와 어긋난다)."""
     o = {"no_llm": False, "no_compile": False, "compat_llm": 1, "only": [], "exclude": [], "caller": "",
-         "max_parallel": 0, "compile_parallel": -1, "disable_rules": [], "exceptions": "", "backups": "skip"}
+         "max_parallel": 0, "compile_parallel": -1, "disable_rules": [], "exceptions": "", "backups": "skip", "ask_match": 0}
     if saved is not None:
         o.update({k: saved[k] for k in o if k in saved})
     for k in ("no_llm", "no_compile"):
@@ -717,6 +728,11 @@ def collect_opts(args, saved=None):
             if p and not os.path.isfile(p):
                 raise UserInputError("%s이 없습니다: %s" % (what, p))
             o[key] = os.path.abspath(p) if p else ""
+    v = getattr(args, "ask_match", None)       # 요청문의 이름을 찾는 범위(1~4). 주지 않으면 설정(limits.ask_match_level)을 쓴다. 이어서 실행할 때 다시 줄 수 있다
+    if v is not None:
+        if str(v) not in ("1", "2", "3", "4"):
+            raise UserInputError("--ask-match 는 1, 2, 3, 4 가운데 하나입니다: %s" % v)
+        o["ask_match"] = int(v)
     only, excl = _split_patterns(getattr(args, "only", None)), _split_patterns(getattr(args, "exclude", None))
     bk = getattr(args, "backups", None)
     if saved is not None:
@@ -5757,6 +5773,21 @@ def _sx_plan_buffer(ctx, f, buf, opts, sx):
     return plan
 
 
+def _sx_plan_buffer_safe(ctx, f, buf, opts, sx):
+    """_sx_plan_buffer 를 부른다. 오류가 나면 그 버퍼의 접근을 모두 '분석 중 오류로 바꾸지 않음'으로 둔 계획을 돌려준다(0.10.6).
+    함수 하나를 분석하다 난 오류로 실행 전체가 멈추지 않게 하는 것이다. 이 접근들은 sLLM 에도 보내지 않는다."""
+    try:
+        return _sx_plan_buffer(ctx, f, buf, opts, sx)
+    except Exception as e:
+        LOG5.warn("%s %s() 버퍼 %s: 처리 계획을 세우다 실패했습니다(%s: %s). 이 버퍼의 접근은 바꾸지 않습니다"
+                  % (f["rel"], f["func"], buf, type(e).__name__, e))
+        rows = [r for r in f["fn"].rows if r["buf"] == buf]
+        for r in rows:
+            r["st"], r["mode"] = ("whole" if r["form"] == "whole" else "err"), ""
+            r["out"] = "버퍼 전체를 다루는 문장(그대로 둠)" if r["form"] == "whole" else "분석 중 오류로 바꾸지 않음(%s)" % type(e).__name__
+        return {"buf": buf, "mode": "", "struct": "", "edits": [], "why": "분석 중 오류(%s)" % type(e).__name__, "cands": [], "rows": rows, "atomic": False}
+
+
 def _sx_field_table(rows):
     """확정 행으로 만든 필드 표의 글(대응하는 구조체가 없을 때 사람이 구조체를 만들 근거로 쓴다)."""
     spans = sorted({(r["off"][1], r["len"]) for r in rows if _sx_state(r) == "ok" and not r["nul"]})
@@ -5829,7 +5860,7 @@ def _sx_request(ctx, ft, files):
             for buf in sorted(fn.bufs):
                 if not _sx_hit(targets, f["rel"], f["func"], [buf] + [o["type"] for o in fn.overlays]):
                     continue
-                plan = _sx_plan_buffer(ctx, f, buf, opts, sx)
+                plan = _sx_plan_buffer_safe(ctx, f, buf, opts, sx)
                 f["plans"][buf] = plan
                 d = fn.d
                 bump("target", "문장", len(plan["rows"]))
@@ -5912,10 +5943,16 @@ def _sx_request(ctx, ft, files):
             if opts["var_name"] or opts["struct_name"]:
                 d0, blk0, blocks0, dup0 = g["_ctx"]
                 key0 = (g["rel"], blk0["head"])
-                g2 = _sx_plan_group(ctx, d0, blk0, blocks0, g["arrays"], g["sites"], dup0, dict(opts, _taken=renamed.get(key0, [])))
-                g2["_ctx"] = g["_ctx"]
-                g.update(g2)
-                renamed.setdefault(key0, []).extend([g["var"], g["tag"]])
+                try:
+                    g2 = _sx_plan_group(ctx, d0, blk0, blocks0, g["arrays"], g["sites"], dup0, dict(opts, _taken=renamed.get(key0, [])))
+                    g2["_ctx"] = g["_ctx"]
+                    g.update(g2)
+                    renamed.setdefault(key0, []).extend([g["var"], g["tag"]])
+                except Exception as e:                        # (0.10.6) 이 묶음만 바꾸지 않는다
+                    LOG5.warn("%s %s(): 묶음(%s)의 계획을 다시 세우다 실패했습니다(%s: %s). 이 묶음은 바꾸지 않습니다"
+                              % (g["rel"], g["func"], ", ".join(names), type(e).__name__, e))
+                    g["blocked"] = list(g.get("blocked") or []) + [(g["line"], "분석 중 오류로 바꾸지 않음(%s)" % type(e).__name__)]
+                    g["edits"] = []
             d = g["_ctx"][0]
             bump("target", "묶음")
             bump("target", "사용처", sum(g["counts"].values()))
@@ -5959,6 +5996,39 @@ def _sx_request(ctx, ft, files):
     return {"id": ft["id"], "type": kind, "target": ", ".join(targets) or "(탐지된 전체)", "rename": {}, "counts": stat["done"],
             "note": " ".join(note), "sx": stat, "reasons": ["요청에서 apply 를 껐다(탐지와 보고만)"] if not apply_on else [],
             "applied": True if apply_on else False}
+
+
+def _request_safe(ctx, ft, fn, *args):
+    """요청 하나를 처리하는 함수 fn(*args) 를 부른다. 오류가 나면 이 요청이 넣은 수정과 이슈를 모두 되돌리고(일부만 바뀐 결과를 내지 않게),
+    사유를 수동 검토 목록과 보고서에 남긴 뒤 계속한다(0.10.6). 돌려주는 값: 변경 계약 dict"""
+    st = ctx.store
+
+    def sp(sql):
+        try:                                      # 안에서 commit 했으면 저장 지점은 이미 없다. 그때는 할 일이 없다
+            st.x(sql)
+        except sqlite3.Error:
+            pass
+
+    st.commit()
+    sp("SAVEPOINT sx_request")
+    try:
+        out = fn(*args)
+        sp("RELEASE sx_request")
+        return out
+    except Exception as e:
+        sp("ROLLBACK TO sx_request")
+        sp("RELEASE sx_request")
+        why = "%s을 처리하다 오류가 나서 이 요청은 적용하지 않음(%s: %s)" % ("구조 분석 요청" if ft["type"] != "array_to_struct" else "배열 요청", type(e).__name__, str(e)[:200])
+        LOG5.error("요청 %s (%s): %s" % (ft["id"], ft["type"], why))
+        LOG5.error("  " + " | ".join(x.strip() for x in traceback.format_exc().strip().split("\n")[-6:])[:900])
+        st.x("INSERT INTO issues(path,start,end,line,source,rule_id,tier,llm,title,detail,review,status,note) "
+             "VALUES('',0,0,0,'request',?,'T3',0,?,?,0,'manual',?)",
+             (ft["id"], "요청사항 %s 을(를) 처리하지 못함(도구의 오류)" % ft["type"], json.dumps({k: v for k, v in ft.items() if not k.startswith("_")},
+                                                                                  ensure_ascii=False)[:300], why[:600]))
+        st.commit()
+        return {"id": ft["id"], "type": ft["type"], "target": str(ft.get("target") or ", ".join(str(x) for x in (ft.get("targets") or [])) or "(탐지된 전체)"), "rename": {}, "counts": {},
+                "note": why, "sx": {"kind": ft["type"], "apply": False, "base": {}, "target": {}, "done": {}, "left": {"도구의 오류": 1}, "where": [why], "llm": 0},
+                "reasons": [why], "applied": False}
 
 
 def _sx_write_scan(ctx):
@@ -6893,15 +6963,104 @@ def analyze_ask(ctx, ask):
     return None, "모델의 답을 해석하지 못함(%s)" % why
 
 
-def expand_words(ctx, words):
-    """낱말이 '낱말 단위로' 든 호출 이름을 고른다(글자 포함으로 맞추지 않는다. log 로 Dialog 를 잡지 않기 위한 것이다).
-    돌려주는 값: [(이름, 횟수, 예로 쓸 줄)] (횟수가 많은 순서)"""
+_ASK_MATCH = OrderedDict(((1, "정확히 같은 이름만"), (2, "대소문자만 다른 이름까지"), (3, "그 낱말이 든 모든 이름까지"), (4, "그 글자가 들어 있는 모든 이름까지")))
+
+
+def ask_match_level(ctx):
+    """요청문의 이름을 찾는 범위(1~4). --ask-match 가 있으면 그 값, 없으면 설정 limits.ask_match_level, 그것도 없으면 1"""
+    try:
+        return min(4, max(1, int(ctx.opts.get("ask_match") or ctx.cfg["limits"].get("ask_match_level", 1) or 1)))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _name_index(ctx):
+    """코드에 나오는 이름마다 [쓰인 횟수, 처음 나온 파일, 처음 나온 위치]. 넓혀 찾기(--ask-match 2 이상)에서 처음 필요할 때 한 번 만든다.
+    함께 만드는 것: ctx._name_low {소문자: [이름]}, ctx._name_words {낱말: [그 낱말이 든 이름]}"""
+    if getattr(ctx, "_name_idx", None) is None:
+        idx = {}
+        for r in ctx.store.q("SELECT path FROM files WHERE kind='source' ORDER BY path"):
+            try:
+                d = get_doc(ctx, r["path"])
+            except Exception:
+                continue
+            for m in re.finditer(r"[A-Za-z_][A-Za-z0-9_]*", d.code):
+                e = idx.get(m.group())
+                if e is None:
+                    idx[m.group()] = [1, r["path"], m.start()]
+                else:
+                    e[0] += 1
+        low, words = {}, {}
+        for n in idx:
+            if n in _CPP_WORDS:
+                continue
+            low.setdefault(n.lower(), []).append(n)
+            for w in set(word_parts(n)):
+                if len(w) >= 2:
+                    words.setdefault(w, []).append(n)
+        ctx._name_idx, ctx._name_low, ctx._name_words = idx, low, words
+    return ctx._name_idx
+
+
+def _name_sample(ctx, name):
+    """이름이 처음 나온 줄(후보 목록에 예로 보여 준다)."""
+    e = _name_index(ctx).get(name)
+    if not e:
+        return ""
+    try:
+        d = get_doc(ctx, e[1])
+        la, lb = d.line_span(d.line_of(e[2]))
+        return " ".join(d.text[la:lb].split())[:140]
+    except Exception:
+        return ""
+
+
+def widen_name(ctx, name, level, cap):
+    """코드에 없는 이름을 단계(level)만큼 넓혀 찾는다. 돌려주는 값: ([(찾은 이름, 맞춘 방식, 쓰인 횟수)], 자르기 전의 수)
+    2: 대소문자만 다른 이름 / 3: 그 낱말(들)이 모두 든 이름 / 4: 그 글자가 들어 있는 이름(3글자 이상일 때).
+    좁은 단계에서 찾은 것이 앞에 오고, 같은 단계 안에서는 많이 쓰인 이름이 앞에 온다. cap 개까지만 돌려준다."""
+    idx = _name_index(ctx)
+    out, seen = [], {name}
+
+    def add(names, how):
+        for n in sorted(names, key=lambda x: (-idx[x][0], x)):
+            if n not in seen and n not in _CPP_WORDS:
+                seen.add(n)
+                out.append((n, how, idx[n][0]))
+
+    if level >= 2:
+        add(ctx._name_low.get(name.lower(), []), "대소문자만 다름")
+    if level >= 3:
+        parts = [w for w in word_parts(name) if len(w) >= 2]
+        if parts:
+            add(set.intersection(*[set(ctx._name_words.get(w, [])) for w in parts]), "낱말이 같음")
+    if level >= 4 and len(name) >= 3:
+        low = name.lower()
+        add([n for n in idx if low in n.lower()], "글자가 들어 있음")
+    return out[:max(1, cap)], len(out)
+
+
+def expand_words(ctx, words, level=1):
+    """낱말이 '낱말 단위로' 든 이름을 고른다. 돌려주는 값: [(이름, 횟수, 예로 쓸 줄)] (횟수가 많은 순서)
+    level 1, 2: 호출 이름(함수)만 본다(글자 포함으로 맞추지 않는다. log 로 Dialog 를 잡지 않기 위한 것이다).
+    level 3: 모든 이름(변수, 필드, 타입, 매크로 포함)을 본다.  level 4: 거기에 그 글자가 들어 있는 이름을 더한다(3글자 이상의 낱말)."""
     suf = [str(x) for x in (ctx.cfg["limits"].get("word_suffixes") or ["s", "er", "ger", "ing", "ging", "ed", "ged"])]
     forms = set()
     for w in words:
         forms.add(w)
         forms.update(w + s for s in suf)
-    out = [(n, e[0], e[1]) for n, e in _call_index(ctx).items() if forms & set(word_parts(n))]
+    calls = _call_index(ctx)
+    if level >= 3:
+        idx = _name_index(ctx)
+        names = set()
+        for f in forms:
+            names.update(ctx._name_words.get(f, []))
+        if level >= 4:
+            lows = [w.lower() for w in words if len(w) >= 3]
+            names.update(n for n in idx if n not in _CPP_WORDS and any(w in n.lower() for w in lows))
+        out = [(n, idx[n][0], calls[n][1] if n in calls else _name_sample(ctx, n)) for n in names]
+    else:
+        out = [(n, e[0], e[1]) for n, e in calls.items() if forms & set(word_parts(n))]
     return sorted(out, key=lambda x: (-x[1], x[0]))
 
 
@@ -7036,6 +7195,9 @@ def _analyze_asks(ctx, files):
     can_llm = (not ctx.opts.get("no_llm")) and bool(ctx.cfg["llm"].get("endpoint"))
     max_c, over = int(lim.get("ask_max_candidates", 600) or 600), int(lim.get("ask_check_over", 8) or 0)
     known = _code_names(ctx)
+    match_lv, widen_cap = ask_match_level(ctx), int(lim.get("ask_widen_max", 30) or 30)
+    if match_lv > 1:
+        LOG5.info("요청문의 이름을 찾는 범위: %d(%s). 코드에 없는 이름은 이 범위까지 넓혀 찾습니다" % (match_lv, _ASK_MATCH[match_lv]))
 
     def note(iid, kind, text):
         contracts.append({"id": iid, "type": kind, "target": "-", "rename": {}, "counts": {}, "note": text})
@@ -7058,7 +7220,19 @@ def _analyze_asks(ctx, files):
         for k, it in enumerate(intents, 1):
             iid, typ = "%s-%d" % (ask["id"], k), it["type"]
             ok_names = [n for n in it["names"] if n in known]
-            r = dict(it, id=iid, names=ok_names, names_dropped=[n for n in it["names"] if n not in known], targets=list(ok_names),
+            lost, widened, wide_set = [n for n in it["names"] if n not in known], OrderedDict(), set()
+            if lost and match_lv >= 2:                     # (0.10.7) 코드에 없는 이름을 단계만큼 넓혀 찾는다
+                for n in lost:
+                    got, total = widen_name(ctx, n, match_lv, widen_cap)
+                    if not got:
+                        continue
+                    widened[n] = ", ".join("%s(%s, %d곳)" % g for g in got[:12]) + ((" 외 %d개" % (len(got) - 12)) if len(got) > 12 else "") + \
+                        ((" [찾은 이름 %d개 가운데 많이 쓰인 %d개만 대상]" % (total, len(got))) if total > len(got) else "")
+                    wide_set.update(g[0] for g in got)
+                    ok_names += [g[0] for g in got if g[0] not in ok_names]
+                    LOG5.info("요청 %s: 이름 %s 은(는) 코드에 없어 넓혀 찾음(--ask-match %d): %s" % (iid, n, match_lv, widened[n]))
+                lost = [n for n in lost if n not in widened]
+            r = dict(it, id=iid, names=ok_names, names_dropped=lost, names_widened=dict(widened), match_level=match_lv, targets=list(ok_names),
                      candidates=0, result="")
             rec["intents"].append(r)
             LOG5.info("요청 %s [%s] 지시: %s" % (iid, typ, it["instruction"]))
@@ -7089,6 +7263,8 @@ def _analyze_asks(ctx, files):
                 for j, n in enumerate(ok_names):
                     if n in sx_known:
                         sx_names.append(n)
+                        continue
+                    if n in wide_set:                          # 넓혀 찾은 이름은 구조 분석의 대상을 좁히는 데만 쓴다. 표 변환(옛 변환기)의 대상으로 삼지 않는다
                         continue
                     ft, why2 = _auto_array_feature(ctx, iid if j == 0 else "%s_%d" % (iid, j + 1), it["instruction"], n, files)
                     if ft is None:
@@ -7146,7 +7322,7 @@ def _analyze_asks(ctx, files):
                 continue
             warns = []
             if it["words"] and not ok_names:               # 정확한 이름이 없다: 낱말이 든 호출 이름을 후보로 고른다
-                cands = expand_words(ctx, it["words"])
+                cands = expand_words(ctx, it["words"], match_lv)
                 r["candidates"] = len(cands)
                 if len(cands) > max_c:
                     warns.append("후보가 %d개여서 많이 쓰인 %d개만 봄" % (len(cands), max_c))
@@ -7368,8 +7544,8 @@ def _tally_rows(ctx, rows, by_rule=False):
             t["task_rows"].append((task["id"], task["path"], "%s~%s" % (task["start_line"], task["end_line"]), task["status"],
                                    task["attempts"] or 0, (task["note"] or "")[:200]))
         t["tasks"], t["llm_sent"] = len(task_ids), len(sent)
-        if task_ids:
-            t["calls"] = st.one("SELECT COUNT(*) FROM llm_calls WHERE task_id IN (%s)" % ",".join(str(x) for x in task_ids)) or 0
+        for k in range(0, len(task_ids), 500):               # 작업이 아주 많아도 문장이 길어지지 않게 500개씩 센다
+            t["calls"] += st.one("SELECT COUNT(*) FROM llm_calls WHERE task_id IN (%s)" % ",".join(str(x) for x in task_ids[k:k + 500])) or 0
     return t
 
 
@@ -7494,6 +7670,8 @@ def _ask_trace_report_lines(ctx):
         for r in rec.get("intents") or []:
             t = _ask_tally(ctx, r["id"])
             names = ", ".join(r.get("names") or [])
+            if r.get("names_widened"):
+                names += " (넓혀 찾음: %s)" % ", ".join(r["names_widened"])
             if r.get("names_dropped"):
                 names += ("; " if names else "") + "코드에 없어 버림: " + ", ".join(r["names_dropped"])
             if r.get("words"):
@@ -7519,6 +7697,7 @@ def _write_ask_trace(ctx, final=False):
          "요청문 하나가 sLLM 의 의미 분석에서 어떤 의도로 나뉘었고, 의도마다 어떤 대상과 수정 요청으로 이어졌는지 적은 것이다.", "",
          "- 상태: %s" % ("최종(수정과 검증이 끝난 뒤의 건수)" if final else "분석 직후(S5). 수정 결과의 건수는 실행이 끝나면 다시 쓴다"),
          "- 물음과 답의 전체 원문: `logs/llm/ask_*.txt`",
+         "- 이름을 찾는 범위(--ask-match): %d(%s)" % (ask_match_level(ctx), _ASK_MATCH[ask_match_level(ctx)]),
          "- 건수의 뜻: 대상(의도가 가리킨 코드의 자리) / 규칙 수정(sLLM 없이 고친 것) / sLLM 수정 요청(sLLM 에 맡기기로 한 자리. 괄호 안은 실제로 보낸 자리, 작업 수, 호출 수) / "
          "sLLM 수정(받아들인 것) / 미수정(수동 검토로 남은 것)"]
     for rec in plan:
@@ -7547,6 +7726,7 @@ def _write_ask_trace(ctx, final=False):
         for r in its:
             t = _ask_tally(ctx, r["id"])
             L += ["", "### %s [%s]" % (r["id"], r["type"]), "", "- 지시: %s" % r["instruction"], "- 처리 경로와 결과: %s" % (r.get("result") or "-")]
+            L += ["- 넓혀 찾은 이름(--ask-match %s): %s -> %s" % (r.get("match_level", "?"), k, v) for k, v in (r.get("names_widened") or {}).items()]
             L += ["- 알아 둘 것: " + w for w in r.get("warnings") or []]
             for c in r.get("check") or []:
                 L.append("- 후보 확인(sLLM, 묶음 %d/%d, %s): 후보 %d개 가운데 %d개를 남김%s" % (
@@ -7657,7 +7837,7 @@ def s5_impact(ctx):
     contracts = []
     for ft in ctx.request.get("features", []):
         if ft["type"] in ("buffer_fields", "record_group"):
-            contracts.append(_sx_request(ctx, ft, files))
+            contracts.append(_request_safe(ctx, ft, _sx_request, ctx, ft, files))
             continue
         if ft["type"] != "array_to_struct":
             LOG5.warn("요청 %s: 유형 %s 은(는) 이 판에서 처리하지 않습니다. 수동 검토 목록에 올립니다"
@@ -7666,11 +7846,18 @@ def s5_impact(ctx):
                  "VALUES('',0,0,0,'request',?,'T3',0,?,?,0,'manual','이 판에서 지원하지 않는 요청 유형')",
                  (ft["id"], "요청사항 %s" % ft["type"], json.dumps(ft, ensure_ascii=False)[:300]))
             continue
-        contracts.append(_array_request(ctx, ft))
-    _sx_write_scan(ctx)                                    # 구조 분석을 했으면 문장별 표를 낸다
+        contracts.append(_request_safe(ctx, ft, _array_request, ctx, ft))
+    _safe_lines(ctx, "구조 분석 결과 문서(struct_scan.md)", _sx_write_scan, ctx)     # 구조 분석을 했으면 문장별 표를 낸다
     contracts += ask_notes
-    contracts += _user_asks(ctx, files)
-    _write_ask_plan(ctx, plan, contracts)
+    try:
+        contracts += _user_asks(ctx, files)
+    except Exception as e:                                 # (0.10.6) 요청문의 대상을 찾다 난 오류: 남은 요청문은 수동 검토로 올리고 계속한다
+        LOG5.error("요청문의 대상을 찾다 오류가 났습니다(%s: %s). 처리하지 못한 요청문은 수동 검토 목록에 올립니다" % (type(e).__name__, e))
+        LOG5.error("  " + " | ".join(x.strip() for x in traceback.format_exc().strip().split("\n")[-6:])[:900])
+        for a in ctx.request.get("asks") or []:
+            if "_sites" not in a:
+                _ask_unresolved(ctx, a["id"], "요청을 처리하지 못함(도구의 오류)", a.get("text") or "", "대상을 찾다 오류가 남(%s)" % type(e).__name__)
+    _safe_lines(ctx, "요청문 분석 결과(ask_plan.json)", _write_ask_plan, ctx, plan, contracts)
     st.set_meta("contracts", contracts)
     deps = {}
     for r in st.q("SELECT path, header FROM includes"):
@@ -9071,9 +9258,34 @@ def s6_llm(ctx):
         ctx.llm_calls += len(jobs)
         results = {}
         if jobs:
+            # (0.10.7) 응답을 받는 대로 센다. 예전에는 한 차수의 응답이 모두 올 때까지 로그가 없어 멈춘 것처럼 보였고,
+            # 그 사이에 실행을 끊으면 받은 답을 모두 잃었다. 받은 답은 바로 캐시에 넣어 이어서 실행할 때 다시 부르지 않게 한다
+            t_round = t_log = time.time()
+            n_got = n_bad = 0
+            every = max(1, int(ctx.cfg["limits"].get("progress_every", 10) or 10))
+            gap = max(5, int(ctx.cfg["limits"].get("progress_sec", 60) or 60))
             with ThreadPoolExecutor(max_workers=max(1, int(llm["max_parallel"]))) as ex:
-                for t, res in zip(jobs, ex.map(lambda t: llm_chat(llm, ctx.system_prompt, t["prompt"]), jobs)):
+                futs = {ex.submit(llm_chat, llm, ctx.system_prompt, t["prompt"]): t for t in jobs}
+                for fu in as_completed(futs):
+                    t = futs[fu]
+                    try:
+                        res = fu.result()
+                    except Exception as e:                 # 호출 함수가 예외로 끝났다: 그 작업만 실패로 친다
+                        res = (False, "호출 중 오류(%s: %s)" % (type(e).__name__, e), 0, {})
                     results[t["id"]] = res
+                    n_got += 1
+                    n_bad += 0 if res[0] else 1
+                    if res[0] and (res[3] or {}).get("finish") != "length":
+                        st.x("INSERT OR REPLACE INTO llm_cache(key,response) VALUES(?,?)", (t["key"], res[1]))
+                    now = time.time()
+                    if n_got == len(jobs) or n_got % every == 0 or now - t_log >= gap:
+                        st.commit()
+                        t_log = now
+                        el = now - t_round
+                        left = el / n_got * (len(jobs) - n_got)
+                        LOG6.info("%d차 요청 진행: %d/%d건 응답(실패 %d건), 경과 %d분 %d초%s" % (
+                            round_no, n_got, len(jobs), n_bad, el // 60, el % 60,
+                            (", 남은 예상 약 %d분" % max(1, round(left / 60.0))) if n_got < len(jobs) else ". 받은 답을 검사합니다"))
         retry_ids = set()
 
         def record(t, rfile, ms, ok, note, info, kind):
@@ -9532,6 +9744,8 @@ def _handle_response(ctx, t, ok, content, kind=""):
         else:
             kept.append(e)
     if dropped and not kept:
+        if not int(ctx.cfg["limits"].get("soft_retry", 0) or 0) and all(_soft_issue(ctx, i) for _l, i in t["plan"]["members"]):
+            return "수동", "수정 블록을 받지 않음(설정으로도 해결되는 줄이어서 다시 묻지 않음): " + "; ".join(list(OrderedDict.fromkeys(w for _e, w in dropped))[:2])
         t["feedback"] = "\n".join("- " + w for _e, w in dropped[:4])
         return "재요청", "수정 블록 기각: " + "; ".join(list(OrderedDict.fromkeys(w for _e, w in dropped))[:2])
     edits = kept
@@ -11272,6 +11486,9 @@ USAGE = [
         ("--only", "일부만 처리", "--only Src/Net/*", "패키지 기준 경로의 와일드카드. 범위 밖 파일은 탐지도 수정도 하지 않는다"),
         ("--only", "범위 여럿", "--only Src/Net/*,Src/Ui/*", "쉼표로 잇거나 옵션을 여러 번 준다"),
         ("--exclude", "일부를 뺌", "--exclude ThirdParty/*", "외부 라이브러리, 생성된 코드, HMI 스크립트 폴더 등을 뺄 때"),
+        ("--ask-match", "2: 대소문자 무시", "--ask \"tc 처리를 고친다\" --ask-match 2 --until S5", "요청문의 이름이 코드에 없을 때 대소문자만 다른 이름을 찾는다(tc -> TC). 1(기본)은 정확히 같은 이름만 찾는다"),
+        ("--ask-match", "3: 낱말 단위", "--ask \"tc 처리를 고친다\" --ask-match 3 --until S5", "2 에 더해 그 낱말이 든 모든 이름을 찾는다(tc -> szTc, m_nTc, MES_TC). 낱말 검색도 함수 이름에서 모든 이름으로 넓어진다"),
+        ("--ask-match", "4: 글자 포함", "--ask \"lot 처리를 고친다\" --ask-match 4 --until S5", "3 에 더해 그 글자가 들어 있는 모든 이름을 찾는다(3글자 이상). 가장 넓고 관계없는 이름이 많이 섞인다. out/ask_trace.md 에서 무엇이 잡혔는지 본다"),
         ("--backups", "백업도 처리", "--backups keep", "skip(기본): 백업으로 보이는 폴더와 파일(bak, backup, 백업, 복사본, old 폴더, _old·날짜를 붙인 사본 등)을 처리 대상에서 빼고 out/backup_excluded.md 에 목록을 낸다. keep: 빼지 않는다"),
         ("--backups", "일부 백업만 뺌", "--backups keep --exclude Backup/*", "자동 판정이 맞지 않을 때: 판정을 끄고 뺄 곳을 직접 적는다"),
     ]),
@@ -11435,6 +11652,10 @@ def build_parser():
     r.add_argument("--only", action="append", metavar="패턴",
                    help="처리할 파일 범위. 패키지 기준 경로의 와일드카드. 여러 번 또는 쉼표로. 예: Src/Net/*")
     r.add_argument("--exclude", action="append", metavar="패턴", help="처리에서 뺄 파일 범위. 예: ThirdParty/*")
+    r.add_argument("--ask-match", dest="ask_match", default=None, metavar="1|2|3|4",
+                   help="요청문의 이름을 코드에서 찾는 범위. 1(기본): 정확히 같은 이름만. 2: 대소문자만 다른 이름까지(tc -> TC). "
+                        "3: 그 낱말이 든 모든 이름까지(tc -> szTc, m_nTc, MES_TC. 낱말 검색도 함수 이름에서 모든 이름으로 넓어진다). "
+                        "4: 그 글자가 들어 있는 모든 이름까지. 넓힐수록 관계없는 이름이 섞인다. 먼저 --until S5 로 out/ask_trace.md 를 본다")
     r.add_argument("--backups", choices=["skip", "keep"], default=None,
                    help="백업으로 보이는 폴더와 파일(bak, backup, 백업, 복사본, old 폴더, _old·날짜를 붙인 사본 등)의 처리. "
                         "skip(기본): 처리 대상에서 빼고 out/backup_excluded.md 에 목록을 낸다. keep: 빼지 않는다")

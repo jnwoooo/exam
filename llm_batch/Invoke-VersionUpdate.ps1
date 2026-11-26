@@ -60,6 +60,7 @@ param(
     [string[]]$Only,
     [string[]]$Exclude,
     [string]$Backups,
+    [string]$AskMatch,
     [string]$LlmEndpoint,
     [int]$MaxParallel = 0,
     [int]$CompileParallel = -1,
@@ -107,6 +108,7 @@ if ($Request)     { $a += @("--request", $Request) }
 foreach ($p in $Only)    { if ($p) { $a += @("--only", $p) } }
 foreach ($p in $Exclude) { if ($p) { $a += @("--exclude", $p) } }
 if ($Backups)     { $a += @("--backups", $Backups) }
+if ($AskMatch)    { $a += @("--ask-match", $AskMatch) }
 if ($LlmEndpoint) { $a += @("--llm-endpoint", $LlmEndpoint) }
 if ($MaxParallel -gt 0) { $a += @("--max-parallel", "$MaxParallel") }
 if ($CompileParallel -ge 0) { $a += @("--compile-parallel", "$CompileParallel") }
