@@ -4,7 +4,7 @@
 ==============================================================================
 vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본)
 ==============================================================================
-버전 : 0.10.7 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
+버전 : 0.10.8 (요청문 --ask 를 sLLM 이 의도별로 나누고 도구가 대상을 찾아 의도별로 수정 요청을 보내는 흐름으로 정리.
               환경 호환성 항목의 sLLM 호출은 --compat-llm 의 단계로 정한다. 당장 쓰지 않는 기능은 뺐다. 17_추가_0.9.0.md)
               0.9.1: OS·DB 의 원본/대상 옵션(--from-os, --to-os, --from-db, --to-db). 18_추가_0.9.1.md
               0.9.2: --compat-llm 을 단계 1|2|3 으로. 막힌 컴파일 검사를 통과로 치지 않는다. 옵션별 사용 예는 vupdate examples.
@@ -28,6 +28,9 @@ vupdate.py  -  C++ 버전 업데이트 대응 자동화 (단일 파일 실행본
                       오류가 난 자리는 바꾸지 않고 사유와 함께 남긴다. 31_점검_0.10.5.md
               0.10.7: 요청문의 이름이 코드에 없을 때 단계별로 넓혀 찾는다(--ask-match 1 정확히 / 2 대소문자 무시 / 3 낱말 단위 / 4 글자 포함).
                       sLLM 단계에서 응답을 받는 대로 진행 상황을 로그에 남기고 답을 캐시에 넣는다. 33_추가_0.10.7.md
+              0.10.8: 병렬 배열 묶음의 채우는 문장에서 값이 상수 매크로인 것(memset(a, SPACE, sizeof(a)))과 함수 꼴 매크로로 감싼 것(INIT_SPACE(a))을 읽는다.
+                      같은 이름의 구조체 정의가 여러 헤더에 있으면 파일마다 그 파일에서 보이는 정의를 고르고, 구조체 안에서 정의한 구조체의 배치를 계산한다.
+                      35_추가_0.10.8.md
 목적 : 레거시 C++ 패키지를 새 Visual Studio 환경(예: 2008 -> 2022)에 맞게
        고치는 작업을 한 명령으로 수행한다. 규칙으로 고칠 수 있는 것은 규칙으로,
        규칙으로 못 고치는 것만 sLLM에 맡기고, 결과를 별도 폴더에 낸다.
@@ -109,6 +112,7 @@ import glob
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import socket
@@ -130,7 +134,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # 목적: 모든 구획이 같이 쓰는 최소한의 도구. 로그 접두어 규칙을 여기서 보장한다.
 # ============================================================================
 APP = "vupdate"
-VERSION = "0.10.7"
+VERSION = "0.10.8"
 
 STAGES = [("S0", "준비"), ("S1", "인벤토리"), ("S2", "탐지"), ("S3", "설정흡수"),
           ("S4", "규칙적용"), ("S5", "영향분석"), ("S6", "sLLM수정"), ("S7", "병합"),
@@ -4119,7 +4123,10 @@ def _resolve_names(ctx, files, names):
 # 요청: 요청 파일 features 의 type "buffer_fields"(전문 버퍼), "record_group"(병렬 배열). 요청문의 '배열 -> 구조체' 의도도 여기로 온다.
 # 순서: _sx_structs(구조체 표) -> _sx_scan(함수별 분석: _SxFn, _sx_groups) -> _sx_request(수정 레코드와 이슈) -> _sx_write_scan(표)
 # 산출: issues/edits(source/origin='request'), out/struct_scan.md, meta(sx_stat)
-# 한계: 글자 수준의 분석이다. 매크로로 감싼 접근, 포인터를 커서로 쓰는 꼴(p += 5), 보조 함수가 위치를 올리는 꼴,
+# 0.10.8: 묶음의 채우는 문장은 값이 상수 매크로여도, 함수 꼴 매크로로 감싸도 읽는다(매크로를 펼쳐서 본다. _sx_macro_expand).
+#         같은 이름의 구조체 정의가 여러 곳에 있으면 파일마다 그 파일에서 보이는 정의를 고른다(_sx_view, _sx_resolve, _pick_by_file).
+#         구조체 안에서 정의한 구조체·공용체·열거형의 배치를 계산한다(공용체의 안은 필드로 내지 않는다).
+# 한계: 글자 수준의 분석이다. 매크로로 감싼 전문 버퍼의 접근, 포인터를 커서로 쓰는 꼴(p += 5), 보조 함수가 위치를 올리는 꼴,
 #       지역 변수가 아닌 커서(멤버, 전역)는 읽지 못한다. 파일 범위 배열과 구조체·클래스의 멤버 배열은 묶음 대상이 아니다.
 # ---------------------------------------------------------------------------
 _SX_SIZES = {"char": 1, "BYTE": 1, "UCHAR": 1, "CHAR": 1, "byte": 1, "uint8_t": 1, "int8_t": 1, "bool": 1, "BOOLEAN": 1,
@@ -4269,6 +4276,414 @@ def _sx_consts(ctx):
     return ctx._sx_const
 
 
+# ---- (0.10.8) 매크로: 채우는 값의 상수 매크로와, 채우는 호출을 감싼 함수 꼴 매크로
+def _strip_comments(text):
+    """주석만 공백으로 바꾼 글(문자열과 문자 상수는 그대로 둔다). 길이와 줄 위치는 같다."""
+    parts, last = [], 0
+    for m in _TOKEN_RE.finditer(text):
+        if m.group()[0] == "/":
+            parts.append(text[last:m.start()])
+            parts.append(_blank(m.group()))
+            last = m.end()
+    parts.append(text[last:])
+    return "".join(parts)
+
+
+def _sx_defines(ctx):
+    """패키지의 #define 표(한 번 만든다). 돌려주는 값: {"obj": {이름: [본문]}, "fn": {이름: [(인자 이름 목록, 본문)]}, "stmt": 이름 집합}
+    본문은 주석을 지우고 줄 이음(역슬래시와 줄바꿈)을 이어 붙인 글이다. 같은 이름이 여러 번 정의됐으면 모두 담는다.
+    stmt 는 본문이 스스로 문장을 끝내는(; 나 } 로 끝나는) 함수 꼴 매크로다. 이런 매크로는 세미콜론 없이 쓰이기도 한다."""
+    if getattr(ctx, "_sx_def", None) is not None:
+        return ctx._sx_def
+    obj, fn = {}, {}
+    rx = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)(\([^)\n]*\))?((?:[^\n\\]|\\\r?\n|\\.)*)", re.M)
+    for r in ctx.store.q("SELECT path FROM files WHERE kind='source' ORDER BY path"):
+        try:
+            d = get_doc(ctx, r["path"])
+        except Exception:
+            continue
+        if not d.ok or "define" not in d.code:
+            continue
+        for m in rx.finditer(d.code):
+            body = _strip_comments(d.text[m.start(3):m.end(3)])
+            body = " ".join(re.sub(r"/\*.*$", "", re.sub(r"\\\r?\n", " ", body), flags=re.S).split())
+            if m.group(2) is None:
+                obj.setdefault(m.group(1), []).append(body)
+            else:
+                fn.setdefault(m.group(1), []).append(([p.strip() for p in m.group(2)[1:-1].split(",") if p.strip()], body))
+    stmt = {n for n, v in fn.items() if all(b.endswith((";", "}")) for _p, b in v)}
+    ctx._sx_def = {"obj": obj, "fn": fn, "stmt": stmt}
+    return ctx._sx_def
+
+
+_SX_CHAR_ESC = {"0": 0, "n": 10, "r": 13, "t": 9, "a": 7, "b": 8, "f": 12, "v": 11, "\\": 92, "'": 39, '"': 34, "?": 63}
+_SX_VCAST = re.compile(r"^\(\s*(?:const\s+)?(?:(?:unsigned|signed)\s+)?(?:char|int|short|long|BYTE|CHAR|UCHAR|TCHAR|WORD|DWORD|UINT|INT)\s*\)\s*(.+)$", re.S)
+# 채우는 함수: (대상, 값, 길이) 인자의 번호. 값의 번호가 None 이면 0 으로 채우는 함수다
+_SX_FILL_CALLS = OrderedDict((("memset", (0, 1, 2)), ("ZeroMemory", (0, None, 1)), ("RtlZeroMemory", (0, None, 1)), ("SecureZeroMemory", (0, None, 1)),
+                              ("FillMemory", (0, 2, 1)), ("RtlFillMemory", (0, 2, 1))))
+_SX_FILL_RX = re.compile(r"^(?:::)?\s*(%s)\s*\(" % "|".join(_SX_FILL_CALLS))
+_SX_PTRCAST = re.compile(r"^\(\s*(?:const\s+)?(?:(?:unsigned|signed)\s+)?(?:void|char|BYTE|CHAR|UCHAR|TCHAR)\s*\*\s*\)\s*(.+)$"
+                         r"|^\(\s*(?:LPVOID|PVOID|LPBYTE|PBYTE|LPSTR|PCHAR|LPTSTR)\s*\)\s*(.+)$", re.S)
+
+
+def _sx_char_value(lit):
+    """문자 상수('A', '\\n', '\\x20', '\\040')의 값. 읽지 못하면 None"""
+    m = re.match(r"^L?'(.*)'$", lit.strip(), re.S)
+    if not m:
+        return None
+    t = m.group(1)
+    if len(t) == 1 and t != "\\":
+        return ord(t) if ord(t) < 256 else None
+    xm = re.match(r"^\\x([0-9a-fA-F]{1,2})$", t)
+    if xm:
+        return int(xm.group(1), 16)
+    om = re.match(r"^\\([0-7]{1,3})$", t)
+    if om:
+        return int(om.group(1), 8) & 0xFF
+    return _SX_CHAR_ESC.get(t[1]) if (len(t) == 2 and t[0] == "\\") else None
+
+
+def _sx_unparen(t):
+    """식 전체를 감싼 바깥 괄호를 벗긴다. 첫 괄호의 짝이 맨 끝일 때만 벗긴다((a) + (b) 는 그대로)."""
+    t = t.strip()
+    while t.startswith("(") and t.endswith(")"):
+        if _match_fwd(mask_code(t)[0], 0, "(", ")", 20000) != len(t) - 1:
+            break
+        t = t[1:-1].strip()
+    return t
+
+
+def _sx_fill_value(ctx, text, depth=0):
+    """채우는 값의 글이 상수이면 그 값(정수)을, 상수인지 확인하지 못하면 None 을 돌려준다.
+    받는 것: 정수와 문자 상수, 그 앞의 값 캐스팅((char) 등)과 괄호, _T(..), 값이 하나로 정해지는 #define 이름과 enum 항목.
+    매크로가 다른 매크로를 가리키면 네 단계까지 따라간다. 같은 이름이 서로 다른 값으로 정의됐으면 받지 않는다."""
+    t = text.strip()
+    for _ in range(8):
+        t2 = _sx_unparen(t)
+        m = _SX_VCAST.match(t2)
+        if m:
+            t2 = m.group(1).strip()
+        m = re.match(r"^(?:_T|TEXT|_TEXT)\s*\(", t2)
+        if m and _match_fwd(mask_code(t2)[0], m.end() - 1, "(", ")", 20000) == len(t2) - 1:
+            t2 = t2[m.end():-1].strip()
+        if t2 == t:
+            break
+        t = t2
+    if re.match(r"^L?'", t):
+        return _sx_char_value(t)
+    if re.match(r"^(?:%s)[uUlL]*$" % _INT_LIT, t):
+        return _to_int(t.rstrip("uUlL"))
+    if t.startswith("-"):
+        v = _sx_fill_value(ctx, t[1:], depth)
+        return None if v is None else -v
+    if t == "NULL":
+        return 0
+    if ctx is not None and re.match(r"^[A-Za-z_]\w*$", t):
+        v = _sx_consts(ctx).get(t)
+        if v is not None:
+            return v
+        bodies = _sx_defines(ctx)["obj"].get(t) or []
+        if bodies and depth < 4:
+            vals = {_sx_fill_value(ctx, b, depth + 1) for b in bodies}
+            if len(vals) == 1:
+                return next(iter(vals))
+    return None
+
+
+def _sx_macro_expand(ctx, text, depth=0):
+    """문장 하나(세미콜론 제외)가 함수 꼴 매크로의 호출 하나이면 (매크로 이름, 펼친 글)을 돌려준다. 펼칠 수 없으면 (매크로 이름, None), 매크로 호출이 아니면 None.
+    정의가 하나로 정해지고(여러 번 정의됐으면 글이 모두 같아야 한다), 본문에 # 과 ## 가 없고, 인자 수가 맞을 때만 펼친다.
+    본문을 감싼 do { } while (0), 중괄호, 괄호와 끝의 세미콜론은 벗긴다. 펼친 글이 다시 매크로 호출이면 세 번까지 더 펼친다."""
+    t = text.strip()
+    mk = mask_code(t)[0]
+    m = re.match(r"^([A-Za-z_]\w*)\s*\(", mk)
+    if not m:
+        return None
+    defs = _sx_defines(ctx)["fn"].get(m.group(1))
+    if not defs:
+        return None
+    name, op = m.group(1), m.end() - 1
+    if _match_fwd(mk, op, "(", ")", 20000) != len(t) - 1:
+        return None
+    params, body = defs[0]
+    bm = mask_code(body)[0]
+    if any(x != defs[0] for x in defs[1:]) or "#" in bm or any(not re.match(r"^[A-Za-z_]\w*$", p) for p in params):
+        return name, None
+    args = [t[a:b].strip() for a, b in _sx_split(mk, op + 1, len(t) - 1)]
+    if not params and args == [""]:
+        args = []
+    if len(args) != len(params):
+        return name, None
+    amap, out, last = dict(zip(params, args)), [], 0
+    for im in re.finditer(r"(?<!\w)[A-Za-z_]\w*", bm):          # 전처리기와 같이 본문의 이름 토큰을 인자의 글로 바꾼다(문자열 안은 바꾸지 않는다)
+        if im.group(0) in amap:
+            out.append(body[last:im.start()])
+            out.append(amap[im.group(0)])
+            last = im.end()
+    out.append(body[last:])
+    exp = "".join(out).strip()
+    for _ in range(6):
+        e2 = exp.rstrip(" \t;").strip()
+        dm = re.match(r"^do\s*\{(.*)\}\s*while\s*\(\s*(?:0|FALSE|false)\s*\)$", e2, re.S)
+        if dm:
+            e2 = dm.group(1).strip()
+        elif e2.startswith("{") and e2.endswith("}") and _match_fwd(mask_code(e2)[0], 0, "{", "}", 400000) == len(e2) - 1:
+            e2 = e2[1:-1].strip()
+        else:
+            e2 = _sx_unparen(e2)
+        if e2 == exp:
+            break
+        exp = e2
+    if not exp or ";" in mask_code(exp)[0]:
+        return name, None                                      # 본문이 문장 하나가 아니다
+    if depth < 3:
+        nxt = _sx_macro_expand(ctx, exp, depth + 1)
+        if nxt is not None:
+            return name, nxt[1]
+    return name, exp
+
+
+def _sx_fill_parse(text, target):
+    """text(문장 하나, 세미콜론 제외)가 target 전체를 값 하나로 채우는 호출이면 (함수 이름, 값의 글, 길이의 글)을 돌려준다. 아니면 None.
+    target 은 배열 이름이나 필드 접근의 글이다. 대상 인자를 감싼 괄호, 포인터 캐스팅((void*) 등), 앞의 & 는 벗기고 비교한다."""
+    t = text.strip()
+    mk = mask_code(t)[0]
+    m = _SX_FILL_RX.match(mk)
+    if not m:
+        return None
+    op = m.end() - 1
+    if _match_fwd(mk, op, "(", ")", 20000) != len(t) - 1:
+        return None
+    args = [t[a:b].strip() for a, b in _sx_split(mk, op + 1, len(t) - 1)]
+    di, vi, li = _SX_FILL_CALLS[m.group(1)]
+    if len(args) != (2 if vi is None else 3):
+        return None
+    dst = args[di]
+    for _ in range(6):
+        d2 = _sx_unparen(dst)
+        pm = _SX_PTRCAST.match(d2)
+        if pm:
+            d2 = (pm.group(1) or pm.group(2)).strip()
+        if d2.startswith("&"):
+            d2 = d2[1:].strip()
+        if d2 == dst:
+            break
+        dst = d2
+    if "".join(dst.split()) != "".join(target.split()):
+        return None
+    return m.group(1), ("0" if vi is None else args[vi]), " ".join(args[li].split())
+
+
+def _sx_len_whole(ln, target, total, consts, elems=()):
+    """길이의 글이 대상 전체의 크기인가. sizeof(대상) 꼴이거나, 값이 대상의 바이트 수(total)와 같은 상수식이면 참이다.
+    elems 는 대상의 요소 크기들(대상[0], 대상[0][0] ..의 바이트 수)이다. sizeof(대상[0]) * 개수 꼴을 풀 때 쓴다."""
+    t, tg = "".join(_sx_unparen(ln).split()), "".join(target.split())
+    if t in ("sizeof(%s)" % tg, "sizeof%s" % tg, "sizeof((%s))" % tg):
+        return True
+    if total is None:
+        return False
+    t2 = ln
+    for k, size in enumerate(elems):
+        if size is None:
+            break
+        t2 = re.sub(r"\bsizeof\s*\(\s*%s\s*%s\)" % (re.escape(target), r"\[\s*0\s*\]\s*" * (k + 1)), str(size), t2)
+    return const_value(re.sub(r"\bsizeof\s*\(\s*(\w+)\s*\)", lambda q: str(_SX_SIZES.get(q.group(1), q.group(0))), t2), consts) == total
+
+
+def _sx_macro_stmt(s, sa, sb, pos, end, stmt_macros):
+    """세미콜론 없이 줄마다 쓴 매크로 호출(본문이 문장을 끝내는 매크로)을 문장 하나로 떼어 낸다.
+    [sa, sb) 는 앞 문장의 끝부터 다음 세미콜론까지다. 그 앞머리에 이런 호출이 있으면 pos 가 든 호출 하나, 또는 호출들을 뺀 나머지의 (시작, 끝, 지울 끝)을 돌려준다."""
+    for _ in range(60):
+        m = re.match(r"([A-Za-z_]\w*)[ \t]*\(", s[sa:sb])
+        if not m or m.group(1) not in stmt_macros:
+            break
+        cl = _match_fwd(s, sa + m.end() - 1, "(", ")", 20000)
+        if cl < 0 or cl + 1 >= sb:
+            break                                              # 호출이 문장의 끝까지다(보통의 문장)
+        gm = re.match(r"[ \t]*\n\s*(?=[A-Za-z_])", s[cl + 1:sb])    # 닫는 괄호 뒤에서 줄이 바뀌고 다른 문장이 시작한다
+        if not gm:
+            break
+        if pos <= cl:
+            return sa, cl + 1, cl + 1
+        sa = cl + 1 + gm.end()
+    return sa, sb, end
+
+
+def _sx_fill_text(ctx, d, x, target, ref):
+    """채우는 문장 x(배열 x["name"] 을 채운다)를 target 을 채우는 문장으로 다시 쓴다. ref 는 대상의 주소를 가리키는 글이다(배열이면 target, 값 하나면 &target).
+    매크로 호출이고, 이름만 바꿔도 펼친 결과가 'target 전체를 채우는 호출'이면 매크로 호출을 그대로 둔다(이름만 바꾼다).
+    그렇지 않으면(길이를 숫자로 줬거나 & 가 필요하면) 펼친 호출로 쓴다. 값의 글은 원본의 것을 그대로 쓴다."""
+    if x.get("macro") and ref == target:
+        raw = d.text[x["a"]:x["b"]]
+        mk, out, last = mask_code(raw)[0], [], 0
+        for m in re.finditer(r"(?<![\w.>])%s(?!\w)" % re.escape(x["name"]), mk):
+            out.append(raw[last:m.start()])
+            out.append(target)
+            last = m.end()
+        out.append(raw[last:])
+        new = "".join(out)
+        ex = _sx_macro_expand(ctx, _strip_comments(new).strip().rstrip(";").strip())
+        fp = _sx_fill_parse(ex[1], target) if (ex and ex[1]) else None
+        if fp and "".join(_sx_unparen(fp[2]).split()) == "sizeof(%s)" % "".join(target.split()):
+            return new
+    call, val = x["call"], x["val"]
+    if _SX_FILL_CALLS[call][1] is None:
+        return "%s(%s, sizeof(%s));" % (call, ref, target)
+    if call in ("FillMemory", "RtlFillMemory"):
+        return "%s(%s, sizeof(%s), %s);" % (call, ref, target, val)
+    return "memset(%s, %s, sizeof(%s));" % (ref, val, target)
+
+
+# ---- (0.10.8) include 관계를 경로까지 맞춰 본다(같은 이름의 헤더, 같은 이름의 구조체 정의를 가리기 위한 것)
+def _inc_table(ctx):
+    """패키지 안의 파일과 include 글의 표(한 번 만든다)."""
+    t = getattr(ctx, "_inc_tab", None)
+    if t is None:
+        t = ctx._inc_tab = {"files": {}, "inc": {}, "reach": {}, "res": {}}
+        for r in ctx.store.q("SELECT path FROM files"):
+            t["files"][norm_rel(r["path"]).lower()] = r["path"]
+        for r in ctx.store.q("SELECT path, header FROM includes"):
+            t["inc"].setdefault(r["path"], []).append(norm_rel(r["header"]).strip())
+    return t
+
+
+def _dir_near(a, b):
+    """두 폴더 경로가 앞에서부터 같은 단계의 수"""
+    n = 0
+    for x, y in zip([p for p in a.lower().split("/") if p], [p for p in b.lower().split("/") if p]):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def _project_of(ctx):
+    """패키지의 파일 -> 그 파일을 실은 프로젝트 파일. 돌려주는 값: {소문자 경로: 프로젝트 파일의 경로}. 한 번 만든다.
+    프로젝트 파일에서 읽은 항목 경로는 앞의 ./ 와 ../ 가 떨어진 채 저장돼 있다(parse_vcxproj, parse_vcproj).
+    그래서 프로젝트 폴더에서 위로 올라가며 패키지에 실제로 있는 파일을 찾는다(..\\Src\\A.cpp 로 적힌 항목은 한 단계 위에서 찾아진다)."""
+    m = getattr(ctx, "_proj_of", None)
+    if m is None:
+        m = ctx._proj_of = {}
+        files = _inc_table(ctx)["files"]
+        try:
+            projects = ctx.store.get_meta("projects", {}) or {}
+        except Exception:
+            projects = {}
+        for pf, proj in projects.items():
+            for f in proj.get("files") or []:
+                d = posixpath.dirname(norm_rel(pf))
+                while True:
+                    key = posixpath.normpath(posixpath.join(d, norm_rel(f))).lower()
+                    if key in files:
+                        m.setdefault(key, pf)
+                        break
+                    if not d:
+                        break
+                    d = posixpath.dirname(d)
+    return m
+
+
+def _inc_dirs(ctx, rel):
+    """rel 을 싣고 있는 프로젝트 파일의 추가 include 폴더(AdditionalIncludeDirectories)를 패키지 기준 경로의 목록으로 돌려준다.
+    어느 프로젝트에도 실려 있지 않으면 빈 목록이다. 매크로($(..))가 든 경로, 절대 경로, 패키지 밖의 경로는 뺀다."""
+    t = _inc_table(ctx)
+    pf = _project_of(ctx).get(norm_rel(rel).lower())
+    if pf is None:
+        return []
+    if pf not in t.setdefault("proj", {}):
+        proj = (ctx.store.get_meta("projects", {}) or {}).get(pf) or {}
+        pdir, dirs = posixpath.dirname(norm_rel(pf)), []
+        for cfg in proj.get("configs") or []:
+            for raw in cfg.get("includes") or []:
+                inc = re.sub(r"\$\((?:ProjectDir|SolutionDir|InputDir)\)", "", norm_rel(raw)).strip('" ')
+                if not inc or "$(" in inc or re.match(r"^(?:[A-Za-z]:|/)", inc):
+                    continue
+                for root in ([pdir, ""] if "$(SolutionDir)" in raw else [pdir]):   # 솔루션 폴더는 알 수 없다. 프로젝트 폴더와 패키지 루트를 둘 다 본다
+                    d = posixpath.normpath(posixpath.join(root, inc))
+                    d = "" if d == "." else d
+                    if not d.startswith("..") and d not in dirs:
+                        dirs.append(d)
+        t["proj"][pf] = dirs
+    return t["proj"][pf]
+
+
+def _inc_resolve(ctx, rel, header, dirs=()):
+    """#include 에 적힌 글을 패키지의 파일로 푼다. 돌려주는 값: 경로 목록(하나면 정해진 것, 여럿이면 어느 것인지 모름, 비면 패키지 밖)
+    순서: 적은 파일의 폴더 기준 경로 -> 프로젝트의 추가 include 폴더(dirs) -> 패키지 루트 기준 경로 -> 경로의 끝이 같은 파일(여럿이면 폴더가 가장 가까운 것)"""
+    t = _inc_table(ctx)
+    key = (rel, header, tuple(dirs))
+    if key in t["res"]:
+        return t["res"][key]
+    base = posixpath.dirname(norm_rel(rel))
+    out, hit = [], t["files"].get(posixpath.normpath(posixpath.join(base, header)).lower())
+    for d in (() if hit else dirs):
+        hit = t["files"].get(posixpath.normpath(posixpath.join(d, header)).lower())
+        if hit:
+            break
+    if hit:
+        out = [hit]
+    else:
+        tail = "/".join(p for p in header.split("/") if p not in ("..", ".", "")).lower()
+        if tail in t["files"]:
+            out = [t["files"][tail]]
+        elif tail:
+            cand = [p for low, p in t["files"].items() if low.endswith("/" + tail)]
+            if not cand and "/" in tail:                       # 적힌 폴더 경로가 패키지의 것과 다르다(include 폴더 설정). 파일 이름만으로 찾는다
+                bn = tail.rsplit("/", 1)[1]
+                cand = [p for low, p in t["files"].items() if low == bn or low.endswith("/" + bn)]
+            if len(cand) > 1:
+                best = max(_dir_near(posixpath.dirname(norm_rel(p)), base) for p in cand)
+                cand = [p for p in cand if _dir_near(posixpath.dirname(norm_rel(p)), base) == best]
+            out = sorted(cand)
+    t["res"][key] = out
+    return out
+
+
+def _inc_reach(ctx, rel):
+    """rel 이 직접 또는 다른 헤더를 거쳐 include 하는 패키지 안의 파일. 돌려주는 값: {경로: 깊이}(자기 자신은 0). 8 단계까지 본다.
+    헤더 안의 include 도 rel 이 든 프로젝트의 추가 include 폴더로 찾는다(같은 번역 단위이므로)."""
+    t = _inc_table(ctx)
+    if rel in t["reach"]:
+        return t["reach"][rel]
+    seen, todo, dirs = {rel: 0}, [rel], _inc_dirs(ctx, rel)
+    for depth in range(1, 9):
+        nxt = []
+        for p in todo:
+            for h in t["inc"].get(p, ()):
+                for q in _inc_resolve(ctx, p, h, dirs):
+                    if q not in seen:
+                        seen[q] = depth
+                        nxt.append(q)
+        todo = nxt
+        if not todo:
+            break
+    t["reach"][rel] = seen
+    return seen
+
+
+def _pick_by_file(ctx, rel, rels):
+    """같은 이름의 정의가 든 파일들(rels) 가운데 파일 rel 에서 보이는 것을 고른다. 돌려주는 값: (남은 번호 목록, 근거의 글)
+    순서: 같은 파일 -> include 로 닿는 파일 -> 같은 폴더 -> 폴더가 가장 가까운 파일. 뒤의 둘은 include 로 확인하지 못한 추정이다. 가리지 못하면 전부를 돌려준다."""
+    idx = list(range(len(rels)))
+    same = [i for i in idx if rels[i] == rel]
+    if same:
+        return same, "같은 파일의 정의"
+    reach = _inc_reach(ctx, rel)
+    vis = [i for i in idx if rels[i] in reach]
+    if vis:
+        return vis, "이 파일이 include 하는 헤더의 정의"
+    base = posixpath.dirname(norm_rel(rel))
+    sd = [i for i in idx if posixpath.dirname(norm_rel(rels[i])) == base]
+    if sd:
+        return sd, "같은 폴더의 정의(include 로는 확인하지 못함)"
+    near = [_dir_near(posixpath.dirname(norm_rel(rels[i])), base) for i in idx]
+    best = max(near) if near else 0
+    nd = [i for i in idx if near[i] == best]
+    if best > 0 and len(nd) < len(idx):
+        return nd, "폴더가 가장 가까운 정의(include 로는 확인하지 못함)"
+    return idx, ""
+
+
 def _sx_packs(code):
     """#pragma pack 의 흐름. 돌려주는 값: [(위치, 그 뒤의 묶음 값)]. 0 은 기본값이다."""
     out, stack, cur = [], [], 0
@@ -4295,42 +4710,146 @@ def _sx_packs(code):
     return out
 
 
+_SX_INNER_HEAD = re.compile(r"^(?:\s*(?:public|private|protected)\s*:)*\s*((?:(?:typedef|const|volatile|static|mutable)\s+)*)(struct|union|class|enum)\b\s*([A-Za-z_]\w*)?\s*$")
+
+
 def _sx_members(d, b):
-    """구조체·클래스 본문의 멤버 선언을 읽는다. 돌려주는 값: (멤버 목록, 읽지 못한 까닭 목록)"""
+    """구조체·클래스 본문의 멤버 선언을 읽는다. 돌려주는 값: (멤버 목록, 읽지 못한 까닭 목록)
+    (0.10.8) 본문 안에서 정의한 구조체·공용체·열거형(struct { ... } 이름;)은 그 멤버의 "inner" 에 {"kind", "mem", "bad", "tag"} 로 담는다.
+    선언자 없이 끝나는 이름 없는 구조체·공용체(struct { ... };)는 이름이 빈 멤버로 담는다(그 안의 멤버가 바깥의 멤버처럼 쓰인다).
+    함수 본문이 든 구조체는 지금도 읽지 않는다(가상 함수, 생성자가 배치와 초기화에 주는 영향을 글자 수준에서 확인할 수 없다)."""
     s, a, e = d.struct, b["open"] + 1, b["close"] - 1
     mem, bad = [], []
+
+    def note(why):
+        if why not in bad:
+            bad.append(why)
+
     if re.search(r"^[ \t]*#[ \t]*(?:if|ifdef|ifndef|else|elif)\b", d.code[a:e], re.M):
-        bad.append("조건부 컴파일(#if)이 들어 있음")
-    depth, st = 0, a
-    for i in range(a, e):
+        note("조건부 컴파일(#if)이 들어 있음")
+    i = st = a
+    while i < e:
         c = s[i]
-        if c in "({":
-            depth += 1
-        elif c in ")}":
-            depth -= 1
-            if depth == 0 and c == "}":
-                st = i + 1
-                if "안에 블록(함수 본문, 안쪽 구조체)이 있음" not in bad:
-                    bad.append("안에 블록(함수 본문, 안쪽 구조체)이 있음")
-        elif c == ";" and depth == 0:
+        if c == "(":
+            cl = _match_fwd(s, i, "(", ")", 20000)
+            i = cl + 1 if 0 < cl < e else i + 1
+        elif c == "{":
+            cl = _match_fwd(s, i, "{", "}", 400000)
+            if cl < 0 or cl >= e:
+                note("괄호 짝이 맞지 않음")
+                break
+            hm = _SX_INNER_HEAD.match(s[st:i])
+            semi = s.find(";", cl + 1, e)
+            tail = s[cl + 1:semi] if semi >= 0 else None
+            if hm is None or tail is None or re.search(r"[{}()=]", tail):
+                note("안에 블록(함수 본문)이 있음")
+                i = st = cl + 1
+                continue
+            quals, kind, tag = hm.group(1).split(), hm.group(2), hm.group(3)
+            if kind == "enum":
+                inner = {"kind": "enum", "mem": [], "bad": [], "tag": tag}
+            else:
+                im, ib = _sx_members(d, {"open": i, "close": cl + 1})
+                inner = {"kind": "union" if kind == "union" else "struct", "mem": im, "bad": ib, "tag": tag}
+            if "typedef" in quals:
+                pass                                           # 본문 안의 typedef: 타입 이름만 만든다(멤버가 아니다)
+            elif tail.strip():
+                p = _sx_parse_decl("int " + tail)
+                if p is None:
+                    note("읽지 못한 멤버 선언이 있음")
+                for x in (p["decls"] if p else []):
+                    mem.append({"name": x["name"], "type": "", "ptr": x["ptr"], "dims": x["dims"], "bits": x["bits"],
+                                "static": "static" in quals, "inner": inner})
+            elif not tag and kind != "enum":
+                mem.append({"name": "", "type": "", "ptr": 0, "dims": [], "bits": False, "static": False, "inner": inner})
+            i = st = semi + 1
+        elif c == ";":
             stmt = re.sub(r"^\s*(?:(?:public|private|protected)\s*:\s*)+", "", s[st:i])
-            st = i + 1
+            st = i = i + 1
             if not stmt.strip():
                 continue
             p = _sx_parse_decl(stmt)
             if p is None:
-                if "읽지 못한 멤버 선언이 있음" not in bad:
-                    bad.append("읽지 못한 멤버 선언이 있음")
+                note("읽지 못한 멤버 선언이 있음")
                 continue
             for x in p["decls"]:
                 mem.append({"name": x["name"], "type": p["type"], "ptr": x["ptr"], "dims": x["dims"], "bits": x["bits"],
                             "static": "static" in p["quals"]})
+        else:
+            i += 1
     return mem, bad
 
 
-def _sx_layout(e, by_name, consts, depth=0):
+def _sx_layout_mem(ctx, sx, mem, kind, rel, consts, depth):
+    """멤버 목록의 배치를 계산한다. kind 가 union 이면 모든 멤버가 위치 0 에 놓이고 크기는 가장 큰 멤버의 것이다.
+    돌려주는 값: (크기, 노드 목록, 모든 멤버가 1바이트 타입인가, 확정하지 못한 까닭). 까닭이 비어 있지 않으면 앞의 셋은 쓰지 않는다."""
+    off, size, nodes, charonly = 0, 0, [], True
+    for m in mem:
+        if m["static"]:
+            continue
+        label = m["name"] or "(이름 없는 안쪽 %s)" % ("공용체" if (m.get("inner") or {}).get("kind") == "union" else "구조체")
+        if m["bits"] or m["ptr"]:
+            return 0, [], False, "멤버 %s 가 %s 여서 위치를 정할 수 없음" % (label, "비트 필드" if m["bits"] else "포인터")
+        sub_nodes, inn = None, m.get("inner")
+        if inn is not None:
+            if inn["kind"] == "enum":
+                base, charonly = 4, False
+            else:
+                if inn["bad"]:
+                    return 0, [], False, "멤버 %s 의 안쪽 정의를 읽지 못함(%s)" % (label, inn["bad"][0])
+                if depth > 6:
+                    return 0, [], False, "안쪽 정의가 너무 깊음"
+                base, sn, co, why = _sx_layout_mem(ctx, sx, inn["mem"], inn["kind"], rel, consts, depth + 1)
+                if why:
+                    return 0, [], False, "멤버 %s 의 안쪽 정의: %s" % (label, why)
+                if not base:
+                    return 0, [], False, "멤버 %s 의 안쪽 정의에 멤버가 없음" % label
+                charonly = charonly and co
+                sub_nodes = sn if inn["kind"] == "struct" else []      # 공용체의 안은 필드로 내지 않는다(같은 자리를 여러 뜻으로 읽는다)
+        else:
+            base = _sx_base_size(m["type"])
+            if base is None:
+                tname = m["type"].replace("struct ", "").strip()
+                se, via = _sx_resolve(ctx, sx, tname, rel)
+                if se is None or depth > 4:
+                    return 0, [], False, "멤버 %s 의 타입 %s 의 크기를 모름%s" % (label, m["type"], ("(%s)" % via) if (se is None and tname in sx["multi"]) else "")
+                if se["kind"] == "union" and not se["bad"]:    # 이름으로 쓴 공용체 타입: 크기만 구하고 안은 필드로 내지 않는다
+                    base, _sn, co, why = _sx_layout_mem(ctx, sx, se["mem"], "union", se["rel"], consts, depth + 1)
+                    if why or not base or (not co and se["pack"] != 1):
+                        return 0, [], False, "멤버 %s 의 타입 %s(공용체)의 크기를 확정하지 못함" % (label, m["type"])
+                    charonly, sub_nodes = charonly and co, []
+                else:
+                    _sx_layout(se, ctx, sx, consts, depth + 1)
+                    if not se["ok"]:
+                        return 0, [], False, "멤버 %s 의 타입 %s 의 배치를 확정하지 못함" % (label, m["type"])
+                    base, charonly, sub_nodes = se["size"], charonly and se["charonly"], se["nodes"]
+            elif base != 1:
+                charonly = False
+        n = 1
+        for dim in m["dims"]:
+            v = const_value(dim, consts)
+            if v is None or v <= 0:
+                return 0, [], False, "멤버 %s 의 배열 크기(%s)를 숫자로 확인하지 못함" % (label, dim)
+            n *= v
+        at = 0 if kind == "union" else off
+        if m["name"]:
+            nodes.append({"path": m["name"], "off": at, "size": base * n, "array": bool(m["dims"]), "ndims": len(m["dims"]),
+                          "char": sub_nodes is None and base == 1, "leaf": sub_nodes is None or bool(m["dims"]) or not sub_nodes})
+            if sub_nodes and not m["dims"]:
+                nodes += [dict(x, path=m["name"] + "." + x["path"], off=at + x["off"]) for x in sub_nodes]
+        elif sub_nodes:
+            nodes += [dict(x, off=at + x["off"]) for x in sub_nodes]
+        if kind == "union":
+            size = max(size, base * n)
+        else:
+            off += base * n
+    return (size if kind == "union" else off), nodes, charonly, ""
+
+
+def _sx_layout(e, ctx, sx, consts, depth=0):
     """구조체 하나의 멤버 위치를 계산한다. 채움(padding)이 없다고 확인되는 것만 ok 로 둔다:
-    모든 멤버가 1바이트 타입(char 계열)이거나, #pragma pack(1) 안에서 정의됐고 모든 멤버의 크기를 안다."""
+    모든 멤버가 1바이트 타입(char 계열)이거나, #pragma pack(1) 안에서 정의됐고 모든 멤버의 크기를 안다.
+    멤버의 타입이 다른 구조체면 이 정의가 든 파일에서 보이는 정의로 계산한다(_sx_resolve)."""
     if "ok" in e:
         return
     e.update(ok=False, why="", size=None, nodes=[], charonly=True)
@@ -4340,54 +4859,95 @@ def _sx_layout(e, by_name, consts, depth=0):
     if e["bad"]:
         e["why"] = e["bad"][0]
         return
-    off, nodes, charonly = 0, [], True
-    for m in e["mem"]:
-        if m["static"]:
-            continue
-        if m["bits"] or m["ptr"]:
-            e["why"] = "멤버 %s 가 %s 여서 위치를 정할 수 없음" % (m["name"], "비트 필드" if m["bits"] else "포인터")
-            return
-        base, sub = _sx_base_size(m["type"]), None
-        if base is None:
-            sub = by_name.get(m["type"].replace("struct ", "").strip())
-            if sub is None or depth > 4:
-                e["why"] = "멤버 %s 의 타입 %s 의 크기를 모름" % (m["name"], m["type"])
-                return
-            _sx_layout(sub, by_name, consts, depth + 1)
-            if not sub["ok"]:
-                e["why"] = "멤버 %s 의 타입 %s 의 배치를 확정하지 못함" % (m["name"], m["type"])
-                return
-            base, charonly = sub["size"], charonly and sub["charonly"]
-        elif base != 1:
-            charonly = False
-        n = 1
-        for dim in m["dims"]:
-            v = const_value(dim, consts)
-            if v is None or v <= 0:
-                e["why"] = "멤버 %s 의 배열 크기(%s)를 숫자로 확인하지 못함" % (m["name"], dim)
-                return
-            n *= v
-        nodes.append({"path": m["name"], "off": off, "size": base * n, "array": bool(m["dims"]), "ndims": len(m["dims"]),
-                      "char": sub is None and base == 1, "leaf": sub is None or bool(m["dims"])})
-        if sub is not None and not m["dims"]:
-            nodes += [dict(x, path=m["name"] + "." + x["path"], off=off + x["off"]) for x in sub["nodes"]]
-        off += base * n
+    size, nodes, charonly, why = _sx_layout_mem(ctx, sx, e["mem"], "struct", e["rel"], consts, depth)
+    if why:
+        e["why"] = why
+        return
     if not nodes:
         e["why"] = "멤버가 없음"
         return
     if not charonly and e["pack"] != 1:
         e["why"] = "char 가 아닌 멤버가 있고 #pragma pack(1) 안이 아니어서 채움(padding)이 있을 수 있음"
         return
-    e.update(ok=True, size=off, nodes=nodes, charonly=charonly)
+    e.update(ok=True, size=size, nodes=nodes, charonly=charonly)
+
+
+def _sx_sig(e):
+    """배치의 지문(크기와 필드의 위치·길이). 두 정의의 배치가 같은지 볼 때 쓴다."""
+    return (e.get("size"), tuple((x["path"], x["off"], x["size"]) for x in e.get("nodes") or ()))
+
+
+def _sx_resolve(ctx, sx, name, rel):
+    """파일 rel 에서 이름 name 이 가리키는 구조체 정의를 고른다. 돌려주는 값: (항목 또는 None, 고른 근거 또는 고르지 못한 까닭)
+    정의가 하나면 그것이다. 여러 곳이면 같은 파일 -> include 로 닿는 헤더 -> 같은 폴더 -> 가장 가까운 폴더의 순서로 가린다(_pick_by_file).
+    그래도 여럿이 남으면, 남은 정의의 배치가 모두 같을 때만 그 가운데 하나를 쓴다."""
+    cands = sx["defs"].get(name) or []
+    if not cands:
+        return None, "정의를 찾지 못함"
+    if len(cands) == 1:
+        return cands[0], ""
+    key = (name, rel)
+    if key in sx["_res"]:
+        return sx["_res"][key]
+    idx, basis = _pick_by_file(ctx, rel, [c["rel"] for c in cands])
+    pool = [cands[i] for i in idx]
+    if len(pool) == 1:
+        out = (pool[0], "같은 이름의 정의 %d곳 가운데 %s" % (len(cands), basis))
+    else:
+        consts = _sx_consts(ctx)
+        for c in pool:
+            _sx_layout(c, ctx, sx, consts, 1)
+        same_text = len({c["text"] for c in pool}) == 1
+        if all(c["ok"] for c in pool) and len({_sx_sig(c) for c in pool}) == 1:
+            out = (pool[0], "같은 이름의 정의 %d곳의 배치가 같음%s" % (len(pool), (", " + basis) if basis else ""))
+        elif same_text and not any(c["ok"] for c in pool):
+            out = (pool[0], "같은 이름의 정의 %d곳의 글이 같음" % len(pool))
+        else:
+            out = (None, "같은 이름의 정의가 여러 곳에 있고 이 파일에서 보이는 것을 하나로 정하지 못함(%s)"
+                   % ", ".join("%s:%d" % (c["rel"], c["line"]) for c in pool[:4]))
+    sx["_res"][key] = out
+    return out
+
+
+def _sx_view(ctx, sx, rel):
+    """파일 rel 에서 본 구조체 표(파일마다 한 번 만든다). 모양은 _sx_structs 의 것과 같다.
+    같은 이름의 정의가 여러 곳에 있으면 이 파일에서 보이는 정의 하나를 by_name 에 넣고, 나머지 정의는 list 에서 뺀다.
+    고르지 못한 이름은 amb 에 까닭과 함께 담는다. how 는 고른 근거다."""
+    if not rel or not sx.get("multi"):
+        return sx
+    if rel in sx["_views"]:
+        return sx["_views"][rel]
+    by, amb, how = dict(sx["by_name"]), {}, {}
+    for n in sx["multi"]:
+        e, via = _sx_resolve(ctx, sx, n, rel)
+        if e is None:
+            amb[n] = via
+        else:
+            by[n], how[n] = e, via
+    # 글을 쓸 때 쓰는 이름(names 의 마지막)이 이 파일에서 그 정의를 가리킬 때만 넣는다
+    lst = [e for e in sx["all"] if id(e) not in sx["_multi_ids"] or (e["names"] and by.get(e["names"][-1]) is e)]
+    ptrs = {}
+    for e in sx["all"]:
+        for n in e["ptr_names"]:
+            if e["names"] and by.get(e["names"][-1]) is e:
+                ptrs[n] = e["names"][-1]
+    for alias, name in sx["ptr_pairs"]:
+        if name in by:
+            ptrs.setdefault(alias, name)
+    v = dict(sx, by_name=by, list=lst, ptrs=ptrs, amb=amb, how=how, rel=rel)
+    sx["_views"][rel] = v
+    return v
 
 
 def _sx_structs(ctx):
-    """패키지의 구조체 표(한 번 만든다). 돌려주는 값: {"by_name": {이름: 항목}, "list": [항목], "msizes": {멤버 이름: {크기}}}
+    """패키지의 구조체 표(한 번 만든다). 돌려주는 값: {"by_name": {이름: 항목}, "list": [항목], "msizes": {멤버 이름: {크기}}, "defs", "multi", ...}
     항목: {"names", "rel", "line", "pos", "kind", "ok", "why", "size", "nodes": [{"path", "off", "size", "array", "ndims", "char", "leaf"}]}
-    같은 이름이 두 곳에서 다르게 정의됐으면 그 이름은 쓰지 않는다. msizes 는 sizeof(x.멤버) 를 풀 때 쓴다(클래스의 멤버 배열도 넣는다)."""
+    by_name 에는 정의가 한 곳뿐인 이름만 넣는다. 같은 이름이 여러 곳에 정의됐으면(multi) 파일마다 보이는 정의가 다르므로
+    _sx_view(ctx, sx, 파일)로 그 파일에서 본 표를 만들어 쓴다(0.10.8. 그 전에는 이런 이름을 아예 쓰지 않았다).
+    msizes 는 sizeof(x.멤버) 를 풀 때 쓴다(클래스의 멤버 배열도 넣는다)."""
     if getattr(ctx, "_sx_st", None) is not None:
         return ctx._sx_st
-    consts, items, by_name, dup, msizes = _sx_consts(ctx), [], {}, set(), {}
+    consts, items, defs, msizes = _sx_consts(ctx), [], OrderedDict(), {}
     for r in ctx.store.q("SELECT path FROM files WHERE kind='source' ORDER BY path"):
         try:
             d = get_doc(ctx, r["path"])
@@ -4396,7 +4956,8 @@ def _sx_structs(ctx):
         if not d.ok or not ("struct" in d.code or "class" in d.code):
             continue
         packs = _sx_packs(d.code)
-        for b in d.get_blocks():
+        blocks, item_of = d.get_blocks(), {}
+        for bi, b in enumerate(blocks):
             if b["kind"] != "container":
                 continue
             head = d.struct[b["head"]:b["open"]]
@@ -4404,8 +4965,8 @@ def _sx_structs(ctx):
             if not hm:
                 continue
             names, ptr_names = ([b["name"]] if b["name"] else []), []
+            tail = re.match(r"([^;{}()]*);", d.struct[b["close"]:b["close"] + 200])
             if re.match(r"\s*typedef\b", head):
-                tail = re.match(r"([^;{}()]*);", d.struct[b["close"]:b["close"] + 200])
                 for part in (tail.group(1).split(",") if tail else []):
                     pm = re.match(r"^\s*(\*?)\s*(?:(?:FAR|NEAR|far|near)\s+)?([A-Za-z_]\w*)\s*$", part)
                     if pm and pm.group(1):
@@ -4413,26 +4974,32 @@ def _sx_structs(ctx):
                     elif pm and pm.group(2) not in names:
                         names.append(pm.group(2))
             mem, bad = _sx_members(d, b)
+            if re.search(r"\b(?:struct|class)\b[^:{]*(?<!:):(?!:)", head):
+                bad.insert(0, "상속이 있음(기반 클래스의 멤버가 앞에 놓인다)")
             before = [v for p, v in packs if p < b["open"]]
             e = {"names": names, "rel": r["path"], "line": d.line_of(b["head"]), "pos": b["head"], "end": b["close"], "kind": hm.group(1),
-                 "mem": mem, "bad": bad, "pack": before[-1] if before else 0, "ptr_names": ptr_names}
+                 "mem": mem, "bad": bad, "pack": before[-1] if before else 0, "ptr_names": ptr_names,
+                 "text": " ".join(d.struct[b["open"]:b["close"]].split()),
+                 "outer": item_of.get(b["parent"])}             # 이 정의를 품은 구조체(본문 안에서 정의된 것일 때)
             items.append(e)
+            item_of[bi] = e
             for n in names:
-                if n in by_name:
-                    dup.add(n)
-                by_name[n] = e
-    for n in dup:
-        by_name.pop(n, None)
+                defs.setdefault(n, []).append(e)
+    multi = OrderedDict((n, v) for n, v in defs.items() if len(v) > 1)
+    by_name = {n: v[0] for n, v in defs.items() if len(v) == 1}
+    multi_ids = {id(c) for v in multi.values() for c in v}
+    # list 는 파일을 정하지 않고 쓰는 목록이다: 같은 이름이 여러 곳에 있는 정의는 넣지 않는다(어느 것이 보이는지 모른다). all 은 전부다
+    sx = {"by_name": by_name, "list": [e for e in items if id(e) not in multi_ids], "all": items, "_multi_ids": multi_ids, "msizes": msizes, "dup": set(multi), "ptrs": {}, "macros": set(), "defs": defs, "multi": multi,
+          "ptr_pairs": [], "_res": {}, "_views": {}, "_anon_logged": set()}
     for e in items:
-        _sx_layout(e, by_name, consts)
-        if any(n in dup for n in e["names"]) and e["ok"]:
-            e.update(ok=False, why="같은 이름의 정의가 여러 곳에 있음")
+        _sx_layout(e, ctx, sx, consts)
+    for e in items:
         for m in e["mem"]:
-            if m["static"] or m["ptr"] or m["bits"]:
+            if m["static"] or m["ptr"] or m["bits"] or m.get("inner") is not None:
                 continue
             base = _sx_base_size(m["type"])
             if base is None:
-                sub = by_name.get(m["type"].replace("struct ", "").strip())
+                sub = _sx_resolve(ctx, sx, m["type"].replace("struct ", "").strip(), e["rel"])[0]
                 base = sub["size"] if sub is not None and sub.get("ok") else None
             n = 1
             for dim in m["dims"]:
@@ -4440,7 +5007,7 @@ def _sx_structs(ctx):
                 n = None if (n is None or v is None or v <= 0) else n * v
             if base is not None and n is not None:
                 msizes.setdefault(m["name"], set()).add(base * n)
-    ptrs = {}
+    ptrs = sx["ptrs"]
     for e in items:                                            # 포인터 별명 -> 구조체 이름. 따로 적은 typedef NAME* LPNAME; 도 읽는다
         for n in e["ptr_names"]:
             if e["names"] and by_name.get(e["names"][-1]) is e:
@@ -4453,15 +5020,18 @@ def _sx_structs(ctx):
         if "typedef" not in code:
             continue
         for m in re.finditer(r"\btypedef\s+(?:struct\s+)?([A-Za-z_]\w*)\s*\*\s*(?:(?:FAR|NEAR|far|near)\s+)?([A-Za-z_]\w*)\s*;", code):
+            sx["ptr_pairs"].append((m.group(2), m.group(1)))
             if m.group(1) in by_name:
                 ptrs.setdefault(m.group(2), m.group(1))
-    macros = set()
     for r in ctx.store.q("SELECT path FROM files WHERE kind='source' ORDER BY path"):
         try:
-            macros.update(re.findall(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(", get_doc(ctx, r["path"]).code, re.M))
+            sx["macros"].update(re.findall(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)\(", get_doc(ctx, r["path"]).code, re.M))
         except Exception:
             continue
-    ctx._sx_st = {"by_name": by_name, "list": items, "msizes": msizes, "dup": dup, "ptrs": ptrs, "macros": macros}
+    if multi:
+        LOG5.info("구조체 표: 같은 이름의 정의가 여러 곳에 있는 이름 %d개(%s%s). 파일마다 그 파일에서 보이는 정의를 골라 쓴다"
+                  % (len(multi), ", ".join("%s %d곳" % (n, len(v)) for n, v in list(multi.items())[:6]), " 외" if len(multi) > 6 else ""))
+    ctx._sx_st = sx
     return ctx._sx_st
 
 
@@ -5138,10 +5708,12 @@ def _sx_local_arrays(d, blk, blocks):
     return out
 
 
-def _sx_sites(d, arrs, a, b, consts):
+def _sx_sites(d, arrs, a, b, consts, ctx=None):
     """s[a:b] 에서 배열 이름이 나온 곳을 전부 분류한다. 돌려주는 값: {이름: [사용처]}
-    분류: sub(첨자 접근) / sizeof(sizeof(이름)) / zero(배열 전체를 0 으로 지우는 문장) / bare(이름을 통째로 사용)"""
+    분류: sub(첨자 접근) / sizeof(sizeof(이름)) / zero(배열 전체를 0 으로 지우는 문장) / fill(값으로 채우는 문장) / bare(이름을 통째로 사용)
+    (0.10.8) ctx 를 주면 채우는 값의 상수 매크로를 풀고, 채우는 호출을 감싼 함수 꼴 매크로를 펼쳐서 본다."""
     s, by = d.struct, {x["name"]: x for x in arrs}
+    defs = _sx_defines(ctx) if ctx is not None else None
     out = {n: [] for n in by}
     decl = [(x["a"], x["b"]) for x in arrs]
     rx = re.compile(r"(?<!\w)(%s)(?!\w)" % "|".join(re.escape(n) for n in sorted(by, key=len, reverse=True)))
@@ -5162,24 +5734,43 @@ def _sx_sites(d, arrs, a, b, consts):
         st1 = s.find(";", pos)
         st1 = b if st1 < 0 else st1
         sa, sb = _sx_trim(s, st0, st1)
+        end = st1 + 1
+        if defs is not None and defs["stmt"]:                 # 세미콜론 없이 쓴 매크로 호출을 문장 하나로 떼어 낸다
+            sa, sb, end = _sx_macro_stmt(s, sa, sb, pos, end, defs["stmt"])
         x["sa"], x["sb"] = sa, sb
-        zm = re.match(r"^(?:::)?(memset)\s*\(\s*(?:\(\s*void\s*\*\s*\)\s*)?&?\s*%s\s*,\s*(?P<val>[^,]+?)\s*,\s*(?P<len>.+?)\s*\)$" % re.escape(n), s[sa:sb], re.S) or \
-            re.match(r"^(?:::)?(ZeroMemory)\s*\(\s*&?\s*%s\s*,\s*(?P<len>.+?)\s*\)$" % re.escape(n), s[sa:sb], re.S)
-        if zm:
-            val = d.text[sa + zm.start("val"):sa + zm.end("val")].strip() if zm.group(1) == "memset" else "0"
-            ln = " ".join(zm.group("len").split())
+        raw = _strip_comments(d.text[sa:sb])
+        fp, via = _sx_fill_parse(raw, n), ""
+        if fp is None and defs is not None:                    # (0.10.8) 채우는 호출을 감싼 매크로: 펼쳐서 본다
+            ex = _sx_macro_expand(ctx, raw)
+            if ex is not None:
+                via = ex[0]
+                fp = _sx_fill_parse(ex[1], n) if ex[1] else None
+                if fp is None:
+                    x["why"] = ("매크로 %s 의 본문이 이 배열 전체를 채우는 호출 하나가 아님" % via) if ex[1] else \
+                        ("매크로 %s 를 문장 하나로 펼치지 못함(정의가 여러 곳에서 다르거나, 본문이 문장 하나가 아니거나, # 을 씀)" % via)
+        if fp:
+            call, val, ln = fp
             total = _sx_base_size(by[n]["type"])
             for dim in by[n]["dims"]:
                 v = const_value(dim, consts)
                 total = None if (total is None or v is None) else total * v
-            ok_len = bool(re.match(r"^sizeof\s*\(?\s*%s\s*\)?$" % re.escape(n), ln)) or \
-                (total is not None and const_value(re.sub(r"\bsizeof\s*\(\s*(\w+)\s*\)", lambda q: str(_SX_SIZES.get(q.group(1), q.group(0))), ln), consts) == total)
-            if _SX_ZERO.match(val) and ok_len:
-                x.update(cls="zero", a=sa, b=st1 + 1, call=zm.group(1), val=val)
-            elif ok_len and re.match(r"^(?:'(?:\\.|[^'\\])'|0[xX][0-9a-fA-F]+|\d+)$", val):
-                x.update(cls="fill", a=sa, b=st1 + 1, call=zm.group(1), val=val)      # (0.10.3) 0 이 아닌 상수로 채운다(공백 초기화 등)
+            elems, cur = [], total                            # 요소의 크기: 이름[0], 이름[0][0] ..
+            for dim in by[n]["dims"]:
+                v = const_value(dim, consts)
+                cur = None if (cur is None or not v) else cur // v
+                elems.append(cur)
+            ok_len = _sx_len_whole(ln, n, total, consts, elems)
+            num = 0 if _SX_ZERO.match(val) else _sx_fill_value(ctx, val)   # (0.10.8) 값이 상수 매크로여도 받는다(SPACE, (char)0x20 등)
+            for w in (re.findall(r"(?<![\w'])[A-Za-z_]\w*", mask_code(val)[0]) if num is not None else ()):
+                dc = find_decl(s, pos, w)                      # 값에 쓰인 이름이 이 함수의 지역 변수나 인자면 상수가 아니다(같은 이름의 enum 항목이 패키지에 있어도)
+                if dc and dc.get("kind") in ("local", "param"):
+                    num = None
+            if ok_len and num is not None:
+                x.update(cls="fill" if (num & 0xFF) else "zero", a=sa, b=end, call=call, val=val, num=num & 0xFF, macro=via)
             else:
                 x["stmt"] = " ".join(s[sa:sb].split())[:80]
+                x["why"] = ("채우는 값(%s)이 상수인지 확인하지 못함" % " ".join(val.split())[:30]) if ok_len else \
+                    ("길이(%s)가 배열 전체의 크기인지 확인하지 못함" % ln[:30])
         elif j < len(s) and s[j] == "[":
             c = _match_fwd(s, j, "[", "]", 4000)
             if c > 0:
@@ -5258,7 +5849,7 @@ def _sx_plan_group(ctx, d, blk, blocks, arrs, sites, dup_names, opts):
         for x in sites[n]:
             g["counts"][x["cls"]] = g["counts"].get(x["cls"], 0) + 1
             if x["cls"] == "bare":
-                blocked.append((x["line"], "이름을 통째로 사용(%s): %s" % (n, x.get("stmt", ""))))
+                blocked.append((x["line"], "이름을 통째로 사용(%s): %s%s" % (n, x.get("stmt", ""), (" — " + x["why"]) if x.get("why") else "")))
             elif x["cls"] in ("zero", "fill"):
                 zero.append(x)
     mw = _sx_macro_words(ctx)
@@ -5303,7 +5894,7 @@ def _sx_plan_group(ctx, d, blk, blocks, arrs, sites, dup_names, opts):
             clusters.append([x])
     # (0.10.3) 덩어리가 묶음의 모든 배열을 같은 값으로 채우면 문장 하나로, 아니면(일부만 채우거나 값이 다르면) 레코드마다 도는 반복문으로 바꾼다
     for cl in clusters:
-        cl_vals = {"0" if x["cls"] == "zero" else " ".join(x["val"].split()) for x in cl}
+        cl_vals = {x.get("num", 0) for x in cl}              # (0.10.8) 값의 글이 아니라 값으로 견준다(' ' 와 0x20 과 SPACE 는 같다)
         cl[0]["_whole"] = sorted(x["name"] for x in cl) == sorted(names) and len(cl_vals) == 1
     blocked[:] = list(OrderedDict.fromkeys(blocked))
     used = set(re.findall(r"(?<!\w)[A-Za-z_]\w*", s[blk["head"]:blk["close"]])) | set(opts.get("_taken") or ())   # 같은 함수의 다른 묶음이 쓴 이름도 피한다
@@ -5361,7 +5952,7 @@ def _sx_plan_group(ctx, d, blk, blocks, arrs, sites, dup_names, opts):
                 edits.append((da, db, "", what))
                 continue
             if whole:
-                new = ("memset(%s, %s, sizeof(%s));" % (var, x["val"], var)) if x["call"] == "memset" else "ZeroMemory(%s, sizeof(%s));" % (var, var)
+                new = _sx_fill_text(ctx, d, x, var, var)
             else:
                 # 배열마다 채우던 것을 레코드마다 그 필드를 채우는 것으로 바꾼다. 채워지는 바이트는 원본과 같다
                 iv, k2 = "iRec", 2
@@ -5374,7 +5965,7 @@ def _sx_plan_group(ctx, d, blk, blocks, arrs, sites, dup_names, opts):
                 for y in cl:
                     fld = "%s[%s].%s" % (var, iv, y["name"])
                     ref = fld if len(by_name[y["name"]]["dims"]) > 1 else "&" + fld
-                    body.append(("memset(%s, %s, sizeof(%s));" % (ref, y["val"], fld)) if y["call"] == "memset" else "ZeroMemory(%s, sizeof(%s));" % (ref, fld))
+                    body.append(_sx_fill_text(ctx, d, y, fld, ref))
                 is_c = d.rel.lower().endswith(".c")
                 loop = ["for (%s%s = 0; %s < (%s); %s++)" % ("" if is_c else "int ", iv, iv, g["rows"], iv), "{"] + [step + b2 for b2 in body] + ["}"]
                 if is_c:                                       # C 파일: 반복 변수를 블록의 처음에 선언한다(C89 에서도 된다)
@@ -5426,7 +6017,7 @@ def _sx_groups(ctx, d, blk, blocks, opts=None):
         if len(cand) < 2:
             continue
         end = (blocks[bk]["close"] if bk >= 0 else blk["close"]) - 1
-        sites = _sx_sites(d, cand, min(x["a"] for x in cand), end, consts)
+        sites = _sx_sites(d, cand, min(x["a"] for x in cand), end, consts, ctx)
         idx = {x["name"]: {y["idx"] for y in sites[x["name"]] if y["cls"] == "sub" and not re.match(r"^(?:%s)$" % _INT_LIT, y["idx"])} for x in cand}
         parent = {x["name"]: x["name"] for x in cand}
 
@@ -5478,7 +6069,7 @@ def _sx_scan(ctx, files):
             body = d.struct[blk["open"]:blk["close"]]
             try:
                 if _SX_CALL_RX.search(body) or re.search(r"\*\s*\)|_cast\s*<", body):
-                    fn = _SxFn(ctx, d, blk, sx)
+                    fn = _SxFn(ctx, d, blk, _sx_view(ctx, sx, rel))
                     if fn.run(blocks) or fn.overlays:
                         res["fns"].append({"rel": rel, "func": blk["name"], "line": d.line_of(blk["head"]), "fn": fn})
                 if body.count("][") or body.count("[") >= 4:
@@ -5522,13 +6113,13 @@ def _sx_field_expr(prefix, node, r, idx):
     return ("&" + prefix + node["path"]) if (r["voidp"] or (node["char"] and node["leaf"])) else None
 
 
-def _sx_match(spans, sx, forced=None, where=""):
+def _sx_match(spans, sx, forced=None, where="", see=None):
     """확정된 (위치, 길이)들과 배치가 맞는 기존 구조체를 고른다. 돌려주는 값: (구조체 항목 또는 None, 후보 이름 목록, 사유)
     조건: 위치와 길이가 필드와 같은 것이 2곳 이상이고, 구조체의 범위 안에서 필드의 경계와 어긋나는 접근이 없다. 후보가 여럿이면 고르지 않는다."""
     if forced:
         e = sx["by_name"].get(forced)
         if e is None or not e["ok"]:
-            return None, [], "요청의 구조체 %s 을(를) 쓸 수 없음(%s)" % (forced, "정의를 찾지 못함" if e is None else e["why"])
+            return None, [], "요청의 구조체 %s 을(를) 쓸 수 없음(%s)" % (forced, (sx.get("amb") or {}).get(forced, "정의를 찾지 못함") if e is None else e["why"])
         return e, [forced], ""                               # 요청이 정한 구조체: 맞는 접근만 바꾸고 어긋나는 접근은 사유와 함께 남긴다
     cands, anon = [], []
     for e in sx["list"]:
@@ -5538,7 +6129,8 @@ def _sx_match(spans, sx, forced=None, where=""):
         hit = [sp for sp in spans if sp in keys]
         if len(hit) >= 2 and not [sp for sp in spans if sp[0] < e["size"] and sp not in keys]:
             if not e["names"]:                               # 배치는 맞지만 이름이 없다. 필드 접근의 글(변수 선언, 캐스팅)을 쓸 수 없어 뺀다(0.10.5: 적어 둔다)
-                anon.append(e)
+                if not (e.get("outer") or {}).get("ok"):       # (0.10.8) 바깥 구조체의 필드로 이미 들어 있는 안쪽 구조체는 적지 않는다
+                    anon.append(e)
                 continue
             cands.append((len(hit), sum(sp[1] for sp in hit) / float(e["size"]), e))
     for e in anon:
@@ -5551,6 +6143,10 @@ def _sx_match(spans, sx, forced=None, where=""):
     cands.sort(key=lambda c: (-c[0], -c[1], c[2]["names"][-1]))
     top = [c for c in cands if c[0] == cands[0][0] and abs(c[1] - cands[0][1]) < 1e-9]
     names = [c[2]["names"][-1] for c in cands[:6]]
+    if len(top) > 1 and see is not None:                     # (0.10.8) 배치가 같은 후보가 여럿이면 이 파일이 include 하는 것 하나를 고른다
+        vis = [c for c in top if see(c[2])]
+        if len(vis) == 1:
+            return vis[0][2], names, ""
     if len(top) > 1:
         return None, names, "배치가 맞는 구조체가 여럿(%s). 요청의 struct 로 정한다" % ", ".join(c[2]["names"][-1] for c in top[:4])
     return cands[0][2], names, ""
@@ -5558,32 +6154,42 @@ def _sx_match(spans, sx, forced=None, where=""):
 
 def _sx_sees(ctx, rel, e, d, before):
     """파일 rel 의 before 위치에서 구조체 e 가 보이는가. 같은 파일의 앞쪽에 정의가 있거나, 그 이름을 이미 쓰고 있거나,
-    정의가 든 헤더를 직접 또는 다른 헤더를 거쳐 include 한다(패키지 안의 헤더만 따라간다. 이름이 같은 헤더는 구분하지 못한다)."""
+    정의가 든 헤더를 직접 또는 다른 헤더를 거쳐 include 한다(패키지 안의 헤더만 따라간다. 0.10.8: 이름이 같은 헤더는 경로로 가린다. _inc_reach)."""
     if e["rel"] == rel and e["end"] <= before:
         return True
     if any(re.search(r"(?<!\w)%s(?!\w)" % re.escape(n), d.code[:before]) for n in e["names"]):
         return True
-    inc = getattr(ctx, "_sx_inc", None)
-    if inc is None:
-        inc = ctx._sx_inc = ({}, {})
-        for r in ctx.store.q("SELECT path, header FROM includes"):
-            inc[0].setdefault(r["path"], set()).add(os.path.basename(norm_rel(r["header"])).lower())
-        for r in ctx.store.q("SELECT path FROM files"):
-            inc[1].setdefault(os.path.basename(r["path"]).lower(), []).append(r["path"])
-    want, seen, todo = os.path.basename(e["rel"]).lower(), set(), [rel]
-    for _ in range(8):                                         # 헤더가 헤더를 include 하는 깊이는 8 단계까지 본다
-        nxt = []
-        for p in todo:
-            for h in inc[0].get(p, ()):
-                if h == want:
-                    return True
-                if h not in seen:
-                    seen.add(h)
-                    nxt += inc[1].get(h, [])
-        todo = nxt
-        if not todo:
-            break
-    return False
+    return e["rel"] in _inc_reach(ctx, rel)
+
+
+def _sx_recordish(mem):
+    """멤버 목록이 고정 길이 전문의 구조체로 보이는가: 글자 배열 멤버가 둘 이상이다(안쪽 정의의 것도 센다)"""
+    n = 0
+    for m in mem or ():
+        if m.get("inner") is not None:
+            n += 2 if _sx_recordish(m["inner"]["mem"]) else 0
+        elif m["dims"] and not m["ptr"] and _sx_base_size(m["type"]) == 1:
+            n += 1
+    return n >= 2
+
+
+def _sx_miss_hint(ctx, sx, rel):
+    """이 파일이 include 하는 구조체 가운데 배치를 확정하지 못해 후보가 되지 못한 것을 알리는 글(없으면 빈 글). (0.10.8)
+    '맞는 구조체가 없음'만 적으면, 있는 구조체가 왜 후보가 아니었는지 알 수 없다. 전문의 구조체로 보이는 것(글자 배열 멤버가 둘 이상)만 적는다."""
+    reach = _inc_reach(ctx, rel)
+    miss = [e for e in sx["list"] if e["names"] and e["kind"] == "struct" and not e.get("ok") and e["rel"] in reach and _sx_recordish(e["mem"])]
+    try:
+        code = get_doc(ctx, rel).code
+    except Exception:
+        code = ""
+    amb = OrderedDict()                                        # 까닭 -> 이름(태그와 typedef 이름은 까닭이 같다. 하나만 적는다)
+    for n, why in sorted((sx.get("amb") or {}).items(), key=lambda kv: (kv[0].startswith("_"), kv[0])):
+        if any(c["rel"] in reach for c in sx["multi"].get(n, ())) or re.search(r"(?<!\w)%s(?!\w)" % re.escape(n), code):
+            amb.setdefault(why, n)
+    part = ["%s(%s)" % (e["names"][-1], e["why"]) for e in miss[:3]] + ["%s(%s)" % (n, why) for why, n in list(amb.items())[:2]]
+    if not part:
+        return ""
+    return ". 이 파일이 include 하거나 이름을 쓰는 구조체 가운데 배치를 확정하지 못해 후보에서 빠진 것: %s%s" % ("; ".join(part), " 외" if len(miss) + len(amb) > len(part) else "")
 
 
 def _sx_body_top(d, blk):
@@ -5649,7 +6255,7 @@ def _sx_plan_buffer(ctx, f, buf, opts, sx):
             if o["multi"] or o["off"] is None or o["off"][0]:
                 r["out"] = "겹쳐 보는 포인터 %s 가 여러 번 대입되거나 놓인 위치를 모름" % o["var"]
             elif e is None or not e["ok"]:
-                r["out"] = "겹쳐 보는 구조체 %s 의 배치를 확정하지 못함(%s)" % (o["type"], "정의를 찾지 못함" if e is None else e["why"])
+                r["out"] = "겹쳐 보는 구조체 %s 의 배치를 확정하지 못함(%s)" % (o["type"], (sx.get("amb") or {}).get(o["type"], "정의를 찾지 못함") if e is None else e["why"])
             elif o["const"] and r["dir"] != "R":
                 r["out"] = "겹쳐 보는 포인터 %s 가 const 여서 쓰는 문장에는 쓸 수 없음" % o["var"]
             else:
@@ -5667,8 +6273,11 @@ def _sx_plan_buffer(ctx, f, buf, opts, sx):
     forced = opts.get("struct")
     if isinstance(forced, dict):
         forced = forced.get(f["func"].split("::")[-1]) or forced.get(f["func"]) or forced.get(buf)
-    e, plan["cands"], why = _sx_match(spans, sx, forced, "%s:%d %s() 버퍼 %s" % (f["rel"], fixed[0]["line"], f["func"], buf))
+    e, plan["cands"], why = _sx_match(spans, sx, forced, "%s:%d %s() 버퍼 %s" % (f["rel"], fixed[0]["line"], f["func"], buf),
+                                      see=lambda c: c["rel"] in _inc_reach(ctx, f["rel"]))
     if e is None:                                              # 2) 대응하는 구조체가 없거나 정하지 못했다
+        if not plan["cands"] and not forced:
+            plan["hint"] = _sx_miss_hint(ctx, sx, f["rel"])       # 표의 줄마다 되풀이하지 않고 버퍼의 사유에만 붙인다
         plan["why"] = why
         for r in fixed:
             r["out"] = why
@@ -5860,7 +6469,7 @@ def _sx_request(ctx, ft, files):
             for buf in sorted(fn.bufs):
                 if not _sx_hit(targets, f["rel"], f["func"], [buf] + [o["type"] for o in fn.overlays]):
                     continue
-                plan = _sx_plan_buffer_safe(ctx, f, buf, opts, sx)
+                plan = _sx_plan_buffer_safe(ctx, f, buf, opts, _sx_view(ctx, sx, f["rel"]))
                 f["plans"][buf] = plan
                 d = fn.d
                 bump("target", "문장", len(plan["rows"]))
@@ -5895,7 +6504,7 @@ def _sx_request(ctx, ft, files):
                 if sent:
                     anon = []
                     try:
-                        cands = _sx_llm_cands(ctx, ft, d.struct[fn.blk["head"]:fn.blk["close"]], sx, anon)
+                        cands = _sx_llm_cands(ctx, ft, d.struct[fn.blk["head"]:fn.blk["close"]], _sx_view(ctx, sx, f["rel"]), anon)
                     except Exception as e:
                         LOG5.warn("%s %s(): sLLM 에 줄 구조체 후보를 고르다 실패했습니다(%s: %s). 이 함수의 남은 자리는 보내지 않습니다"
                                   % (f["rel"], f["func"], type(e).__name__, e))
@@ -5913,6 +6522,8 @@ def _sx_request(ctx, ft, files):
                         sent = []
                     else:
                         ft["_llm_structs"] = [n for n in OrderedDict.fromkeys((ft.get("_llm_structs") or []) + [e["names"][-1] for e in cands])][:12]
+                        by_file = ft.setdefault("_llm_by_file", {})      # (0.10.8) 파일마다 따로 적어 둔다(같은 이름의 정의가 파일마다 다를 수 있다)
+                        by_file[f["rel"]] = [n for n in OrderedDict.fromkeys(by_file.get(f["rel"], []) + [e["names"][-1] for e in cands])][:12]
                 for r in sent:
                     la, lb = d.line_span(r["line"])
                     st.x(sql_i, (f["rel"], r["a"], r["b"], r["line"], "request", ft["id"], "T3", 1, _SX_LLM_TITLE, d.text[la:lb].strip()[:160], None, 1,
@@ -5929,7 +6540,7 @@ def _sx_request(ctx, ft, files):
                         why.setdefault(re.split(r"[:(.]", r["out"])[0].strip(), []).append(r["line"])
                     summary = "; ".join("%s %d곳(줄 %s)" % (k, len(v), ", ".join(str(x) for x in v[:12]) + (" 외" if len(v) > 12 else "")) for k, v in why.items())
                     manual(f["rel"], left[0]["a"], left[0]["line"], "요청사항: 전문 버퍼 %s 의 위치 접근 %d곳을 바꾸지 않음(%s 함수)" % (buf, len(left), f["func"]),
-                           left[0]["out"], summary)
+                           left[0]["out"], summary + (plan.get("hint") or ""))
                     stat["where"].append("%s:%d %s() 버퍼 %s: %s" % (f["rel"], left[0]["line"], f["func"], buf, summary))
     else:
         opts, renamed = {"var_name": ft.get("var_name"), "struct_name": ft.get("struct_name")}, {}
@@ -6047,11 +6658,12 @@ def _sx_write_scan(ctx):
     n = 0
     for f in res["fns"]:
         fn = f["fn"]
+        vw = _sx_view(ctx, sx, f["rel"])
         for o in fn.overlays:
-            e = sx["by_name"].get(o["type"])
+            e = vw["by_name"].get(o["type"])
             L.append("- `%s:%d` %s(): 버퍼 `%s`%s 를 `%s* %s` 로 겹쳐 본다. 필드 접근 %d곳(유지)%s"
                      % (f["rel"], o["line"], f["func"], o["buf"], (" + %d" % o["off"][1]) if o["off"] and o["off"][1] else "", o["type"], o["var"], o["uses"],
-                        "" if (e and e["ok"]) else (" — 이 구조체의 배치는 확정하지 못함: %s" % (e["why"] if e else "정의를 찾지 못함"))))
+                        "" if (e and e["ok"]) else (" — 이 구조체의 배치는 확정하지 못함: %s" % (e["why"] if e else (vw.get("amb") or {}).get(o["type"], "정의를 찾지 못함")))))
         for buf in sorted(fn.bufs):
             rows = [r for r in fn.rows if r["buf"] == buf]
             if not rows:
@@ -6063,7 +6675,7 @@ def _sx_write_scan(ctx):
             if plan is not None:
                 L.append("- 처리: %s%s" % (_SX_MODE.get(plan["mode"], "바꾸지 않음"), (" / 구조체 `%s`" % plan["struct"]) if plan["struct"] else ""))
                 if plan["why"]:
-                    L.append("- 사유: %s" % plan["why"])
+                    L.append("- 사유: %s%s" % (plan["why"], plan.get("hint") or ""))
                 if plan["cands"] and not plan["mode"]:
                     L.append("- 배치가 맞는 구조체 후보: %s" % ", ".join("`%s`" % c for c in plan["cands"]))
             ft_ = _sx_field_table(rows)
@@ -6092,22 +6704,30 @@ def _sx_write_scan(ctx):
         L += ["", "```cpp", g["definition"], "```", ""]
     if not res["groups"]:
         L.append("- 같은 레코드 번호로 함께 쓰이는 지역 배열을 찾지 못했다(파일 범위 배열과 멤버 배열은 보지 않는다).")
-    used = set()
+    used = OrderedDict()                                       # 이름 -> 그 이름을 쓴 파일들(같은 이름의 정의가 파일마다 다를 수 있다)
     for f in res["fns"]:
-        used.update(o["type"] for o in f["fn"].overlays)
-        used.update(p["struct"] for p in (f.get("plans") or {}).values() if p["struct"])
-        for p in (f.get("plans") or {}).values():
-            used.update(p["cands"])
+        plans = list((f.get("plans") or {}).values())
+        for nm in [o["type"] for o in f["fn"].overlays] + [p["struct"] for p in plans if p["struct"]] + [c for p in plans for c in p["cands"]]:
+            if f["rel"] not in used.setdefault(nm, []):
+                used[nm].append(f["rel"])
     L += ["", "## 3. 구조체(위에 나온 것)", ""]
     rows = []
     for name in sorted(used):
-        e = sx["by_name"].get(name)
-        if e is None:
-            rows.append((name, "-", "-", "정의를 찾지 못했거나 같은 이름이 여러 곳에 있음"))
-        else:
+        seen = []
+        for rel in used[name]:
+            vw = _sx_view(ctx, sx, rel)
+            e = vw["by_name"].get(name)
+            key = id(e) if e is not None else (vw.get("amb") or {}).get(name, "")
+            if key in seen:
+                continue
+            seen.append(key)
+            if e is None:
+                rows.append((name, "-", "-", ((vw.get("amb") or {}).get(name) or "정의를 찾지 못함") + ((" — 쓰는 파일 %s" % rel) if name in sx["dup"] else "")))
+                continue
+            how = (vw.get("how") or {}).get(name, "")
             rows.append((name, "%s:%d" % (e["rel"], e["line"]), e["size"] if e["ok"] else "-",
-                         "확정: " + ", ".join("%s[%d..%d)" % (x["path"], x["off"], x["off"] + x["size"]) for x in e["nodes"][:30]) if e["ok"]
-                         else "확정하지 못함: " + e["why"]))
+                         ("확정: " + ", ".join("%s[%d..%d)" % (x["path"], x["off"], x["off"] + x["size"]) for x in e["nodes"][:30]) if e["ok"]
+                          else "확정하지 못함: " + e["why"]) + ((" — %s(쓰는 파일 %s)" % (how, rel)) if how else "")))
     L += _table(["구조체", "정의", "크기", "배치"], rows) if rows else ["- 없음"]
     os.makedirs(ctx.p("out"), exist_ok=True)
     write_text(ctx.p("out", "struct_scan.md"), "\n".join(L) + "\n")
@@ -8192,22 +8812,44 @@ def check_block(task, search, replace):
     return {"start": ts, "end": te, "before": before, "after": replace}, ""
 
 
-def find_symbol_snippet(ctx, name):
-    """NEED_CONTEXT 로 요청된 심볼의 정의를 찾아 앞부분을 돌려준다(없으면 빈 문자열)."""
+def _symbol_hits(ctx, short):
+    """이름의 정의(#define, typedef, struct·class·union·enum)가 있는 (파일, 위치) 목록. 파일마다 처음 것 하나다. 이름별로 한 번만 찾는다."""
+    c = getattr(ctx, "_sym_hits", None)
+    if c is None:
+        c = ctx._sym_hits = {}
+    if short not in c:
+        rx = re.compile(r"^[ \t]*(?:#[ \t]*define[ \t]+%s\b.*|(?:typedef\b[^;]*\b%s[ \t]*;)|(?:struct|class|union|enum)[ \t]+%s\b[^;]*)"
+                        % ((re.escape(short),) * 3), re.M)
+        out = []
+        for r in ctx.store.q("SELECT path FROM files WHERE kind='source' AND status IN ('대상','읽기전용','범위제외') ORDER BY path"):
+            m = rx.search(get_doc(ctx, r["path"]).code)
+            if m:
+                out.append((r["path"], m.start()))
+        c[short] = out
+    return c[short]
+
+
+def find_symbol_snippet(ctx, name, rel=None):
+    """NEED_CONTEXT 로 요청된 심볼의 정의를 찾아 앞부분을 돌려준다(없으면 빈 문자열).
+    (0.10.8) 같은 이름의 정의가 여러 파일에 있으면 묻는 파일(rel)에서 보이는 것을 고른다(_pick_by_file). rel 이 없으면 처음 것이다."""
     st = ctx.store
     short = name.split("::")[-1]
-    rows = st.q("SELECT path, sig_start, end FROM functions WHERE name=? OR name LIKE ? LIMIT 1", (name, "%::" + short))
+    rows = st.q("SELECT path, sig_start, end FROM functions WHERE name=? OR name LIKE ? LIMIT 20", (name, "%::" + short))
     if rows:
-        d = get_doc(ctx, rows[0]["path"])
-        return "// %s\n%s" % (rows[0]["path"], d.text[rows[0]["sig_start"]:min(rows[0]["end"], rows[0]["sig_start"] + 1500)])
-    rx = re.compile(r"^[ \t]*(?:#[ \t]*define[ \t]+%s\b.*|(?:typedef\b[^;]*\b%s[ \t]*;)|(?:struct|class|union|enum)[ \t]+%s\b[^;]*)"
-                    % ((re.escape(short),) * 3), re.M)
-    for r in st.q("SELECT path FROM files WHERE kind='source' AND status IN ('대상','읽기전용','범위제외') ORDER BY path"):
-        d = get_doc(ctx, r["path"])
-        m = rx.search(d.code)
-        if m:
-            return "// %s\n%s" % (r["path"], d.text[m.start():m.start() + 1200])
-    return ""
+        row = rows[0]
+        if rel and len(rows) > 1:
+            row = rows[_pick_by_file(ctx, rel, [r["path"] for r in rows])[0][0]]
+        d = get_doc(ctx, row["path"])
+        return "// %s\n%s" % (row["path"], d.text[row["sig_start"]:min(row["end"], row["sig_start"] + 1500)])
+    hits = _symbol_hits(ctx, short)
+    if not hits:
+        return ""
+    (p, pos), note = hits[0], ""
+    if len(hits) > 1:
+        idx, basis = _pick_by_file(ctx, rel, [h[0] for h in hits]) if rel else (list(range(len(hits))), "")
+        p, pos = hits[idx[0]]
+        note = " (같은 이름의 정의 %d곳 가운데 %s)" % (len(hits), basis or "처음 것. 이 파일에서 보이는 것인지 확인하지 못함")
+    return "// %s%s\n%s" % (p, note, get_doc(ctx, p).text[pos:pos + 1200])
 
 
 def _mark_manual(ctx, issue_ids, note):
@@ -8249,6 +8891,8 @@ def _sx_llm_cands(ctx, ft, text, sx, anon=None):
         if not e.get("ok"):
             continue
         if not e.get("names"):                               # 이름 없는 구조체(struct { ... } 변수;)는 물음에서 이름으로 가리킬 수 없다
+            if (e.get("outer") or {}).get("ok"):
+                continue                                       # (0.10.8) 바깥 구조체의 필드로 이미 들어 있다
             if anon is not None and len({x["path"].split(".")[-1] for x in e["nodes"] if x.get("leaf")} & names) >= 2:
                 anon.append(e)                               # 이름만 있었으면 후보였다: 부르는 쪽이 로그와 결과 문서에 적는다
             continue
@@ -8261,16 +8905,18 @@ def _sx_llm_cands(ctx, ft, text, sx, anon=None):
     return [e for _s, e in out[:4]]
 
 
-def _sx_llm_guidance(ctx, ft, near_text):
-    """전문 버퍼의 남은 자리(위치나 길이를 규칙이 확정하지 못한 접근)를 sLLM 에 맡길 때의 지침. 후보 구조체의 필드 표를 붙인다."""
-    sx = _sx_structs(ctx)
+def _sx_llm_guidance(ctx, ft, near_text, rel=None):
+    """전문 버퍼의 남은 자리(위치나 길이를 규칙이 확정하지 못한 접근)를 sLLM 에 맡길 때의 지침. 후보 구조체의 필드 표를 붙인다.
+    (0.10.8) rel(조각이 든 파일)을 주면 그 파일에서 보이는 정의의 표를 붙인다(같은 이름의 정의가 다른 헤더에 있어도 섞이지 않는다)."""
+    sx = _sx_view(ctx, _sx_structs(ctx), rel)
     try:
         cands = _sx_llm_cands(ctx, ft, near_text, sx)
     except Exception:
         cands = []
     if not cands:                                           # 조각에는 이름이 없다: 요청을 만들 때 함수에서 고른 후보를 쓴다
-        cands = [sx["by_name"][n] for n in (ft.get("_llm_structs") or []) if n in sx["by_name"]][:4]
-    tables = "; ".join("%s(크기 %d): %s" % (e["names"][-1], e["size"], " ".join(
+        picked = ((ft.get("_llm_by_file") or {}).get(rel) if rel else None) or ft.get("_llm_structs") or []
+        cands = [sx["by_name"][n] for n in picked if n in sx["by_name"] and sx["by_name"][n].get("ok")][:4]
+    tables = "; ".join("%s(크기 %d%s): %s" % (e["names"][-1], e["size"], (", 정의 %s" % e["rel"]) if e["names"][-1] in sx["dup"] else "", " ".join(
         "%s[%d..%d)" % (x["path"], x["off"], x["off"] + x["size"]) for x in e["nodes"] if x.get("leaf"))[:700]) for e in cands)
     how = ("이 조각에 그 구조체를 겹쳐 보는 포인터나 구조체 변수가 이미 있으면 그것의 필드를 쓴다. 없으면 ((구조체*)버퍼)->필드 꼴로 쓴다(버퍼가 const 면 const 구조체*)."
            if ft.get("cast") == "add" else
@@ -8411,7 +9057,7 @@ def _guarantee_lines(ctx, grade_txt):
     return L + _blocked_header_lines(ctx)
 
 
-def _request_guidance(ctx, rid, near_text=""):
+def _request_guidance(ctx, rid, near_text="", rel=None):
     """규칙 카탈로그에 없는 ID 의 이슈에 붙일 수정 지침. 요청문의 의도와 배열 요청이 여기서 나온다."""
     for a in ctx.request.get("asks") or []:
         if a["id"] == rid:                       # 요청문의 의도: 그 의도만의 요청문을 지침으로 주고, 원문을 함께 붙인다
@@ -8433,7 +9079,7 @@ def _request_guidance(ctx, rid, near_text=""):
             return g
     for ft in ctx.request.get("features", []):
         if ft.get("id") == rid and ft.get("type") == "buffer_fields":
-            return _sx_llm_guidance(ctx, ft, near_text)
+            return _sx_llm_guidance(ctx, ft, near_text, rel)
     for ft in ctx.request.get("features", []):
         if ft.get("id") == rid and ft.get("type") == "array_to_struct":
             names = set(re.findall(r"[A-Za-z_]\w*", near_text or ""))
@@ -8478,12 +9124,14 @@ _MEMBER_DECL = (r"(?m)^[ \t]*(?:(?:static|mutable|const|unsigned|signed|struct|v
                 r"[A-Za-z_][\w:<>, \t\*&]*?[\s\*&]%s[ \t]*((?:\[[^\]\n]*\])*)[ \t]*(?:=[^;]*|\{[^;]*\})?;")
 
 
-def _snippet_cached(ctx, name):
-    """find_symbol_snippet 의 결과를 이름별로 기억해 둔다(같은 이름을 작업마다 다시 찾지 않게)."""
+def _snippet_cached(ctx, name, rel=None):
+    """find_symbol_snippet 의 결과를 이름별로 기억해 둔다(같은 이름을 작업마다 다시 찾지 않게).
+    정의가 여러 파일에 있는 이름은 묻는 파일(rel)마다 따로 기억한다(파일마다 보이는 정의가 다르다)."""
     c = ctx._snips
-    if name not in c:
-        c[name] = find_symbol_snippet(ctx, name)
-    return c[name]
+    key = (name, rel) if (rel and len(_symbol_hits(ctx, name.split("::")[-1])) > 1) else name
+    if key not in c:
+        c[key] = find_symbol_snippet(ctx, name, rel)
+    return c[key]
 
 
 def _global_index(ctx):
@@ -8551,7 +9199,11 @@ def lookup_decl(ctx, rel, struct, pos, name, big=()):
     cm = re.search(r"([A-Za-z_]\w*)\s*::\s*~?\w+\s*\(", r.get("head") or "")
     if cm:
         rx = re.compile(_MEMBER_DECL % re.escape(name))
-        for crel, a, b, _h in _class_index(ctx).get(cm.group(1), []):
+        chits = _class_index(ctx).get(cm.group(1), [])
+        if len(chits) > 1:                                     # (0.10.8) 같은 이름의 클래스가 여러 곳: 이 파일에서 보이는 것부터 본다
+            first = _pick_by_file(ctx, rel, [h[0] for h in chits])[0]
+            chits = [chits[k] for k in first] + [h for k, h in enumerate(chits) if k not in first]
+        for crel, a, b, _h in chits:
             m = rx.search(get_doc(ctx, crel).struct, a, b)
             if m:
                 txt = " ".join(m.group(0).split())
@@ -8589,13 +9241,27 @@ def _decl_refs(ctx, rel, struct1, text1, ls1, big, members, a, b, limit):
         tname = m.group(1) if m else ""
         if tname and tname not in _REF_SKIP and tname != name and tname not in seen:
             seen.add(tname)
-            hit = (_class_index(ctx).get(tname) or [None])[0]
-            if hit:                                            # 구조체 본문을 그대로(300자까지)
+            hits, tag = [], ""
+            for h in _class_index(ctx).get(tname) or []:      # 태그와 typedef 이름이 같으면 같은 본문이 두 번 나온다
+                if (h[0], h[1]) not in [(q[0], q[1]) for q in hits]:
+                    hits.append(h)
+            hit = hits[0] if hits else None
+            if len(hits) > 1:                                  # (0.10.8) 같은 이름의 정의가 여러 곳: 이 파일에서 보이는 것을 붙인다
+                idx, basis = _pick_by_file(ctx, rel, [h[0] for h in hits])
+                texts = {" ".join(get_doc(ctx, hits[i][0]).struct[hits[i][1]:hits[i][2]].split()) for i in idx}
+                if len(idx) > 1 and len(texts) > 1:            # 가리지 못했다: 다른 쪽 정의를 붙이면 틀린 필드로 고치게 된다. 붙이지 않는다
+                    add("- %s 의 정의: 같은 이름의 정의가 %d곳(%s)에 있고 이 파일에서 보이는 것을 정하지 못해 붙이지 않는다. 필드의 이름과 크기를 추측하지 않는다"
+                        % (tname, len(hits), ", ".join(sorted({h[0] for h in hits}))[:160]))
+                    return
+                hit, tag = hits[idx[0]], "(%s. 같은 이름의 정의 %d곳 가운데 %s)" % (hits[idx[0]][0], len(hits), basis or "글이 같은 것")
+            if hit:                                            # 구조체 본문을 그대로(남은 자리가 넉넉하면 480자, 아니면 300자까지)
                 dd = get_doc(ctx, hit[0])
                 sc = dd.struct.find(";", hit[2])
-                add("- %s 의 정의: %s" % (tname, " ".join(dd.text[hit[3]:(sc + 1 if 0 <= sc - hit[2] < 200 else hit[2])].split())[:300]))
+                body = " ".join(dd.text[hit[3]:(sc + 1 if 0 <= sc - hit[2] < 200 else hit[2])].split())
+                n_cut = 480 if (limit - used) > 600 else 300
+                add("- %s 의 정의%s: %s" % (tname, tag, body[:n_cut] + (" ...(뒤 생략)" if len(body) > n_cut else "")))
             else:
-                snip = _snippet_cached(ctx, tname)
+                snip = _snippet_cached(ctx, tname, rel)
                 body = " ".join(snip.split("\n", 1)[-1].split())[:300] if snip else ""
                 if re.search(r"\b(?:struct|class|union|typedef|enum)\b", body):
                     add("- %s 의 정의: %s" % (tname, body))
@@ -8617,7 +9283,7 @@ def _decl_refs(ctx, rel, struct1, text1, ls1, big, members, a, b, limit):
             dc = lookup_decl(ctx, rel, struct1, pos, name, big)
             if dc is None:
                 if name.isupper() or name.endswith(("_T", "_t")):                 # 매크로 상수나 타입 이름
-                    snip = _snippet_cached(ctx, name)
+                    snip = _snippet_cached(ctx, name, rel)
                     if snip:
                         add("- %s: %s" % (name, " ".join(snip.split("\n", 1)[-1].split())[:200]))
                 continue
@@ -8961,7 +9627,7 @@ def plan_tasks(ctx):
             guidance = []
             near_text = text1[ls1[max(0, t_first - 26)]:(ls1[t_last + 25] if t_last + 25 < len(ls1) else len(text1))]   # 계약 발췌에 쓴다
             for _l, i in cl:
-                g = ctx.rule_by_id.get(i["rule_id"], {}).get("guidance", "") or _request_guidance(ctx, i["rule_id"], near_text)
+                g = ctx.rule_by_id.get(i["rule_id"], {}).get("guidance", "") or _request_guidance(ctx, i["rule_id"], near_text, rel)
                 item = "- [%s] %s: %s" % (i["rule_id"], i["title"], g)
                 if item not in guidance:
                     guidance.append(item)
@@ -9705,7 +10371,7 @@ def _handle_response(ctx, t, ok, content, kind=""):
         if m:
             if t["ctx_rounds"] >= llm["need_context_rounds"]:
                 return "수동", "추가 정의 요청 횟수 초과(%s)" % m.group(1)
-            snippet = find_symbol_snippet(ctx, m.group(1))
+            snippet = find_symbol_snippet(ctx, m.group(1), t.get("path"))
             if not snippet:
                 return "수동", "요청한 정의를 찾지 못함(%s)" % m.group(1)
             t["ctx_rounds"] += 1
@@ -9924,6 +10590,9 @@ def _compile_flags(ctx, rel):
     """rel 이 속한(또는 가장 가까운) 프로젝트의 구성에서 cl 옵션을 만든다."""
     projects = ctx.store.get_meta("projects", {})
     best, best_dir = None, ""
+    own = _project_of(ctx).get(norm_rel(rel).lower())          # (0.10.8) 이 파일을 실은 프로젝트(항목 경로를 패키지의 파일에 맞춰 찾은 것)
+    if own in projects:
+        return pick_config(projects[own]), os.path.dirname(own)
     for pf, proj in projects.items():
         pdir = os.path.dirname(pf)
         files = {norm_rel(os.path.normpath(os.path.join(pdir, f))).lower() for f in proj.get("files", [])}

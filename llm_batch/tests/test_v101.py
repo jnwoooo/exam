@@ -182,7 +182,9 @@ check("--backups keep: 백업도 전과 같이 처리하고(탐지 포함) 목�
       and not out_text(os.path.join(work, "B"), "backup_excluded.md") and "--backups keep 이어서 그대로 처리합니다" in tB
       and "그대로 처리했다(--backups keep)" in out_text(os.path.join(work, "B"), "report.md"))
 srcB = out_text(os.path.join(work, "B"), "changed", "Src", "Main.cpp")
-check("--backups keep: 백업의 구조체가 같은 이름으로 또 정의돼 있어 구조 분석이 그 구조체를 쓰지 못함(0.10.0 과 같은 동작)", "msg_pBuf" not in srcB)
+scanB = out_text(os.path.join(work, "B"), "struct_scan.md")
+check("--backups keep: 백업에 같은 이름의 구조체가 또 정의돼 있어도 이 파일이 include 하는 정의를 골라 바꿈(0.10.8. 그 전에는 그 구조체를 쓰지 못했다)",
+      "MES_HDR msg_pBuf;" in srcB and "memcpy(pSeq, msg_pBuf.szSeq, 6);" in srcB and "같은 이름의 정의" in scanB and "include 하는 헤더의 정의" in scanB)
 
 # ---------------------------------------------------------------- 5. 이어서 실행, 입력 오류, 사용 예
 cC, tC = cli("run", "--package", pkg, "--out", os.path.join(work, "C"), "--until", "S2", *BASE)
